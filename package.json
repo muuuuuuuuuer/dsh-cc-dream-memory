@@ -1,0 +1,87 @@
+{
+  "name": "dsh-cc-dream-memory",
+  "version": "0.12.0",
+  "type": "module",
+  "description": "Claude Code-style auto memory and reviewable Dream consolidation for DeepSeek Harness. Community plugin, not affiliated with Anthropic.",
+  "icon": "icon.svg",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "src/*.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "README.zh.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    },
+    "catalog": {
+      "category": "tool",
+      "summary": {
+        "en": "Claude Code-style auto memory and reviewable Dream consolidation. Plain Markdown, source quotes, undo.",
+        "zh": "Claude Code 式自动记忆和可审阅的 Dream 整理。纯 Markdown，带来源引用，可撤销。"
+      },
+      "capabilities": [
+        "tools",
+        "systemPrompt",
+        "commands",
+        "agents",
+        "workingDirectory",
+        "webServer"
+      ]
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "plugin",
+    "memory",
+    "auto-memory",
+    "dream",
+    "dreaming",
+    "claude-code",
+    "claude-code-memory"
+  ],
+  "license": "MIT",
+  "author": "dsh-cc-dream-memory contributors",
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.2-rc.1"
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\"",
+    "verify": "node scripts/verify.mjs",
+    "ui:verify": "node scripts/ui-freeze.mjs",
+    "ui:freeze": "node scripts/ui-freeze.mjs --update"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/muuuuuuuuuer/dsh-cc-dream-memory.git"
+  },
+  "homepage": "https://github.com/muuuuuuuuuer/dsh-cc-dream-memory#readme",
+  "bugs": {
+    "url": "https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/issues"
+  }
+}

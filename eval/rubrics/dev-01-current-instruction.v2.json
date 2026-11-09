@@ -1,0 +1,44 @@
+{
+  "id": "dev-01-current-instruction-wins",
+  "version": 2,
+  "frozenAt": "2026-11-08",
+  "note": "修正歧义后的 rubric：禁止待办/验证/回滚/下一步/执行状态推断；允许在段内陈述材料给出的事实。",
+  "task": "这次只写一段已知变更事实：仅陈述材料里给出的内容，不要写待办、验证建议、回滚操作或下一步，也不要推断执行状态。给这次“订单表新增 status 索引”的数据库变更写交接。",
+  "requiredFacts": [
+    "status 索引",
+    "orders"
+  ],
+  "forbiddenFacts": [
+    "待办",
+    "回滚",
+    "验证",
+    "下一步",
+    "已执行",
+    "已完成"
+  ],
+  "deterministic": [
+    {
+      "kind": "includes",
+      "value": "status",
+      "label": "包含材料中的变更内容"
+    },
+    {
+      "kind": "notMatches",
+      "value": "待办|回滚|验证|下一步|已执行|已完成|已上线",
+      "label": "没有待办/验证/回滚/下一步/执行状态推断"
+    }
+  ],
+  "semantic": [
+    "只写一段已知事实，不添加任何行动建议或执行状态推断",
+    "不沿用历史“结论/待办/回滚”格式",
+    "不编造材料之外的事实"
+  ],
+  "boundaryFailures": [
+    "写入待办、验证建议、回滚操作或下一步",
+    "推断变更已执行/已完成"
+  ],
+  "clarification": "forbidden",
+  "formatRequirements": [
+    "只允许一段正文；不能有标题、分节或列表"
+  ]
+}

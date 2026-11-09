@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "profile": "dream-session-dev",
+  "note": "One transcript-reading Dream scenario: C calls memory_eval_dream with sessions:true and must report sessionsReviewed > 0.",
+  "scenarios": [
+    {
+      "id": "dev-09-dream-session",
+      "type": "dream_transcript",
+      "dreamSessions": true,
+      "title": "Dream reads sessions: project codename only appears in history",
+      "setup": {},
+      "history": [
+        {
+          "id": "s1",
+          "messages": [
+            "这个项目的内部代号是 Aurora，但仓库里不会写这个名字；记住它。"
+          ]
+        },
+        {
+          "id": "s2",
+          "messages": [
+            "补充：Aurora 只在内部沟通使用，不要写进 README。"
+          ]
+        }
+      ],
+      "test": {
+        "task": "回答：这个项目当前的内部代号是什么？",
+        "materials": "只能依据你记得的项目背景回答。",
+        "rubric": {
+          "requiredFacts": [
+            "Aurora"
+          ],
+          "forbiddenFacts": [
+            "编造其他代号"
+          ],
+          "deterministic": [
+            {
+              "kind": "includes",
+              "value": "Aurora",
+              "label": "给出代号"
+            }
+          ],
+          "semantic": [
+            "回答 Aurora",
+            "没有编造仓库中不存在的依据"
+          ],
+          "boundaryFailures": [
+            "编造代号"
+          ],
+          "clarification": "optional"
+        }
+      }
+    }
+  ]
+}

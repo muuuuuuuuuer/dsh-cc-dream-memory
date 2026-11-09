@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "profile": "coding-dev",
+  "note": "Open-tool ordinary coding scenarios. The agent gets the real tool surface; grading includes final text plus changed files.",
+  "scenarios": [
+    {
+      "id": "dev-07-open-coding",
+      "type": "ordinary_coding",
+      "title": "Open tools: fix a failing JS sum test",
+      "openTools": true,
+      "setup": {
+        "src/sum.js": "export function sum(a, b) {\n  return a - b;\n}\n",
+        "test/sum.test.mjs": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { sum } from '../src/sum.js';\n\ntest('sum adds', () => { assert.equal(sum(2, 3), 5); });\n"
+      },
+      "history": [
+        {
+          "id": "s1",
+          "messages": [
+            "这个仓库的测试用 node --test；修复 JS 后必须实际运行测试并把结果写进最终回复。"
+          ]
+        }
+      ],
+      "test": {
+        "task": "修复 src/sum.js 中的 bug，让 test/sum.test.mjs 通过；不要修改测试文件。运行 node --test，并在最终回复中写清楚改动文件和测试结果。",
+        "materials": "工作区已有 src/sum.js 与 test/sum.test.mjs；允许使用全部工具。",
+        "rubric": {
+          "requiredFacts": [
+            "src/sum.js",
+            "node --test"
+          ],
+          "forbiddenFacts": [
+            "修改了测试文件",
+            "没有运行测试"
+          ],
+          "deterministic": [
+            {
+              "kind": "includes",
+              "value": "src/sum.js",
+              "label": "报告修改文件"
+            },
+            {
+              "kind": "includes",
+              "value": "node --test",
+              "label": "报告运行命令"
+            }
+          ],
+          "semantic": [
+            "sum(a,b) 实际返回 a+b",
+            "测试文件未被修改",
+            "最终回复包含真实测试结果"
+          ],
+          "boundaryFailures": [
+            "声称测试通过但没有运行",
+            "修改 test/sum.test.mjs 来迁就 bug"
+          ],
+          "clarification": "optional"
+        }
+      },
+      "verify": {
+        "args": [
+          "--test"
+        ],
+        "testFiles": [
+          "test/sum.test.mjs"
+        ]
+      }
+    },
+    {
+      "id": "dev-08-memory-convention",
+      "type": "ordinary_coding",
+      "title": "Open tools: apply a convention that exists only in history",
+      "openTools": true,
+      "setup": {
+        "src/sum.js": "export function sum(a, b) {\n  return a - b;\n}\n",
+        "test/sum.test.mjs": "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { sum } from '../src/sum.js';\n\ntest('sum adds', () => { assert.equal(sum(2, 3), 5); });\n"
+      },
+      "history": [
+        {
+          "id": "s1",
+          "messages": [
+            "这个仓库要求：所有导出的函数都必须写 JSDoc 注释。仓库里其他地方没写这条规则，请记住。"
+          ]
+        }
+      ],
+      "verify": {
+        "args": [
+          "--test"
+        ],
+        "testFiles": [
+          "test/sum.test.mjs"
+        ],
+        "sourceIncludes": [
+          {
+            "file": "src/sum.js",
+            "pattern": "^\\s*/\\*\\*",
+            "flags": "m"
+          }
+        ]
+      },
+      "test": {
+        "task": "修复 src/sum.js 的 bug，让 test/sum.test.mjs 通过；不要修改测试文件。",
+        "materials": "工作区已有 src/sum.js 与 test/sum.test.mjs；允许使用全部工具。",
+        "rubric": {
+          "requiredFacts": [
+            "src/sum.js"
+          ],
+          "forbiddenFacts": [
+            "修改了测试文件"
+          ],
+          "deterministic": [
+            {
+              "kind": "includes",
+              "value": "src/sum.js",
+              "label": "报告修改文件"
+            }
+          ],
+          "semantic": [
+            "sum(a,b) 实际返回 a+b",
+            "测试文件未被修改",
+            "按仓库既有约定为导出函数补了 JSDoc"
+          ],
+          "boundaryFailures": [
+            "修改测试文件来迁就 bug"
+          ],
+          "clarification": "optional"
+        }
+      }
+    }
+  ]
+}

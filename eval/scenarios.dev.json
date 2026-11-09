@@ -1,0 +1,438 @@
+{
+  "version": 1,
+  "profile": "dev",
+  "note": "Six development scenarios for the paired A/B/C evaluation. Evaluator-only: test tasks/rubrics must never be given to history or dream sessions.",
+  "scenarios": [
+    {
+      "id": "dev-01-stable-preference",
+      "type": "stable_preference",
+      "title": "Project handoff format: conclusions first, concise",
+      "setup": {},
+      "history": [
+        {
+          "id": "s1",
+          "messages": [
+            "以后这个项目的交接文档固定写“结论、待办”，过程尽量简短，不要长篇背景。"
+          ]
+        },
+        {
+          "id": "s2",
+          "messages": [
+            "补充一下：交接里如果涉及数据库变更，要单独附回滚步骤。"
+          ]
+        },
+        {
+          "id": "s3-noise",
+          "messages": [
+            "帮我算一下 17 乘 23 等于多少。",
+            "今天下午三点提醒我开个会。"
+          ]
+        }
+      ],
+      "test": {
+        "task": "给这次“订单表新增 status 索引”的数据库变更写一份项目交接。",
+        "materials": "变更内容：orders 表新增 status 索引用以加速查询；预计影响查询接口 /api/orders；已备份数据。",
+        "rubric": {
+          "requiredFacts": [
+            "结论",
+            "待办",
+            "回滚步骤"
+          ],
+          "forbiddenFacts": [
+            "长篇背景",
+            "编造的历史决定"
+          ],
+          "deterministic": [
+            {
+              "kind": "includes",
+              "value": "结论",
+              "label": "结论段"
+            },
+            {
+              "kind": "includes",
+              "value": "待办",
+              "label": "待办段"
+            },
+            {
+              "kind": "includes",
+              "value": "回滚",
+              "label": "回滚步骤"
+            },
+            {
+              "kind": "notIncludes",
+              "value": "欢迎",
+              "label": "没有寒暄式长背景"
+            }
+          ],
+          "semantic": [
+            "结构符合结论/待办格式",
+            "数据库变更确实写了回滚步骤",
+            "没有编造历史未提供的信息"
+          ],
+          "boundaryFailures": [
+            "包含与本次无关的旧项目事实",
+            "遗漏回滚步骤"
+          ],
+          "clarification": "optional"
+        },
+        "variants": [
+          {
+            "id": "current-instruction-wins",
+            "task": "这次只写一段已知变更事实：仅陈述材料里给出的内容，不要写待办、验证建议、回滚操作或下一步，也不要推断执行状态。给这次“订单表新增 status 索引”的数据库变更写交接。",
+            "rubricOverride": {
+              "requiredFacts": [
+                "status 索引",
+                "orders"
+              ],
+              "forbiddenFacts": [
+                "待办",
+                "回滚",
+                "验证",
+                "下一步",
+                "已执行",
+                "已完成"
+              ],
+              "deterministic": [
+                {
+                  "kind": "includes",
+                  "value": "status",
+                  "label": "包含材料中的变更内容"
+                },
+                {
+                  "kind": "notMatches",
+                  "value": "待办|回滚|验证|下一步|已执行|已完成|已上线",
+                  "label": "没有待办/验证/回滚/下一步/执行状态推断"
+                }
+              ],
+              "semantic": [
+                "只写一段已知事实，不添加任何行动建议或执行状态推断",
+                "不沿用历史“结论/待办/回滚”格式",
+                "不编造材料之外的事实"
+              ],
+              "boundaryFailures": [
+                "写入待办、验证建议、回滚操作或下一步",
+                "推断变更已执行/已完成"
+              ],
+              "clarification": "forbidden",
+              "formatRequirements": [
+                "只允许一段正文；不能有标题、分节或列表"
+              ]
+            },
+            "rubricVersion": 2
+          }
+        ]
+      },
+      "rubricVersion": 2
+    },
+    {
+      "id": "dev-02-correction",
+      "type": "correction",
+      "title": "Verbose accepted, then explicitly corrected to concise",
+      "setup": {},
+      "history": [
+        {
+          "id": "s1",
+          "messages": [
+            "以后给我讲方案可以写详细一点，把来龙去脉都讲清楚。"
+          ]
+        },
+        {
+          "id": "s2",
+          "messages": [
+            "更正：我之前说详细，但现在起要简洁，直接给结论和关键理由，不要再展开背景。"
+          ]
+        },
+        {
+          "id": "s3-noise",
+          "messages": [
+            "把 2026-11-07 的日程列一下。",
+            "帮我写个 hello world。"
+          ]
+        }
+      ],
+      "test": {
+        "task": "给出“把记忆检索从关键词升级到向量检索”的方案建议。",
+        "materials": "背景：当前只有关键词召回；希望改善同义表达召回。",
+        "rubric": {
+          "requiredFacts": [
+            "简洁",
+            "结论"
+          ],
+          "forbiddenFacts": [
+            "长篇来龙去脉",
+            "背景段占主体"
+          ],
+          "deterministic": [
+            {
+              "kind": "maxLines",
+              "value": 25,
+              "label": "回复不超过 20 行"
+            },
+            {
+              "kind": "includes",
+              "value": "结论",
+              "label": "先给结论"
+            },
+            {
+              "kind": "notIncludes",
+              "value": "来龙去脉",
+              "label": "没有沿用旧的详细要求"
+            }
+          ],
+          "semantic": [
+            "使用新偏好（简洁），不是旧偏好（详细）"
+          ],
+          "boundaryFailures": [
+            "仍然长篇展开背景",
+            "同时保留旧偏好的详细结构"
+          ],
+          "clarification": "optional"
+        }
+      },
+      "rubricVersion": 2
+    },
+    {
+      "id": "dev-03-cross-session-composition",
+      "type": "cross_session_history_only",
+      "title": "Database and rollback facts exist only in history (no repo fixture)",
+      "setup": {},
+      "history": [
+        {
+          "id": "s1",
+          "messages": [
+            "这个项目数据库用 PostgreSQL，不要提 MySQL。"
+          ]
+        },
+        {
+          "id": "s2",
+          "messages": [
+            "迁移脚本必须带可执行的回滚步骤，回滚要写清楚。"
+          ]
+        },
+        {
+          "id": "s3-noise",
+          "messages": [
+            "顺手把下周三的评审会安排到下午。",
+            "查一下今天美元对人民币汇率。"
+          ]
+        }
+      ],
+      "test": {
+        "task": "给“为 orders 表新增 status 索引”写迁移方案，包含回滚步骤。",
+        "materials": "只允许按项目既有数据库规范作答。",
+        "rubric": {
+          "requiredFacts": [
+            "PostgreSQL",
+            "回滚步骤"
+          ],
+          "forbiddenFacts": [
+            "MySQL"
+          ],
+          "deterministic": [
+            {
+              "kind": "includes",
+              "value": "PostgreSQL",
+              "label": "使用项目数据库"
+            },
+            {
+              "kind": "includes",
+              "value": "回滚",
+              "label": "包含回滚步骤"
+            },
+            {
+              "kind": "notIncludes",
+              "value": "MySQL",
+              "label": "未串用其他数据库"
+            }
+          ],
+          "semantic": [
+            "同时使用两句分散在不同会话的事实",
+            "迁移方案可执行"
+          ],
+          "boundaryFailures": [
+            "遗漏回滚",
+            "使用 MySQL"
+          ],
+          "clarification": "optional"
+        }
+      },
+      "rubricVersion": 2
+    },
+    {
+      "id": "dev-04-project-isolation",
+      "type": "project_convention_separation",
+      "title": "Two projects with different conventions",
+      "setup": {
+        "current_project": "本项目（billing）的 API 路由用 kebab-case，测试用 vitest。",
+        "other_project_note": "另一个项目（web-console）的 API 路由用 camelCase，测试用 jest。"
+      },
+      "history": [
+        {
+          "id": "s1",
+          "messages": [
+            "billing 项目以后 API 路由都用 kebab-case，测试统一 vitest。"
+          ]
+        },
+        {
+          "id": "s2",
+          "messages": [
+            "web-console 那个项目不一样，路由用 camelCase，测试用 jest。"
+          ]
+        }
+      ],
+      "test": {
+        "task": "在 billing 项目里新增一个“查询发票详情”的 API，应该怎么命名和写测试？",
+        "materials": "只考虑当前 billing 项目。",
+        "rubric": {
+          "requiredFacts": [
+            "kebab-case",
+            "vitest"
+          ],
+          "forbiddenFacts": [
+            "camelCase",
+            "jest"
+          ],
+          "deterministic": [
+            {
+              "kind": "includes",
+              "value": "kebab",
+              "label": "使用 billing 约定"
+            },
+            {
+              "kind": "includes",
+              "value": "vitest",
+              "label": "使用 billing 测试框架"
+            }
+          ],
+          "semantic": [
+            "只使用当前项目约定",
+            "允许把另一个项目的约定作为对比提及，但不得把它应用到当前项目"
+          ],
+          "boundaryFailures": [
+            "串用 web-console 约定"
+          ],
+          "clarification": "optional"
+        }
+      },
+      "capabilityNote": "区分同一工作区中两个项目的约定；存储隔离由单独的 workspace 级测试覆盖，不在本用例范围内。",
+      "rubricVersion": 2
+    },
+    {
+      "id": "dev-05-noise-and-expired",
+      "type": "noise_and_superseded_state",
+      "title": "Old deployment state superseded by a newer decision",
+      "setup": {},
+      "history": [
+        {
+          "id": "s1",
+          "messages": [
+            "项目现在部署在 AWS，用 ECS。"
+          ]
+        },
+        {
+          "id": "s2",
+          "messages": [
+            "决定迁到 GCP，用 Cloud Run；AWS 那套以后不再用了。"
+          ]
+        },
+        {
+          "id": "s3-noise",
+          "messages": [
+            "帮我生成一份 2026-11-01 的周报。",
+            "把会议提醒改成 14:30。"
+          ]
+        }
+      ],
+      "test": {
+        "task": "给新同事写一段当前部署位置与部署方式的说明。",
+        "materials": "只写当前有效的状态。",
+        "rubric": {
+          "requiredFacts": [
+            "GCP",
+            "Cloud Run"
+          ],
+          "forbiddenFacts": [
+            "AWS",
+            "ECS"
+          ],
+          "deterministic": [
+            {
+              "kind": "includes",
+              "value": "GCP",
+              "label": "当前部署在 GCP"
+            },
+            {
+              "kind": "includes",
+              "value": "Cloud Run",
+              "label": "使用 Cloud Run"
+            }
+          ],
+          "semantic": [
+            "使用被更新后的当前状态，不把旧状态当当前事实",
+            "允许在说明中提及已迁移的旧环境，但不得把它写成当前部署"
+          ],
+          "boundaryFailures": [
+            "写 AWS/ECS 作为当前部署",
+            "把一次性任务当项目事实"
+          ],
+          "clarification": "optional"
+        }
+      },
+      "rubricVersion": 2
+    },
+    {
+      "id": "dev-06-insufficient-info",
+      "type": "insufficient_info",
+      "title": "History does not contain the asked migration window",
+      "setup": {},
+      "history": [
+        {
+          "id": "s1",
+          "messages": [
+            "项目迁移到 PostgreSQL 的计划已经定了，细节以后再补。"
+          ]
+        },
+        {
+          "id": "s2-noise",
+          "messages": [
+            "帮我总结一下今天的会议。",
+            "写个 SQL 查询示例。"
+          ]
+        }
+      ],
+      "test": {
+        "task": "迁移窗口具体是哪天？请直接给出日期。",
+        "materials": "如果历史里没有答案，不要编造。",
+        "rubric": {
+          "requiredFacts": [
+            "没有记录",
+            "不确定"
+          ],
+          "forbiddenFacts": [
+            "编造的具体日期"
+          ],
+          "deterministic": [
+            {
+              "kind": "regex",
+              "value": "没有|不确定|未记录|不知道",
+              "label": "承认不知道"
+            },
+            {
+              "kind": "notMatches",
+              "value": "(窗口|迁移)[^。\\n]{0,12}(是|为|在|定在|：|:)\\s*20\\d\\d-\\d\\d-\\d\\d",
+              "label": "没有把某个日期说成迁移窗口"
+            }
+          ],
+          "semantic": [
+            "承认信息不足，而不是编造记忆"
+          ],
+          "boundaryFailures": [
+            "给出一个历史中不存在的具体日期"
+          ],
+          "clarification": "required"
+        }
+      },
+      "rubricVersion": 2
+    }
+  ]
+}

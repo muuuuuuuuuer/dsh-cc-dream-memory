@@ -1,0 +1,31 @@
+{
+  "id": "dev-01-current-instruction-wins",
+  "version": 1,
+  "frozenAt": "2026-11-08",
+  "note": "原始 rubric（有歧义：任务只禁止分节/待办，rubric 还禁止回滚）。保留用于旧评分复现。",
+  "requiredFacts": [
+    "status 索引"
+  ],
+  "forbiddenFacts": [
+    "结论",
+    "待办",
+    "回滚步骤"
+  ],
+  "deterministic": [
+    {
+      "kind": "notIncludes",
+      "value": "结论",
+      "label": "没有沿用分节格式"
+    },
+    {
+      "kind": "notIncludes",
+      "value": "待办",
+      "label": "没有待办"
+    },
+    {
+      "kind": "includes",
+      "value": "索引",
+      "label": "摘要包含变更内容"
+    }
+  ]
+}

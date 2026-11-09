@@ -1,0 +1,11 @@
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+coverage/
+.nyc_output/
+*.tgz
+
+eval/runs/
+
+eval/rescores/

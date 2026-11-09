@@ -1,0 +1,26 @@
+name: Dream or memory feedback
+description: Tell us how Dream or memory behaved on your real work
+labels: [feedback]
+body:
+  - type: markdown
+    attributes:
+      value: Describe the behavior. You do not need to paste your memories or sessions.
+  - type: dropdown
+    id: area
+    attributes:
+      label: What is this about?
+      options:
+        - Dream proposed a good change
+        - Dream proposed a wrong change
+        - Dream missed something
+        - A memory was saved that should not have been
+        - A useful memory was not recalled
+        - Something else
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: What happened?
+    validations:
+      required: true

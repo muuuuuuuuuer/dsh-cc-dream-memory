@@ -1,0 +1,8 @@
+# Bundle patch layer: one Host row plus the `dsh.client` browser half declared
+# in package.json. The config below is the initial default; users override it
+# in their profile's cordis.patch.yml (the row id is `cc-dream-memory`).
+- insert:
+    - id: cc-dream-memory
+      name: dsh-cc-dream-memory
+      config:
+        autoDreamEnabled: false
