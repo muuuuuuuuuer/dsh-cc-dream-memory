@@ -187,6 +187,10 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
 - [命令参考](docs/commands.md)（英文）
 - [贡献指南](CONTRIBUTING.md) · [安全](SECURITY.md) · [更新日志](CHANGELOG.md)
 
+## 贡献者
+
+[muuuuuuuuuer](https://github.com/muuuuuuuuuer)，使用 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 和 Claude Code 作为编码 agent。
+
 ## 许可证
 
 [MIT](LICENSE)

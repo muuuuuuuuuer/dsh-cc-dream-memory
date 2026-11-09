@@ -59,6 +59,17 @@ for (const [name, doc, disclaimer] of SHOWCASE) {
   });
 }
 
+test('both READMEs credit DeepSeek Harness as a contributor', () => {
+  assert.match(readme, /## Contributors\s[^#]*DeepSeek Harness/);
+  assert.match(readmeZh, /## 贡献者\s[^#]*DeepSeek Harness/);
+});
+
+test('the icon label no longer uses the Claude name', async () => {
+  const icon = await read('icon.svg');
+  assert.doesNotMatch(icon, /aria-label="[^"]*Claude/);
+  assert.match(icon, /aria-label="Memory"/);
+});
+
 test('the English README opens with the positioning line', () => {
   assert.match(readme, /Claude Code-style auto memory and Dream for DeepSeek Harness\./);
   assert.match(readme, /not affiliated/i);

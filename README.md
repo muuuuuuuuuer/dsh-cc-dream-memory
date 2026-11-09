@@ -183,6 +183,10 @@ Known limits:
 - [How the evaluation works](eval/README.md) (Chinese)
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
 
+## Contributors
+
+[muuuuuuuuuer](https://github.com/muuuuuuuuuer), with [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) and Claude Code as coding agents.
+
 ## License
 
 [MIT](LICENSE)
