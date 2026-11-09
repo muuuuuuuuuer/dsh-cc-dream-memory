@@ -8,11 +8,10 @@
 
 让 agent 跨会话记住事情。Dream 提出的每一处改动，你都能先审阅，也能撤销。
 
-[![npm](https://img.shields.io/npm/v/dsh-cc-dream-memory)](https://www.npmjs.com/package/dsh-cc-dream-memory)
 [![CI](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml)
-[![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/LICENSE)
 
-[English](README.md) · 简体中文
+[English](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/README.md) · 简体中文
 
 </div>
 
@@ -34,17 +33,27 @@
 
 ## 安装
 
+需要 Node 22 或更新版本，以及 DeepSeek Harness 0.2.2-rc.1 或更新版本。首个 npm 版本尚待发布，目前从 GitHub 安装：
+
 ```bash
-dsh plugin --profile web add dsh-cc-dream-memory
+dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
 ```
 
 重启 DeepSeek Harness，新建一个会话。如果 PATH 上没有 `dsh`，用 `npx`：
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
+npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
 ```
 
-桌面版可以打开**插件**页，搜索 `dsh-cc-dream-memory`。
+桌面版可以打开**插件 → 添加插件**，输入 `github:muuuuuuuuuer/dsh-cc-dream-memory`。
+
+发布到 npm 后，也可以按包名安装：
+
+```bash
+dsh plugin --profile web add dsh-cc-dream-memory
+# 如果 PATH 上没有 dsh：
+npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
+```
 
 ## Dream
 
@@ -124,7 +133,7 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
    /memory dream undo
    ```
 
-第 3、4 步也可以在记忆页的 **Dream** 标签里完成。其他命令见[命令参考](docs/commands.md)（英文）或[使用手册](docs/manual.zh.md)。
+第 3、4 步也可以在记忆页的 **Dream** 标签里完成。其他命令见[命令参考](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/docs/commands.md)（英文）或[使用手册](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/docs/manual.zh.md)。
 
 ## 从 Claude Code 迁移
 
@@ -158,7 +167,7 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
 - 记忆保存在你自己的机器上，位于 `$DSH_HOME/cc-memory/`。插件没有遥测。
 - 记忆内容会随正常提示词发给你的模型服务。
 - Dream 会把会话文本和记忆发给你配置的模型服务。在我们的测试里，整理三个短会话用了 6,500 到 11,000 tokens。
-- 符合常见密钥格式的写入会被拒绝。这是启发式检查，不能保证拦住所有密钥。详见 [SECURITY.md](SECURITY.md)。
+- 符合常见密钥格式的写入会被拒绝。这是启发式检查，不能保证拦住所有密钥。详见 [SECURITY.md](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/SECURITY.md)。
 
 ## 现状
 
@@ -171,7 +180,7 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
 
 还没有验证的：
 
-- **记忆总体上能不能让回答变好。** 开头的对比只是为了展示差别而设计的一个场景。在一次[小型试点](eval/RELIABILITY-REPORT-2026-11-08.md)里，记忆对稳定偏好有帮助；“只写一段话”的指令上，有无记忆都没通过；用户纠正那一项的结果我们并不信任。那次 Dream 没有做任何改动，所以说明不了 Dream 的效果。
+- **记忆总体上能不能让回答变好。** 开头的对比只是为了展示差别而设计的一个场景。在一次[小型试点](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/RELIABILITY-REPORT-2026-11-08.md)里，记忆对稳定偏好有帮助；“只写一段话”的指令上，有无记忆都没通过；用户纠正那一项的结果我们并不信任。那次 Dream 没有做任何改动，所以说明不了 Dream 的效果。
 - **在真实项目上长期使用。** 我们正需要这方面的反馈。如果你在真实工作中用了 Dream，请[告诉我们它哪里对、哪里错](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/issues/new?template=feedback.yml)。
 
 已知局限：
@@ -182,17 +191,22 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
 
 ## 更多
 
-- [使用手册](docs/manual.zh.md)和[架构说明](docs/ARCHITECTURE.md)
-- [评测方法](eval/README.md)
-- [命令参考](docs/commands.md)（英文）
-- [贡献指南](CONTRIBUTING.md) · [安全](SECURITY.md) · [更新日志](CHANGELOG.md)
+- [使用手册](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/docs/manual.zh.md)和[架构说明](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/docs/ARCHITECTURE.md)
+- [评测方法](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/README.md)
+- [命令参考](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/docs/commands.md)（英文）
+- [贡献指南](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/CONTRIBUTING.md) · [安全](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/SECURITY.md) · [更新日志](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/CHANGELOG.md)
 
 ## 贡献者
 
-[muuuuuuuuuer](https://github.com/muuuuuuuuuer)，使用 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 和 Claude Code 作为编码 agent。
+- [muuuuuuuuuer](https://github.com/muuuuuuuuuer) — 维护者。
+- [Claude](https://github.com/claude) — 通过 Claude Code 提供 AI 编码协助。
+
+## 致谢
+
+开发过程中也使用了 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)。
 
 ## 许可证
 
-[MIT](LICENSE)
+[MIT](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/LICENSE)
 
 这是独立的社区插件，与 Anthropic、DeepSeek 无关，也未获其认可。Claude Code 是 Anthropic 的产品。

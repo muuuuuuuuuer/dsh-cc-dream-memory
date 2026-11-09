@@ -59,9 +59,13 @@ for (const [name, doc, disclaimer] of SHOWCASE) {
   });
 }
 
-test('both READMEs credit DeepSeek Harness as a contributor', () => {
-  assert.match(readme, /## Contributors\s[^#]*DeepSeek Harness/);
-  assert.match(readmeZh, /## 贡献者\s[^#]*DeepSeek Harness/);
+test('both READMEs list the two linked contributors', () => {
+  for (const [doc, heading] of [[readme, 'Contributors'], [readmeZh, '贡献者']]) {
+    const section = doc.split(`## ${heading}\n`)[1]?.split('\n## ')[0];
+    assert.ok(section, heading);
+    const accounts = [...section.matchAll(/^- \[[^\]]+\]\(https:\/\/github\.com\/([^)]+)\)/gm)].map((match) => match[1]);
+    assert.deepEqual(accounts, ['muuuuuuuuuer', 'claude']);
+  }
 });
 
 test('the icon label no longer uses the Claude name', async () => {

@@ -4,6 +4,8 @@
 
 First public release, under a new name.
 
+- Corrected the author and contributor metadata to list muuuuuuuuuer and Claude, with DeepSeek Harness acknowledged separately.
+- Prepared public npm publishing with verification before publish, included the security notice, and made README documentation links absolute. GitHub installation remains available while the first npm publication is pending.
 - **Renamed to `dsh-cc-dream-memory`.** npm's `dsh-cc-memory` is an unrelated plugin. Your memories stay in `$DSH_HOME/cc-memory/`. Remove the old package and install this one.
 - **The row id is now `cc-dream-memory`.** That plugin also used `cc-memory`, and when two rows share an id the later one silently replaces the earlier one. If your profile patch overrides `id: cc-memory`, rename it.
 - The interface title is now "Memory" / "记忆".

@@ -18,6 +18,20 @@ npm pack
 dsh plugin --profile web add /absolute/path/to/dsh-cc-dream-memory-<version>.tgz
 ```
 
+## Publishing to npm
+
+Publish from a clean repository checkout. `prepublishOnly` runs the full verifier before publishing; there are no install-time build scripts.
+
+```bash
+npm publish --dry-run
+npm whoami --registry=https://registry.npmjs.org/
+# If authentication is missing or expired:
+npm login --registry=https://registry.npmjs.org/
+npm publish
+```
+
+`publishConfig` selects the public npm registry and public access. Check that `npm view dsh-cc-dream-memory@<version> version` resolves after publishing, then tag that commit and create its GitHub Release. Restore the npm version badge and make the package-name command the primary README install command only after the package is available. Until then, the READMEs use the GitHub install spec.
+
 ## Rules for changes
 
 - **Test first.** Write a test that fails, watch it fail, then fix the code.

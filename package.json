@@ -20,6 +20,7 @@
     "README.md",
     "README.zh.md",
     "CHANGELOG.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "dsh": {
@@ -65,10 +66,24 @@
     "claude-code-memory"
   ],
   "license": "MIT",
-  "author": "dsh-cc-dream-memory contributors",
+  "author": {
+    "name": "muuuuuuuuuer",
+    "url": "https://github.com/muuuuuuuuuer"
+  },
   "contributors": [
-    "DeepSeek Harness"
+    {
+      "name": "muuuuuuuuuer",
+      "url": "https://github.com/muuuuuuuuuer"
+    },
+    {
+      "name": "Claude",
+      "url": "https://github.com/claude"
+    }
   ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "engines": {
     "node": ">=22",
     "dsh": ">=0.2.2-rc.1"
@@ -76,6 +91,7 @@
   "scripts": {
     "test": "node --test \"test/*.test.mjs\"",
     "verify": "node scripts/verify.mjs",
+    "prepublishOnly": "npm run verify",
     "ui:verify": "node scripts/ui-freeze.mjs",
     "ui:freeze": "node scripts/ui-freeze.mjs --update"
   },

@@ -8,11 +8,10 @@
 
 Your agent remembers across sessions. Every change Dream proposes is one you can review and undo.
 
-[![npm](https://img.shields.io/npm/v/dsh-cc-dream-memory)](https://www.npmjs.com/package/dsh-cc-dream-memory)
 [![CI](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml)
-[![MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/LICENSE)
 
-English · [简体中文](README.zh.md)
+English · [简体中文](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/README.zh.md)
 
 </div>
 
@@ -30,17 +29,27 @@ We ran the second session three times on each side. The deploy step was `legacy-
 
 ## Install
 
+Requires Node 22 or newer and DeepSeek Harness 0.2.2-rc.1 or newer. Install from GitHub while the first npm publication is pending:
+
 ```bash
-dsh plugin --profile web add dsh-cc-dream-memory
+dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
 ```
 
 Restart DeepSeek Harness and start a new session. If `dsh` is not on your PATH, use `npx`:
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
+npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
 ```
 
-In the desktop app, open **Plugins** and search for `dsh-cc-dream-memory`.
+In the desktop app, open **Plugins → Add plugin** and enter `github:muuuuuuuuuer/dsh-cc-dream-memory`.
+
+After the package is published to npm, you can also install by package name:
+
+```bash
+dsh plugin --profile web add dsh-cc-dream-memory
+# Or, if dsh is not on PATH:
+npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
+```
 
 ## Dream
 
@@ -120,7 +129,7 @@ Run these in a session.
    /memory dream undo
    ```
 
-You can do steps 3 and 4 on the **Dream** tab of the Memory view too. See the [command reference](docs/commands.md) for everything else.
+You can do steps 3 and 4 on the **Dream** tab of the Memory view too. See the [command reference](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/docs/commands.md) for everything else.
 
 ## Coming from Claude Code
 
@@ -154,7 +163,7 @@ Look elsewhere if you need:
 - Memories stay on your machine, under `$DSH_HOME/cc-memory/`. The plugin has no telemetry.
 - Memory text goes to your model provider as part of normal prompts.
 - Dream sends session text and memories to the provider you configured. A Dream over three short sessions used 6,500 to 11,000 tokens in our tests.
-- Writes that match common key formats are refused. This is a heuristic and will not catch every secret. See [SECURITY.md](SECURITY.md).
+- Writes that match common key formats are refused. This is a heuristic and will not catch every secret. See [SECURITY.md](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/SECURITY.md).
 
 ## Status
 
@@ -167,7 +176,7 @@ What has been checked:
 
 What has not:
 
-- **Whether memory improves answers in general.** The comparison at the top is one scenario built to show the difference. In a [small pilot](eval/RELIABILITY-REPORT-2026-11-08.md), stored memory helped with a stable preference, failed a one-paragraph instruction like every other group, and gave a result on a user correction that we do not trust. Dream changed nothing in that pilot, so it says nothing about Dream.
+- **Whether memory improves answers in general.** The comparison at the top is one scenario built to show the difference. In a [small pilot](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/RELIABILITY-REPORT-2026-11-08.md), stored memory helped with a stable preference, failed a one-paragraph instruction like every other group, and gave a result on a user correction that we do not trust. Dream changed nothing in that pilot, so it says nothing about Dream.
 - **Long use on real projects.** We are looking for this feedback. If you try Dream on real work, please [tell us what it got right and wrong](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/issues/new?template=feedback.yml).
 
 Known limits:
@@ -178,17 +187,22 @@ Known limits:
 
 ## More
 
-- [Command reference](docs/commands.md)
-- [Manual](docs/manual.zh.md) and [architecture](docs/ARCHITECTURE.md) (Chinese)
-- [How the evaluation works](eval/README.md) (Chinese)
-- [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
+- [Command reference](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/docs/commands.md)
+- [Manual](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/docs/manual.zh.md) and [architecture](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/docs/ARCHITECTURE.md) (Chinese)
+- [How the evaluation works](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/README.md) (Chinese)
+- [Contributing](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/CONTRIBUTING.md) · [Security](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/SECURITY.md) · [Changelog](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/CHANGELOG.md)
 
 ## Contributors
 
-[muuuuuuuuuer](https://github.com/muuuuuuuuuer), with [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) and Claude Code as coding agents.
+- [muuuuuuuuuer](https://github.com/muuuuuuuuuer) — maintainer.
+- [Claude](https://github.com/claude) — AI coding assistance through Claude Code.
+
+## Acknowledgements
+
+[DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) was also used during development.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/LICENSE)
 
 This is an independent community plugin, not affiliated with or endorsed by Anthropic or DeepSeek. Claude Code is a product of Anthropic.
