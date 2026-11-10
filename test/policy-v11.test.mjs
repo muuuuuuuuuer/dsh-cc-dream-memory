@@ -55,7 +55,8 @@ test('policy: conflicting writes stop and identify the owning memory', async (t)
   );
   assert.equal(conflicting.ok, true, JSON.stringify(conflicting));
   assert.equal(conflicting.written, false, 'a conflict must not become another active fact');
-  assert.equal(conflicting.action, 'conflict', JSON.stringify(conflicting));
+  assert.equal(conflicting.action, 'queued-review', JSON.stringify(conflicting));
+  assert.ok((await env.mods.pending.listPendingWrites(env.pctx.paths)).some((item) => item.id === conflicting.pendingId));
   assert.ok(Array.isArray(conflicting.conflicts) && conflicting.conflicts.length >= 1, JSON.stringify(conflicting));
   const conflict = conflicting.conflicts[0];
   assert.equal(conflict.file, 'user_language.md');

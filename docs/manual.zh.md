@@ -30,7 +30,7 @@ $DSH_HOME/cc-memory/
 
 | 工具 | 作用 |
 |---|---|
-| `memory_save` | 新增一条记忆（name/type/description/content；低置信或 confirm 写入进待审；冲突拒写并返回原条目，疑似重复保留 advisory；force 只绕过重复拦截） |
+| `memory_save` | 新增一条记忆（name/type/description/content；低置信、confirm 或词面冲突写入进待审，冲突附原条目；疑似重复保留 advisory；force 只绕过重复拦截） |
 | `memory_update` | 更新正文/描述；低置信同样待审；传 `name` 改名（保留 created/provenance，旧文件进回收站）；传 `delete:true` 软删除 |
 | `memory_read` | 读取一条记忆的完整 Markdown，附 `ageDays`；满 30 天再加 `staleness`，提醒先核实再引用 |
 | `memory_search` | 相关度排序检索（name/desc/body 权重 + phrase + recency + type/scope/limit，返回 score/snippets） |
@@ -56,7 +56,7 @@ $DSH_HOME/cc-memory/
 - `/memory backups` / `/memory trash` — 列出 `.dreams/` 备份与 `.trash/` 回收站批次
 - `/memory restore <backup|trash> <id> [file]` — 从备份/回收站恢复整批或单文件（写 changelog + reconcile 索引）
 - `/memory metrics` — 效果指标：注入次数、自动召回次数、读/写总数、search、dream 接受率、Top read、never read、最近成本
-- `/memory writes` — **v9** 待审写入列表（低置信/confirm 候选；冲突拒写并返回原条目）
+- `/memory writes` — 待审写入列表（低置信/confirm/词面冲突候选；审阅后批准或拒绝）
 - `/memory approve <id>` / `/memory reject <id> [reason]` — 批准（走正常写入 + provenance/机密扫描/索引）或拒绝待审写入
 - `/memory refresh` — **v9** 立即重建本会话注入（冻结模式下也强制刷新）
 - `/memory live on|off` — **v9** 当前会话切 live/auto 注入模式（per-session，不影响其他会话）
@@ -124,13 +124,13 @@ API 端点：`GET /status`、`GET /file`、`GET /rules`、`GET /log`、`GET /bac
 3. **长会话分块分析**：不超过 `dreamMaxSessionChars` 的会话整段进入；更长的按 `dreamMapChunkChars` 切块，每块单独调一次模型提取笔记。笔记必须带引用，插件在该块原文里核对，找不到的丢弃，并按命中位置给笔记标注真实来源和日期（模型自称的来源不算数）。单次最多 `dreamMapMaxChunks` 块；预算或 token 用尽时停下，已读部分照常使用，剩余部分下一轮接着读。
 4. **整理**：模型输出严格 JSON 计划（write / delete / index）。可用 `--focus` 指定这一轮优先关注的主题。
 5. **校验**：路径必须在 memory 目录内、只允许 `.md`、操作数/大小有上限；**输入中被截断的文件（> 20000 字符）禁止整份重写，也禁止删除**；未写 `file` 的写入若推导出的文件属于另一条同 slug 的记忆，丢弃该写入。
-6. **证据检查**：读过会话时，新增非空正文行须分别带 `evidence:[{statement,quote}]`，每行都要覆盖，且引用须能在本轮读到的内容里找到；`user`/`feedback` 须来自 `[user]`。程序记录真实 sessionId/seq 或来源记忆文件。旧字符串引用仍可手动应用，但会警告其仅覆盖整次写入。大幅缩减保留警告和操作，交给自动审阅边界处理。纯整理的手动应用不强制引文，仍须人工判断。
+6. **证据检查**：读过会话时，新事实须有操作级引用，宿主核对引用是否存在并记录真实来源；新 `user`/`feedback` 事实仍须有 `[user]` 来源。完整既有用户类记忆的原句可跨文件搬运，不必重读旧会话；项目/参考记忆不能借此升级成用户偏好。仅引用自身既有记忆的用户类改写会转成待审，即使手动运行也不直接应用。引用存在不证明语义正确。宿主列出正文删行并告警；任何写入被过滤，相关批次的删除和索引改动一并停用，被过滤批次不推进会话水位线。
 7. **自动审阅边界**：自动 Dream 的新增事实、正文/元数据改写、未证明原文完整保留的删除会进入现有 review 提案，不推进会话水位线；仅保留内容的空白规范化、相同内容与元数据的重复文件删除及忠实索引修复可自动应用。已有提案会阻止新 Dream 覆盖它。手动应用仍走既有预览、哈希检查和恢复路径。
 8. **备份**当前记忆到 `.dreams/<ts>/`，然后应用（`dreamMode: 'apply'`）或写提案（`'review'`，不清 session、需人工 apply/reject）。
 8. 写文件 → 写索引 → `reconcileIndex()` 防孤儿（磁盘有文件而索引无条目会自动补回）→ 追加 `.dream-log.md` → 更新 state → 释放锁。
 9. **中途失败会选择性回滚**：回滚前把当前记忆快照到 `.dreams/<ts>-rollback/`；只处理本次计划 touch 的文件，且当前哈希必须等于“dream 应用后预期哈希”才恢复/移 trash；未触碰的文件与被并发修改的 touched 文件**原样保留**，后者返回 `conflicts:[{file,reason}]`；changelog 记 `rollback: true` 与冲突行。
 10. **成本/耗时**：plan JSON、changelog、state 记录 `durationMs`/`inputChars`/`outputChars`/`usage`（含分块分析），`/memory status` 可查。
-11. **按条应用**：`preview` 返回逐条 diff，`apply-ops <indexes>` 只执行选中操作；apply-ops 与人工 apply 都持 `.consolidate-lock`（冲突返回 `dream-locked`）。
+11. **按条应用**：`preview` 返回改前/改后全文与 `addedLines`/`removedLines` 行清单，界面和命令展示删行；`apply-ops <indexes>` 只执行选中操作。目标写入未选中时，删除必须证明原文仍保留，否则要求同时选中写入。相同文件的重复变更不被接受。apply-ops 与人工 apply 都持 `.consolidate-lock`（冲突返回 `dream-locked`）。
 
 **水位线**：每个会话读到哪一步（`seq`）、是否读完，都记在计划的 `reads` 里，**只有 apply 成功才写入 state**。dry-run、review 未批准、失败都不移动水位线；只读了一部分的长会话下一轮从断点继续；已读完的会话有新内容时只读新增部分。
 
@@ -141,7 +141,7 @@ dry-run 的 `plan.json` 会被记录为 `lastPlanPath`；`/memory dream apply`�
 ## 写入边界
 
 - `memory_save` 与 `memory_update` 共用审阅边界；`confidence:low` 和 confirm 不能被 `force:true` 绕过。未确认推断须使用低置信，模型置信度本身不是事实证据。
-- 词面策略识别到跨文件冲突时，拒绝产生第二条有效记忆，返回原文件；明确的用户纠正通过更新原文件处理。词面冲突识别仍可能漏报或误报。
+- 词面策略按语句判断极性，英文词匹配有边界；跨文件冲突进入待审队列，返回 `action:queued-review`、`pendingId` 和原文件，不立即产生第二条有效事实。`force` 不绕过审阅。词面冲突仍可能误报或漏报，批准前应查看原条目。
 - 待审更新、改名和删除保存原文件 SHA-256；批准时在存储写锁内比较，期间作者改过文件则返回 `STALE_WRITE` 并保留候选。旧版本未存哈希的提案保持兼容，没有该保护。
 - UI 保持冻结；所有新行为使用已有工具、命令与提案界面。
 
@@ -154,7 +154,7 @@ dry-run 的 `plan.json` 会被记录为 `lastPlanPath`；`/memory dream apply`�
 | `allow` | 无相似、无冲突 | 正常写入 |
 | `duplicate` | 与已有条目相似度 ≥ 0.82 | **不写**，返回已存在文件 + hint（用 `memory_update` 或 `force:true`） |
 | `possible-duplicate` | 0.55 – 0.82 | **advisory**：照常写入，结果附 `candidates` 提示（v11 起不再拦截） |
-| `conflict` | 同主题 + 极性相反（喜欢/讨厌、用/不用、always/never…） | **拒写**，返回 `action:conflict` 和原文件；明确纠正时读原条目再 `memory_update` |
+| `conflict` | 同主题语句 + 极性相反（喜欢/讨厌、用/不用、always/never…） | **待审**，返回 `action:queued-review`、`pendingId`、冲突原文件；`force` 不能绕过 |
 | `low-confidence` | `confidence:'low'` 或 `writeMode:'confirm'` | 进 **`.pending/writes/` 待审队列**，返回 `pendingId`；**force 不能绕过低置信或 confirm**，`memory_update` 同样排队 |
 
 - 审阅：UI「待确认写入」卡，或 `/memory writes`、`/memory approve <id>`、`/memory reject <id>`；批准时走正常写入（provenance/机密扫描/索引/metrics + 软删除安全）。
@@ -368,7 +368,7 @@ node scripts/verify.mjs
 - 子代理默认不注入；但子代理若显式开启写入，仍共享项目存储（官方子代理有独立目录）。
 - 自动召回是**词面匹配**：换一种说法就可能召回不到，没有 embedding，也不会让模型挑选文件。
 - Dream 不提供工具读取（没有 fact-check 工具），而是把文本送给模型；单次最多读 `sessionLookback` 个会话、`dreamMapMaxChunks` 块，读不完的留到下一轮。
-- **证据校验的边界**：结构化引用检查逐行覆盖和来源位置，仍不能证明语义推断正确；旧字符串引用只有操作级覆盖，手动纯整理不强制引文，自动语义改写必须待审；粘贴检测（`[user-pasted]`）是启发式，短粘贴和转述识别不出。
+- **证据校验的边界**：操作级引用检查来源位置，不证明语义推断正确；既有用户类事实可保留搬运，改写须审阅；手动纯整理不强制引文，自动语义改写必须待审。粘贴检测（`[user-pasted]`）是启发式，短粘贴和转述识别不出。
 - “写入混入推断”：已加默认规则（区分用户原话与推断），**效果未验证**；规则是否真的减少推断混入，需要下一轮评测。
 
 **仍未做 / 待观察**

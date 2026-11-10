@@ -96,7 +96,7 @@ Do not record architecture descriptions, file paths, APIs, configuration default
 If nothing is worth changing, return an empty operations array. A few high-value edits beat a rewrite.
 
 ## Evidence
-Every write that adds a nonempty body line must carry "evidence": an array of {"statement":"the exact new body line", "quote":"8 to 120 characters copied from a source"}. Cite EACH added line separately, including explanations. Quotes must come from the transcript, the notes' quotes, or existing memory. The host checks line coverage and finds quotes itself; do not supply source locations. A "user" or "feedback" statement needs a [user] quote. Pasted material, assistant text and tool output cannot establish what the user wants. A real quote does not prove your interpretation: do not generalize a one-off request into a permanent preference. Label unconfirmed interpretation as inference, never as a user fact. Existing unchanged lines need no citation. With no sessions available, cite the existing memories for any reworded lines; do not invent new facts.
+Each write that introduces facts needs operation-level "evidence": an array of short verbatim quotes (8 to 120 characters) from what was read. One quote may support several related lines; do not repeat the new body in the evidence. The host locates the quotes itself; do not supply source locations. A NEW "user" or "feedback" fact needs a [user] quote. Existing facts may move between user/feedback files without rereading their old sessions; project/reference text cannot establish a user preference. Pasted material, assistant text and tool output cannot establish what the user wants. A real quote proves only that the words exist, not that they support your interpretation: review semantic changes and do not generalize a one-off request into a permanent preference. Label unconfirmed interpretation as inference. Keep complete existing facts during reorganization. The host lists removed body lines in preview; explain any removal and never leave a source deletion when its destination write cannot be applied. With no sessions available, do not invent new facts.
 Unattended semantic changes are parked for human review. Keep mechanical cleanup small and preserve facts. Nothing worth changing is a valid empty plan.
 
 ## Truncated files
@@ -159,7 +159,7 @@ export function buildDreamPrompt(input = {}) {
       '## Deployment limits',
       `- operations: at most ${limits.maxOps}`,
       `- MEMORY.md: at most ~${limits.indexMaxLines} lines and ~${limits.indexMaxBytes} bytes`,
-      `- single write body: at most ${limits.maxContentBytes} bytes`,
+      `- single write body: at most ${limits.maxContentBytes} bytes and ${limits.maxFileChars} characters (it must remain fully readable next time)`,
       `- topic file bodies longer than ${limits.maxFileChars} chars are shown as head+tail excerpts and are marked ${TRUNCATED_FILE_MARKER}`,
       `- a session longer than ${limits.maxSessionChars} chars arrives as analyzed notes; what was not read yet stays for a later pass`,
       `- delete operations: ${limits.allowDelete ? 'allowed, but only for files fully absorbed by another file or clearly wrong' : 'FORBIDDEN in this deployment — do not emit any delete operation'}`,

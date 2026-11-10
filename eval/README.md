@@ -35,6 +35,10 @@ dev-01 变体 rubric 有 v1（旧，有歧义，保留复现）与 v2（冻结�
 
 前置：`DEEPSEEK_API_KEY`；已创建 `cc-memory-eval` headless profile 并 link 本插件。
 
+无模型预检会读取评估 profile 的 `package.json` 和已安装包元数据，并核对包名、版本及真实目录。只安装同版本的其他 checkout、仍启用旧 `dsh-cc-memory` bundle、或没有正确 link，都拒绝通过。真实模型 runner 也在发现工具和调用模型前执行此检查；`--fake-model` 使用合成环境，不检查本机部署。
+
+默认要求 profile 链接当前 checkout。若明确评估另一份已发布目录，可设置 `EVAL_PLUGIN_ROOT` 为该目录；输出的 `SOURCE` 行记录实际包版本和 canonical target。此变量不会改变 profile 的依赖，先用包管理器修正链接再预检。检查不输出完整配置或 API key。
+
 ```powershell
 # 无模型：场景/泄漏/装置断言（27 项）+ 冻结 manifest 校验
 node eval/validate.mjs

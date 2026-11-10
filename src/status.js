@@ -1190,6 +1190,10 @@ export function createStatusService(runtime) {
   async function dream(pctx, options = {}) {
     const action = String(options.action ?? 'run').toLowerCase();
     const agent = options.agent ?? pctx?.agent;
+    if (action === 'estimate') {
+      if (typeof rt.estimateDream !== 'function') return { ok: false, error: 'not-ready', message: 'Dream cost preview is unavailable' };
+      return { ok: true, result: lossless(await rt.estimateDream(pctx, { focus: options.focus ?? '' })) };
+    }
     if (action === 'preview') {
       if (typeof rt.previewPlan !== 'function') {
         return {

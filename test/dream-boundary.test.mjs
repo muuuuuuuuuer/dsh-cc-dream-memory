@@ -8,11 +8,12 @@ import { validateDreamPlan } from '../src/dream.js';
 const op = (extra = {}) => ({ op: 'write', scope: 'project', type: 'project', file: 'project_deploy.md', name: 'deploy', description: 'deployment', body: 'Deploy on GCP Cloud Run.', ...extra });
 const corpus = [{ tag: 'user', sessionId: 's1', seq: 7, date: '2026-11-08', text: evidence.normalizeForMatch('Deploy on GCP Cloud Run. Always use vitest.') }];
 
-test('structured evidence must cover each new body line', () => {
+test('structured evidence remains compatible as an operation-level source with a review warning', () => {
   const operation = op({ body: 'Deploy on GCP Cloud Run.\nThe release window is Friday.', evidence: [{ statement: 'Deploy on GCP Cloud Run.', quote: 'Deploy on GCP Cloud Run.' }] });
   const r = evidence.checkPlanEvidence([operation], { corpus });
-  assert.equal(r.operations.length, 0);
-  assert.match(r.dropped.join(' '), /uncovered|every new statement/i);
+  assert.equal(r.operations.length, 1);
+  assert.equal(r.operations[0].evidenceSources[0].sessionId, 's1');
+  assert.match(r.warnings.join(' '), /operation-level.*review/i);
 });
 
 test('a decimal or punctuation change is a new statement, not an unchanged fact', () => {

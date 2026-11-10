@@ -29,7 +29,8 @@ test('a detected conflicting save cannot create a second active preference, incl
   const saved = await seed(e.pctx.store);
   for (const force of [false, true]) {
     const r = await e.definitions.get('memory_save').execute({ name: 'reply preference', type: 'user', description: 'Chinese replies', content: '用户讨厌中文回复。', force }, exec);
-    assert.equal(r.action, 'conflict', JSON.stringify(r));
+    assert.equal(r.action, 'queued-review', JSON.stringify(r));
+    assert.ok((await e.mods.pending.listPendingWrites(e.paths)).some((item) => item.id === r.pendingId));
     assert.equal(r.written, false);
     assert.equal(r.existingFile, saved.file);
   }
@@ -44,7 +45,8 @@ test('a cross-file conflict on update leaves both existing files unchanged', asy
   await seed(e.pctx.store);
   const other = await seed(e.pctx.store, { name: 'other', description: 'another topic', content: 'A separate durable fact.' });
   const r = await e.definitions.get('memory_update').execute({ file: other.file, content: '用户讨厌中文回复。', description: 'Chinese replies', force: true }, exec);
-  assert.equal(r.action, 'conflict', JSON.stringify(r));
+  assert.equal(r.action, 'queued-review', JSON.stringify(r));
+  assert.ok((await e.mods.pending.listPendingWrites(e.paths)).some((item) => item.id === r.pendingId));
   assert.equal((await e.pctx.store.readEntry(other.file)).body, 'A separate durable fact.');
 });
 

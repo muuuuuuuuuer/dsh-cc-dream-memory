@@ -7,8 +7,8 @@
  * - duplicate is a hard block at `policyDuplicateThreshold`;
  * - possible-duplicate is **advisory** (v11): the write proceeds and the caller
  *   reports the near-duplicate candidates;
- * - conflict is **advisory** (v11): a same-topic, opposite-polarity candidate
- *   still gets written and the caller reports `conflicts:[{file,reason}]`;
+ * - conflict is **advisory** in this evaluator; model-originated tools use
+ *   write-review to queue same-topic, opposite-polarity clauses for review;
  * - low-confidence is only an explicit `confidence:'low'` or
  *   `writeMode:'confirm'` (v11 removed the short-body / invalid-type heuristics
  *   so ordinary preference notes are never queued).
@@ -42,6 +42,7 @@ const POSITIVE_PATTERNS = Object.freeze([
   'prefer',
   'like',
   'use',
+  'uses',
   'using',
   'should',
   'always',
@@ -120,6 +121,22 @@ const STOPWORDS = new Set([
 
 const CJK_RUN = /[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+/gu;
 const LATIN_WORD = /[a-z0-9_]+/g;
+// Keep command/file identifiers intact: legacy-deploy.sh and release-staging
+// must not become the same subject merely because both contain "deploy".
+const LATIN_ENTITY = /[a-z0-9_]+(?:[.-][a-z0-9_]+)*/g;
+
+function phrasePattern(phrase) {
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(/^[a-z]/i.test(phrase) ? `\\b${escaped}\\b` : escaped, 'g');
+}
+
+const NEGATIVE_REGEXPS = NEGATIVE_PATTERNS.map(phrasePattern);
+const POSITIVE_REGEXPS = POSITIVE_PATTERNS.map(phrasePattern);
+
+function clausesOf(text) {
+  // A period inside a filename is not a sentence boundary.
+  return String(text ?? '').toLowerCase().split(/[\n。！？!?；;，,]+|\.(?=\s|$)/u).filter((clause) => clause.trim() !== '');
+}
 
 function clamp01(value, fallback) {
   const number = Number(value);
@@ -231,17 +248,15 @@ export function entrySimilarity(candidate, entry) {
 /** Remove polarity words from a text before extracting topic entities. */
 function maskPolarity(text) {
   let masked = String(text ?? '').toLowerCase();
-  for (const phrase of [...NEGATIVE_PATTERNS, ...POSITIVE_PATTERNS]) {
-    if (masked.includes(phrase)) masked = masked.split(phrase).join(' ');
-  }
+  for (const pattern of [...NEGATIVE_REGEXPS, ...POSITIVE_REGEXPS]) masked = masked.replace(pattern, ' ');
   return masked;
 }
 
-/** Topic entities: latin words (>=4 chars, no stopwords) + CJK bigrams. */
+/** Topic entities: latin words/identifiers (>=4 chars, no stopwords) + CJK bigrams. */
 function entityTokens(text) {
   const value = maskPolarity(text);
   const tokens = new Set();
-  for (const word of value.match(LATIN_WORD) ?? []) {
+  for (const word of value.match(LATIN_ENTITY) ?? []) {
     if (word.length >= 4 && !STOPWORDS.has(word)) tokens.add(`w:${word}`);
   }
   for (const run of value.match(CJK_RUN) ?? []) {
@@ -253,28 +268,34 @@ function entityTokens(text) {
 }
 
 /**
- * Polarity of one text: `'positive'`, `'negative'` or `null` (neither, or both
- * in a way that makes the statement ambiguous).
+ * Polarity within one clause; negation governs only this clause.
  * @param {unknown} text
  * @returns {'positive'|'negative'|null}
  */
-export function polarityOf(text) {
+function clausePolarity(text) {
   let value = String(text ?? '').toLowerCase();
   let negative = false;
-  for (const phrase of NEGATIVE_PATTERNS) {
-    if (value.includes(phrase)) {
+  for (const pattern of NEGATIVE_REGEXPS) {
+    if (value.search(pattern) !== -1) {
       negative = true;
-      value = value.split(phrase).join(' ');
+      value = value.replace(pattern, ' ');
     }
   }
-  // A negation dominates: "不喜欢用 tab，应该用空格" contains both a negative and
-  // a positive phrase, and treating it as contradictory would defeat conflict
-  // detection for the exact sentences it exists for.
+  // Negation governs its own clause, never a separate positive statement.
   if (negative) return 'negative';
-  for (const phrase of POSITIVE_PATTERNS) {
-    if (value.includes(phrase)) return 'positive';
-  }
+  for (const pattern of POSITIVE_REGEXPS) if (value.search(pattern) !== -1) return 'positive';
   return null;
+}
+
+/** Overall polarity, or null when there are no signals or clauses disagree. */
+export function polarityOf(text) {
+  const polarities = new Set(clausesOf(text).map(clausePolarity).filter(Boolean));
+  return polarities.size === 1 ? [...polarities][0] : null;
+}
+
+function topicClauses(text) {
+  return clausesOf(text).map((clause) => ({ polarity: clausePolarity(clause), entities: entityTokens(clause) }))
+    .filter((clause) => clause.polarity !== null && clause.entities.size > 0);
 }
 
 /** Topic overlap in [0,1]; containment-normalized so a short option still matches. */
@@ -296,22 +317,21 @@ function entityOverlap(left, right) {
  */
 export function detectConflict(candidate, entries) {
   const normalized = normalizeCandidate(candidate);
-  const candidateText = fullText(normalized);
-  const candidatePolarity = polarityOf(candidateText);
-  if (candidatePolarity === null) return null;
-  const candidateEntities = entityTokens(candidateText);
-  if (candidateEntities.size === 0) return null;
+  const candidateClauses = topicClauses(fullText(normalized));
+  if (candidateClauses.length === 0) return null;
   for (const entry of Array.isArray(entries) ? entries : []) {
     if (!entry || typeof entry !== 'object' || typeof entry.file !== 'string' || entry.file === '') continue;
-    const entryText = fullText(entry);
-    const entryPolarity = polarityOf(entryText);
-    if (entryPolarity === null || entryPolarity === candidatePolarity) continue;
-    const overlap = entityOverlap(candidateEntities, entityTokens(entryText));
-    if (overlap < 0.5) continue;
-    return {
-      existingFile: entry.file,
-      reason: `opposite polarity about the same topic (candidate is ${candidatePolarity}, ${entry.file} is ${entryPolarity})`,
-    };
+    const entryClauses = topicClauses(fullText(entry));
+    for (const candidateClause of candidateClauses) {
+      for (const entryClause of entryClauses) {
+        if (candidateClause.polarity === entryClause.polarity) continue;
+        if (entityOverlap(candidateClause.entities, entryClause.entities) < 0.5) continue;
+        return {
+          existingFile: entry.file,
+          reason: `opposite polarity about the same topic (candidate is ${candidateClause.polarity}, ${entry.file} is ${entryClause.polarity})`,
+        };
+      }
+    }
   }
   return null;
 }
@@ -340,10 +360,10 @@ function lowConfidenceReasons(normalized, config) {
  * policy).
  *
  * Only a `duplicate` (similarity ≥ duplicateThreshold) blocks the write.
- * `conflict` and `possible-duplicate` are advisory: the caller writes the
- * memory and reports the advisory fields so the model can fix the existing
- * file or update instead. Low-confidence (`confidence:'low'` or
- * `writeMode:'confirm'`) queues the write for review.
+ * `conflict` and `possible-duplicate` are advisory return values. Tool callers
+ * use write-review to queue conflicts independently of the duplicate score;
+ * possible duplicates may still be written with advisory fields. Low-confidence
+ * (`confidence:'low'` or `writeMode:'confirm'`) also requires review.
  *
  * Return shapes:
  * - `{action:'allow'}`

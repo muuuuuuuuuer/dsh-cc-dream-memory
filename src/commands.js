@@ -25,7 +25,7 @@ const MEMORY_TYPES = Object.freeze(['user', 'feedback', 'project', 'reference'])
 const TYPE_SET = new Set(MEMORY_TYPES);
 
 const MEMORY_HINT =
-  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|writes|approve <id>|reject <id>|refresh|live on|off|user on|off|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|dream on|off|dream status|dream history|dream undo|dream run [--dry-run] [--focus <text>]|dream apply|dream reject|dream preview|dream apply-ops <indexes>]';
+  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|writes|approve <id>|reject <id>|refresh|live on|off|user on|off|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|dream on|off|dream status|dream estimate|dream history|dream undo|dream run [--dry-run] [--focus <text>]|dream apply|dream reject|dream preview|dream apply-ops <indexes>]';
 const REMEMBER_HINT = '[--type=user|feedback|project|reference] [--scope=project|user] <text>';
 
 function warn(scope, error) {
@@ -1029,6 +1029,16 @@ export function registerCommands(ctx, runtime) {
     if (sub === 'on' || sub === 'off') {
       return memoryToggle(invocation, 'autoDreamEnabled', sub === 'on', 'auto dream');
     }
+    if (sub === 'estimate') {
+      const status = await collectStatus(invocation);
+      if (!status.ok) return fail(`cc-memory: ${status.error}`);
+      try {
+        const response = await service.dream(status.pctx, { action: 'estimate', focus: typeof flags.focus === 'string' ? flags.focus : '' });
+        if (!response.ok) return fail(`dream estimate: ${response.message || response.error}`);
+        const estimate = response.result;
+        return ok(`Dream rough input estimate: ${estimate.estimatedTokens} tokens\nConfigured token limit: ${estimate.limit > 0 ? estimate.limit : 'unlimited'} (${estimate.costMode})\nActual total usage can be higher; this estimate is not a spending cap. No model was called and no memory was changed.`);
+      } catch (error) { return fail(`dream estimate: ${errorText(error)}`); }
+    }
     if (sub === 'status') {
       const status = await collectStatus(invocation);
       if (!status.ok) return fail(`cc-memory: ${status.error}`);
@@ -1769,6 +1779,7 @@ function formatDreamRun(result, dryRun) {
   if (!result || typeof result !== 'object') return 'dream run: the engine returned no result';
   const lines = [];
   lines.push(`dream run${dryRun ? ' (dry-run)' : ''}`);
+  if (Number.isFinite(result.estimatedTokens)) lines.push(`rough input estimate: ${result.estimatedTokens} tokens (actual total can be higher)`);
   if (result.ran === false) {
     lines.push(`skipped: ${result.skipReason ?? 'unknown reason'}`);
     if (result.error) lines.push(`error: ${errorText(result.error)}`);
@@ -1794,6 +1805,8 @@ function formatDreamRun(result, dryRun) {
   if (result.proposalPath) lines.push(`proposal: ${result.proposalPath}`);
   if (result.backupDir) lines.push(`backup: ${result.backupDir}`);
   if (result.error) lines.push(`error: ${errorText(result.error)}`);
+  if (Array.isArray(result.warnings)) for (const warning of result.warnings) lines.push(`warning: ${truncate(warning, 500)}`);
+  if (Array.isArray(result.dropped) && result.dropped.length > 0) lines.push(`dropped operations (review required): ${result.dropped.join('; ')}`);
   if (dryRun) lines.push('dry-run: no memory file was changed; review with /memory dream preview, then /memory dream apply.');
   return lines.join('\n');
 }
@@ -1830,6 +1843,7 @@ function formatDreamPreview(result) {
       const quote = typeof item === 'string' ? item : item?.quote;
       if (typeof quote === 'string' && quote !== '') lines.push(`      quote: "${truncate(quote, 120)}"`);
     }
+    for (const line of (Array.isArray(op.removedLines) ? op.removedLines : []).slice(0, 20)) lines.push(`      removed line ${line.line}: ${truncate(line.text, 300)}`);
   }
   if (ops.length > 40) lines.push(`  … ${ops.length - 40} more`);
   const truncated = Array.isArray(result.truncatedFiles) ? result.truncatedFiles : [];

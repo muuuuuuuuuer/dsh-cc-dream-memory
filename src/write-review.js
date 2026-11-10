@@ -8,22 +8,20 @@ export const memoryHash = (raw) => createHash('sha256').update(raw).digest('hex'
 /** Returns a tool result when the write must stop, otherwise null. */
 export async function reviewWrite({ paths, candidate, entries = [], force = false, action = 'save', file = '', name = '', content, description, source, config = {}, existing }) {
   const decision = evaluateWrite({ candidate, entries, config });
-  if (decision.action === 'low-confidence') {
+  // Check independently: neither a high similarity score nor force may hide
+  // a negation. A lexical conflict needs human review, not permanent rejection.
+  const conflict = detectConflict(candidate, entries);
+  const reasons = decision.action === 'low-confidence' ? [...decision.reasons] : [];
+  if (conflict) reasons.push(conflict.reason);
+  if (reasons.length > 0) {
     const queued = await queuePendingWrite(paths, {
       action, file, name, candidate, content, description, source,
-      reasons: decision.reasons,
+      reasons,
       ...(typeof existing?.raw === 'string' ? { expectedHash: memoryHash(existing.raw) } : {}),
     });
-    return { ok: true, written: false, action: 'queued-review', pendingId: queued.id, reasons: decision.reasons,
+    return { ok: true, written: false, action: 'queued-review', pendingId: queued.id, reasons,
+      ...(conflict ? { existingFile: conflict.existingFile, conflicts: [{ file: conflict.existingFile, reason: conflict.reason }] } : {}),
       hint: 'Queued for human review. Use /memory writes; approve with /memory approve <id>.' };
-  }
-  // Check conflict independently: a high similarity score or force flag must
-  // not hide a negation of the existing fact. This is a lexical heuristic.
-  const conflict = detectConflict(candidate, entries);
-  if (conflict) {
-    return { ok: true, written: false, action: 'conflict', existingFile: conflict.existingFile,
-      conflicts: [{ file: conflict.existingFile, reason: conflict.reason }],
-      hint: `Not written: it may contradict ${conflict.existingFile}. Read that note; if the user clearly corrected it, update its owning file instead.` };
   }
   if (!force && decision.action === 'duplicate') {
     return { ok: true, written: false, action: 'duplicate', existingFile: decision.existingFile, similarity: decision.similarity,

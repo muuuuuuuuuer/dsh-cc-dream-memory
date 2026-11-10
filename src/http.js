@@ -51,6 +51,28 @@ function isLoopbackAddress(address) {
   return value.startsWith('127.');
 }
 
+/**
+ * Trust only explicit loopback HTTP authorities, never DNS or proxy headers.
+ * URL parsing alone would accept userinfo and normalize ambiguous IP forms.
+ */
+function hasLoopbackHost(req) {
+  const host = req.headers?.host;
+  if (typeof host !== 'string') return false;
+  const authority = /^(?:localhost|127\.0\.0\.1|\[::1\])(?::([0-9]{1,5}))?$/i.exec(host);
+  if (!authority) return false;
+  if (authority[1] !== undefined && (Number(authority[1]) < 1 || Number(authority[1]) > 65535)) return false;
+  // Node can retain just the first Host in `headers`; inspect the wire fields
+  // as well so duplicate authorities cannot pass through that normalization.
+  if (Array.isArray(req.rawHeaders)) {
+    let hostCount = 0;
+    for (let index = 0; index < req.rawHeaders.length; index += 2) {
+      if (String(req.rawHeaders[index]).toLowerCase() === 'host') hostCount += 1;
+    }
+    if (hostCount !== 1) return false;
+  }
+  return true;
+}
+
 /** Reject cross-origin mutations; same-origin (or loopback host) is required. */
 function isSameOriginRequest(req) {
   const origin = req.headers?.origin;
@@ -209,12 +231,20 @@ export function createHttpHandler({ runtime, token }) {
     if (!url.pathname.startsWith(`${API_PREFIX}/`)) {
       return sendJson(res, 404, { ok: false, error: 'not-found' });
     }
+    if (!hasLoopbackHost(req)) {
+      return sendJson(res, 403, {
+        ok: false,
+        error: 'bad-host',
+        message: 'the memory API requires a loopback Host authority',
+      });
+    }
     const remoteAddress = req.socket?.remoteAddress;
     // Bridge discovery: the Web UI may start before the index injection reaches
     // it (desktop boot caches rows; a page can be older than a plugin reload).
     // The page fetches this once to obtain the same {base, token} the Host would
-    // have injected. Loopback-only; the DSH auth layer gates the route, and the
-    // token still guards every data call. Never served to a non-loopback peer.
+    // have injected. The explicit Host check above prevents DNS rebinding from
+    // exposing the token even when a hostile hostname resolves to loopback.
+    // The token still guards every data call; remote peers are rejected below.
     if (url.pathname === `${API_PREFIX}/bridge`) {
       if ((req.method ?? 'GET').toUpperCase() !== 'GET') {
         return sendJson(res, 405, { ok: false, error: 'method-not-allowed' });

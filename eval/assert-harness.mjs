@@ -16,6 +16,7 @@ import {
   validateFrozenManifest,
 } from './harness-lib.mjs';
 import { resolveDshPaths } from './dsh-paths.mjs';
+import { assertProfileSource } from './profile-source.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RUNNER = fs.readFileSync(path.join(ROOT, 'eval', 'run.mjs'), 'utf8');
@@ -28,11 +29,19 @@ function check(label, ok, detail = '') {
   if (!ok) errors.push(`${label}${detail ? `: ${detail}` : ''}`);
 }
 
-const dump = spawnSync(DSH_EXE, ['--expose-internals', DSH_CLI, '--profile', 'cc-memory-eval', '--dump-config'], {
+let profileSource;
+try {
+  profileSource = assertProfileSource({ expectedRoot: process.env.EVAL_PLUGIN_ROOT || ROOT });
+  check('evaluation profile loads the owning package/version/canonical source', true);
+} catch (error) {
+  check('evaluation profile loads the owning package/version/canonical source', false, error.message);
+}
+
+const dump = profileSource ? spawnSync(DSH_EXE, ['--expose-internals', DSH_CLI, '--profile', 'cc-memory-eval', '--dump-config'], {
   env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
   encoding: 'utf8',
   windowsHide: true,
-});
+}) : { status: 1, stdout: '', stderr: 'source preflight failed; tool discovery skipped' };
 const ids = [];
 for (const line of String(dump.stdout ?? '').split('\n')) {
   const match = line.match(/^- id: (tool-[A-Za-z0-9-]+)$/);
@@ -79,9 +88,10 @@ if (fs.existsSync(manifestFile)) {
 
 const failed = checks.filter((item) => !item.ok);
 if (process.argv.includes('--json')) {
-  console.log(JSON.stringify({ ok: failed.length === 0, contract: HARNESS_CONTRACT, checks, errors }, null, 2));
+  console.log(JSON.stringify({ ok: failed.length === 0, contract: HARNESS_CONTRACT, profileSource, checks, errors }, null, 2));
 } else {
   for (const item of checks) console.log(`${item.ok ? 'PASS' : 'FAIL'}  ${item.label}`);
+  if (profileSource) console.log(`SOURCE ${profileSource.name}@${profileSource.version} ${profileSource.target}`);
   for (const error of errors) console.log(`  ERROR ${error}`);
   console.log(failed.length === 0 ? 'RESULT: PASS (no model called)' : `RESULT: FAIL (${failed.length} checks)`);
 }

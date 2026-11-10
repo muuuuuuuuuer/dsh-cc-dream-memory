@@ -4,6 +4,12 @@
 
 First public release, under a new name.
 
+- Fixed Dream merge preservation: existing user/feedback facts can move across files; filtered writes cannot leave dependent deletions or index edits; partial apply protects merge destinations, and repeated mutations of one file are refused. Incomplete filtered batches retain their session watermarks.
+- Previously saved incomplete plans with destructive operations are refused; reject those proposals and generate a new dry-run after upgrading.
+- Dream previews now list removed body lines. Evidence is operation-level with host-resolved sources; new user facts still require typed-user evidence, while memory-sourced preference corrections require explicit review. Generated bodies must remain within the full-read limit.
+- Fixed write-conflict false positives with English word boundaries and clause-level polarity; real conflicts enter the existing review queue instead of being discarded. Balanced lexical recall and enabled recall from opted-in user memory without mixing scopes.
+- Added a model-free Dream input estimate in commands and the interface before paid dry-run; documented the 149,984-token real-project observation separately from the small synthetic demo. The existing unlimited default is explicit rather than presented as a spending cap.
+- Added an explicit loopback Host allowlist before bridge token discovery and API actions. Evaluation now verifies the installed profile's package identity and canonical source before real model execution.
 - Corrected the author and contributor metadata to list muuuuuuuuuer and Claude, with DeepSeek Harness acknowledged separately.
 - Prepared public npm publishing with verification before publish, included the security notice, and made README documentation links absolute. GitHub installation remains available while the first npm publication is pending.
 - **Renamed to `dsh-cc-dream-memory`.** npm's `dsh-cc-memory` is an unrelated plugin. Your memories stay in `$DSH_HOME/cc-memory/`. Remove the old package and install this one.

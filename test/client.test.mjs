@@ -176,8 +176,8 @@ async function mountClient(client, { localeActive = 'en', commandExecute } = {})
       inject(name, factory) {
         factory();
       },
-      register(definition) {
-        slotDefinitions.push(definition);
+      register(definition, component) {
+        slotDefinitions.push({ ...definition, component });
         return () => {};
       },
     },
@@ -235,6 +235,90 @@ function findNode(nodes, predicate) {
   return undefined;
 }
 
+/** Keep hook state between explicit renders without adding a DOM dependency. */
+function componentRenderer(react, component, props, initialStates = []) {
+  const states = [];
+  const refs = [];
+  return {
+    render(nextProps = props) {
+      props = nextProps;
+      let stateIndex = 0;
+      let refIndex = 0;
+      const originalState = react.useState;
+      const originalRef = react.useRef;
+      react.useState = (initial) => {
+        const index = stateIndex++;
+        if (!(index in states)) {
+          states[index] = index in initialStates ? initialStates[index] : typeof initial === 'function' ? initial() : initial;
+        }
+        return [states[index], (next) => {
+          states[index] = typeof next === 'function' ? next(states[index]) : next;
+        }];
+      };
+      react.useRef = (initial) => {
+        const index = refIndex++;
+        if (!(index in refs)) refs[index] = { current: initial };
+        return refs[index];
+      };
+      try {
+        return component(props);
+      } finally {
+        react.useState = originalState;
+        react.useRef = originalRef;
+      }
+    },
+  };
+}
+
+/** Reach the real Dream tab through its registered view and injected backend. */
+async function dreamTabHarness({ estimate, localeActive = 'en', estimateError = false, waiting = false, previewPlan } = {}) {
+  const actions = [];
+  const payload = makeStatusPayload({
+    config: { enabled: true, autoMemoryEnabled: true },
+    state: { lastPlanPath: waiting ? '/tmp/plan.json' : '', lastDreamMode: 'dry-run' },
+  });
+  const client = await loadClient({
+    apiBridge: { base: '/api/cc-memory', token: 'cost-preview-token' },
+    fetchImpl: async (url, options) => {
+      if (String(url).includes('/status')) return { ok: true, status: 200, json: async () => payload };
+      const body = JSON.parse(options.body);
+      actions.push(body.action);
+      if (body.action === 'preview') return { ok: true, status: 200, json: async () => ({ ok: true, result: previewPlan }) };
+      if (body.action === 'estimate') {
+        if (estimateError) return { ok: false, status: 503, json: async () => ({ ok: false, error: 'estimate-unavailable' }) };
+        const result = await estimate;
+        return { ok: true, status: 200, json: async () => ({ ok: true, result }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ ok: true, result: { ops: 1 } }) };
+    },
+  });
+  const { slotDefinitions } = await mountClient(client, { localeActive });
+  const view = findDefinition(slotDefinitions, 'conversation.view');
+  const props = view.inject({ sessionId: 'cost-preview-session' });
+  const tabInitialStates = previewPlan === undefined ? [] : [
+    { phase: 'ready', plan: await props.memBackend.previewDream(), error: '' }, [], -1,
+  ];
+  const ready = view.component(props);
+  const memoryView = findNode(ready, (node) => node.type?.name === 'MemoryView');
+  const status = client.windowObject.__CC_MEMORY_INTERNALS__.normalizeStatus(payload);
+  const viewRenderer = componentRenderer(client.react, memoryView.type, memoryView.props, [
+    'tidy', { phase: 'ready', status, error: null }, '', null,
+  ]);
+  let tabRenderer;
+  return {
+    actions,
+    render() {
+      const viewTree = viewRenderer.render();
+      const tab = findNode(viewTree, (node) => node.type?.name === 'TidyTab');
+      tabRenderer ??= componentRenderer(client.react, tab.type, tab.props, tabInitialStates);
+      return { tree: tabRenderer.render(tab.props), viewTree };
+    },
+    confirmRenderer(node) {
+      return componentRenderer(client.react, node.type, node.props);
+    },
+  };
+}
+
 /** The v7 internals hook; skip with a clear reason while ui-commands hasn't landed it. */
 function internalsOrSkip(t, client) {
   const hook = client.windowObject.__CC_MEMORY_INTERNALS__;
@@ -246,6 +330,131 @@ function internalsOrSkip(t, client) {
 }
 
 const REQUIRED_INTERNALS = ['normalizeStatus', 'normalizeFile', 'createBackend', 'renderMarkdown', 'renderInline'];
+
+test('client: Dream click shows an input estimate before confirmation can start dry-run', async () => {
+  let resolveEstimate;
+  const estimate = new Promise((resolve) => { resolveEstimate = resolve; });
+  const ui = await dreamTabHarness({ estimate });
+  const start = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node) === 'Start a dream');
+  const pending = start.props.onClick();
+  assert.deepEqual(ui.actions, ['estimate'], 'the first action must be read-only estimation');
+  resolveEstimate({ estimatedTokens: 12345, inputChars: 48000, limit: 20000, costMode: 'warn', rough: true });
+  await pending;
+  const { tree } = ui.render();
+  const text = collectText(tree);
+  assert.match(text, /12[,.]?345/);
+  assert.match(text, /20[,.]?000/);
+  assert.match(text, /input/i);
+  assert.match(text, /actual total.*higher/i);
+  assert.match(text, /not a spending cap/i);
+  assert.deepEqual(ui.actions, ['estimate'], 'showing the estimate must not run Dream');
+  const confirmation = findNode(tree, (node) => node.type?.name === 'ConfirmButton');
+  assert.ok(confirmation, 'the existing confirmation component guards the paid action');
+  const confirm = ui.confirmRenderer(confirmation);
+  confirm.render().props.onClick();
+  assert.deepEqual(ui.actions, ['estimate']);
+  confirm.render().props.onClick();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(ui.actions, ['estimate', 'dry-run']);
+});
+
+test('client: cancelling the Dream cost preview prevents the model run', async () => {
+  const ui = await dreamTabHarness({
+    estimate: { estimatedTokens: 1200, inputChars: 4000, limit: 8000, costMode: 'warn', rough: true },
+  });
+  const start = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node) === 'Start a dream');
+  await start.props.onClick();
+  const cancel = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node) === 'Cancel');
+  assert.ok(cancel, 'the preview has an explicit cancellation action');
+  cancel.props.onClick();
+  assert.deepEqual(ui.actions, ['estimate']);
+  const { tree } = ui.render();
+  assert.equal(findNode(tree, (node) => node.type?.name === 'ConfirmButton'), undefined);
+  assert.ok(findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Start a dream'));
+});
+
+test('client: a failed or malformed estimate leaves Dream unstarted with a visible retry path', async (t) => {
+  for (const options of [{ estimateError: true }, { estimate: {} }]) {
+    await t.test(JSON.stringify(options), async () => {
+      const ui = await dreamTabHarness(options);
+      const start = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node) === 'Start a dream');
+      await start.props.onClick();
+      const { tree, viewTree } = ui.render();
+      assert.deepEqual(ui.actions, ['estimate']);
+      assert.ok(findNode(viewTree, (node) => node.props?.role === 'status'), 'a failure is shown in the existing toast');
+      assert.equal(findNode(tree, (node) => node.type?.name === 'ConfirmButton'), undefined);
+      assert.ok(findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Start a dream'));
+    });
+  }
+});
+
+test('client: Dream cost preview localizes unlimited usage and also guards regeneration', async (t) => {
+  for (const [localeActive, startLabel, unlimited] of [
+    ['en', 'Dream again', /no token limit|unlimited/i],
+    ['zh', '重新 Dream', /不设.*上限|未设置.*上限|无限制/],
+  ]) {
+    await t.test(localeActive, async () => {
+      const ui = await dreamTabHarness({
+        localeActive, waiting: true,
+        estimate: { estimatedTokens: 4321, inputChars: 16000, limit: 0, costMode: 'warn', rough: true },
+      });
+      const start = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node) === startLabel);
+      assert.ok(start);
+      await start.props.onClick();
+      assert.deepEqual(ui.actions, ['estimate']);
+      assert.match(collectText(ui.render().tree), unlimited);
+      assert.match(collectText(ui.render().tree), /4[,.]?321/);
+    });
+  }
+});
+
+test('client: expanding a Dream operation lists removed body lines as literal numbered text', async (t) => {
+  for (const [localeActive, label] of [['en', 'Removed body lines'], ['zh', '将删除的正文行']]) {
+    await t.test(localeActive, async () => {
+      const before = '---\nname: old\n---\n\nkept\n  <img src=x onerror=alert(1)>\n**preference**\n\n**preference**';
+      const after = 'kept';
+      const ui = await dreamTabHarness({
+        localeActive, waiting: true,
+        previewPlan: { ops: [{
+          index: 0, op: 'write', file: 'preference.md', before, after, changed: true,
+          removedLines: [
+            { line: 2, text: '  <img src=x onerror=alert(1)>' },
+            { line: 3, text: '**preference**' },
+            { line: 4, text: '' },
+            { line: 5, text: '**preference**' },
+          ],
+          addedLines: [],
+        }] },
+      });
+      const collapsed = ui.render().tree;
+      assert.equal(collectText(collapsed).includes(label), false);
+      const expand = findNode(collapsed, (node) => node.type === 'button' && node.props['aria-expanded'] === 'false');
+      assert.ok(expand);
+      expand.props.onClick();
+      const expanded = ui.render().tree;
+      assert.ok(collectText(expanded).includes(label));
+      const removed = findNode(expanded, (node) => node.type === 'pre' && collectText(node).startsWith('2: '));
+      assert.ok(removed, 'removed lines have their own visible inventory');
+      assert.equal(collectText(removed), '2:   <img src=x onerror=alert(1)>\n3: **preference**\n4: \n5: **preference**');
+      assert.ok(removed.children.every((child) => typeof child === 'string'), 'inventory is plain text, never interpreted HTML or Markdown');
+      assert.ok(findNode(expanded, (node) => node.type === 'pre' && collectText(node) === before), 'the original before pane remains');
+      assert.ok(findNode(expanded, (node) => node.type === 'pre' && collectText(node) === after), 'the original after pane remains');
+    });
+  }
+});
+
+test('client: older Dream previews without line inventories retain their before and after panes', async () => {
+  const ui = await dreamTabHarness({
+    waiting: true,
+    previewPlan: { ops: [{ index: 0, op: 'write', file: 'old.md', before: 'old body', after: 'new body', changed: true }] },
+  });
+  const expand = findNode(ui.render().tree, (node) => node.type === 'button' && node.props['aria-expanded'] === 'false');
+  expand.props.onClick();
+  const expanded = ui.render().tree;
+  assert.ok(findNode(expanded, (node) => node.type === 'pre' && collectText(node) === 'old body'));
+  assert.ok(findNode(expanded, (node) => node.type === 'pre' && collectText(node) === 'new body'));
+  assert.equal(collectText(expanded).includes('Removed body lines'), false);
+});
 
 // ---------------------------------------------------------------------------
 // Harness / factory contract

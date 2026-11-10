@@ -132,6 +132,12 @@ window.__ModuleLoader__.load({
         'A dream reads your memories and recent conversations, merges duplicates and fixes outdated notes. You review every change before it is applied, and you can undo it under Recent dreams.',
       'tidy.generate': 'Start a dream',
       'tidy.regenerate': 'Dream again',
+      'tidy.estimateTitle': 'Before you start',
+      'tidy.estimateInput': 'Rough input estimate: {n} tokens.',
+      'tidy.estimateLimit': 'Configured token limit: {n}.',
+      'tidy.estimateUnlimited': 'No token limit is configured.',
+      'tidy.estimateHint': 'Actual total usage can be higher. This input estimate is not a spending cap.',
+      'tidy.estimateUnavailable': 'Could not estimate usage. Try again before starting Dream.',
       'tidy.generating': 'Dreaming: reading memories and recent conversations… this usually takes 1–2 minutes.',
       'tidy.nothing': 'Nothing needs a dream right now.',
       'tidy.planTitle': 'Proposed changes',
@@ -152,6 +158,7 @@ window.__ModuleLoader__.load({
       'tidy.newChars': '{n} chars',
       'tidy.before': 'Before',
       'tidy.after': 'After',
+      'tidy.removedLines': 'Removed body lines',
       'tidy.truncated': 'Too long to rewrite safely, left as is: {files}',
       'tidy.dropped': '{n} unsafe changes were left out of the plan.',
       'tidy.costExceeded': 'This plan went over the token limit.',
@@ -313,6 +320,12 @@ window.__ModuleLoader__.load({
         'Dream会读取现有记忆和最近的对话，合并重复内容、修正过时的记录。每项改动都先给你确认再应用，应用后也可以撤销。',
       'tidy.generate': '开始 Dream',
       'tidy.regenerate': '重新 Dream',
+      'tidy.estimateTitle': '开始前确认',
+      'tidy.estimateInput': '粗略估计输入约 {n} token。',
+      'tidy.estimateLimit': '已配置 token 上限：{n}。',
+      'tidy.estimateUnlimited': '未设置 token 上限。',
+      'tidy.estimateHint': '实际总消耗可能更高。这只是输入量的粗略估计，不是费用上限。',
+      'tidy.estimateUnavailable': '暂时无法估算消耗，请重试后再开始 Dream。',
       'tidy.generating': 'Dream 正在读取记忆和最近的对话，通常需要 1–2 分钟…',
       'tidy.nothing': '目前没有需要 Dream 的内容。',
       'tidy.planTitle': 'Dream 方案',
@@ -333,6 +346,7 @@ window.__ModuleLoader__.load({
       'tidy.newChars': '{n} 字',
       'tidy.before': '改前',
       'tidy.after': '改后',
+      'tidy.removedLines': '将删除的正文行',
       'tidy.truncated': '以下文件太长，方案不会改写：{files}',
       'tidy.dropped': '有 {n} 项不安全的改动已被剔除。',
       'tidy.costExceeded': '这个方案超出了 token 上限。',
@@ -1239,6 +1253,12 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       };
     }
 
+    function normalizePreviewLines(value) {
+      return Array.isArray(value) ? value
+        .filter((item) => item && Number.isInteger(item.line) && item.line > 0 && typeof item.text === 'string')
+        .map((item) => ({ line: item.line, text: item.text })) : [];
+    }
+
     /** Normalize one v7 preview operation from `POST /dream {action:'preview'}`. */
     function normalizePreviewOp(op, fallbackIndex) {
       const meta = op && typeof op === 'object' ? op : {};
@@ -1251,6 +1271,8 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         type: typeof meta.type === 'string' ? meta.type : '',
         before: typeof meta.before === 'string' ? meta.before : '',
         after: typeof meta.after === 'string' ? meta.after : '',
+        removedLines: normalizePreviewLines(meta.removedLines),
+        addedLines: normalizePreviewLines(meta.addedLines),
         changed: meta.changed === undefined ? true : Boolean(meta.changed),
       };
     }
@@ -2717,6 +2739,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       const [picked, setPicked] = React.useState([]);
       const [openOp, setOpenOp] = React.useState(-1);
       const [history, setHistory] = React.useState(status.dreamHistory.items);
+      const [estimate, setEstimate] = React.useState(null);
       const state = status.state;
       const config = status.config;
       const waiting = planWaiting(status);
@@ -2768,6 +2791,19 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       }, [status, readOnly, backend]);
 
       const generate = async () => {
+        setEstimate(null);
+        const done = await run('estimate', async () => {
+          const result = await backend.dream('estimate');
+          if (!result || result.rough !== true || !Number.isFinite(result.estimatedTokens) ||
+              result.estimatedTokens < 0 || !Number.isFinite(result.limit) || result.limit < 0) {
+            throw new Error(t('tidy.estimateUnavailable'));
+          }
+          return result;
+        }, { refresh: false });
+        if (done) setEstimate(done.value);
+      };
+      const startDream = async () => {
+        setEstimate(null);
         const done = await run('dry-run', () => backend.dream('dry-run'), {
           check: (result) => (result && result.skipped ? result.skipReason || 'skipped' : result && result.error ? result.error : ''),
         });
@@ -2903,6 +2939,14 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
                         { className: 'ccm-diff' },
                         kind !== 'create' ? pane(t('tidy.before'), op.before, false) : null,
                         kind !== 'delete' ? pane(t('tidy.after'), op.after, true) : null,
+                        op.removedLines.length > 0
+                          ? h(
+                              'div',
+                              { style: { gridColumn: '1 / -1' } },
+                              h('div', { className: 'ccm-diff-label' }, t('tidy.removedLines')),
+                              h('pre', { className: 'ccm-pre' }, op.removedLines.map((item) => item.line + ': ' + item.text).join('\n')),
+                            )
+                          : null,
                       )
                     : null,
                 );
@@ -2958,6 +3002,27 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
                         t('tidy.regenerate'),
                       ),
                 ],
+          ),
+        );
+      }
+
+      if (estimate) {
+        main = h(
+          'section',
+          { className: 'ccm-card' },
+          h('div', { className: 'ccm-card-head' }, h('span', { className: 'ccm-card-title' }, t('tidy.estimateTitle'))),
+          h('p', { className: 'ccm-plan-summary' }, t('tidy.estimateInput', { n: estimate.estimatedTokens })),
+          h('p', { className: 'ccm-plan-summary' }, estimate.limit > 0
+            ? t('tidy.estimateLimit', { n: estimate.limit }) : t('tidy.estimateUnlimited')),
+          h('p', { className: 'ccm-plan-summary ccm-setting-hint' }, t('tidy.estimateHint')),
+          h(
+            'div',
+            { className: 'ccm-foot' },
+            h(ConfirmButton, {
+              className: 'ccm-btn-primary', icon: 'sparkle', label: t('tidy.generate'),
+              disabled: !idle || !canRun, onConfirm: startDream, t,
+            }),
+            h('button', { type: 'button', className: 'ccm-btn', disabled: !idle, onClick: () => setEstimate(null) }, t('btn.cancel')),
           ),
         );
       }

@@ -41,6 +41,7 @@ import {
   validateFrozenManifest,
 } from './harness-lib.mjs';
 import { resolveDshPaths } from './dsh-paths.mjs';
+import { assertProfileSource } from './profile-source.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_SCENARIO_FILE = path.join(ROOT, 'eval', 'scenarios.dev.json');
@@ -697,6 +698,13 @@ async function main() {
     return;
   }
   if (!OPTIONS.fakeModel) {
+    try {
+      assertProfileSource({ expectedRoot: process.env.EVAL_PLUGIN_ROOT || ROOT });
+    } catch (error) {
+      console.error(`[eval] ${error.message}`);
+      console.error('[eval] refusing to start: the evaluation profile does not load the intended source');
+      process.exit(1);
+    }
     if (!process.env.DEEPSEEK_API_KEY) {
       console.error('DEEPSEEK_API_KEY is not set in this process environment; export it before running the eval.');
       process.exit(1);

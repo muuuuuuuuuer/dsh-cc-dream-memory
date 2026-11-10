@@ -65,7 +65,7 @@
 | `src/store.js` | 记忆文件 CRUD、索引维护、预算截断、unicode 文件名、冲突后缀、软删除、索引一致性、中文 bigram 检索 | `MemoryStore`, `MEMORY_TYPES`, `slugify` |
 | `src/state.js` | 项目状态 JSON：lastDreamAt、sessionsSince、dreamProcessedSessions（水位线）、lastPlanPath、pendingProposal、连续失败数 | `ProjectState` |
 | `src/inject.js` | 每 agent 注册 `systemPrompt.context`；会话级冻结/live 两种模式；compaction 刷新；子会话开关 | `registerInjection`, `buildInjectionText`, `CONTEXT_NAME` |
-| `src/write-review.js` | 模型写入的共用边界：低置信/confirm 待审、冲突拒写、force 仅绕过重复 | `reviewWrite`, `memoryHash` |
+| `src/write-review.js` | 模型写入的共用边界：低置信/confirm/冲突待审，force 仅绕过重复 | `reviewWrite`, `memoryHash` |
 | `src/tools.js` | 4 个 `memory_*` 工具（JSON Schema + output.render）；关闭态门控 | `registerTools` |
 | `src/commands.js` | `/memory` 子命令族、`/remember`；纯函数解析器；JSON 输出 | `registerCommands`, `parseCommandLine`, `parseRememberInput` |
 | `src/scheduler.js` | 监听 `session/event` 的 `turn/end`；auto dream 闸门（含退避）；跳过 subagent 会话 | `registerScheduler` |
@@ -338,7 +338,8 @@ agent/pre-step（异步瀑布）
   ├─ 先 await next()，拿到本步决策；被拒绝的步骤原样返回
   ├─ 取本步消息里用户手打的文本（source.kind 为空或 'user'）；没有就什么也不做
   ├─ selectRecall：与索引的 name/description 做词面匹配
-  │     至少命中 2 个词（user 类 3 个）；超过 400 字符的长消息还要求覆盖率 ≥ 0.4
+  │     通常需 2 个独立命中（user 类 3 个），连续重叠中文 bigram 合为一组；名称中的具体词或连续强短语可触发普通条目
+  │     超过 400 字符的长消息仍要求覆盖率 ≥ 0.4；用户空间启用后同时检索并以 scope:file 去重
   │     本会话已附加过的不再附加；压缩后清空重新计算
   └─ 追加 {source.kind:'plugin:cc-memory-recall'} 消息（标明是背景、可能过时）
 ```
@@ -391,17 +392,18 @@ DreamEngine.run({force, dryRun, trigger, noSessions, focus})
  7) extractJsonPlan()：支持 ```json 代码块/裸对象；失败 → 释放锁 + markDreamFailed
  8) validateDreamPlan(plan,{config,existingFiles,truncatedFiles})：
       op 数 ≤ dreamMaxOps=40；路径白名单 .md + scope 内；type 枚举；
-      body ≤ maxContentBytes=128KB；delete 需 dreamAllowDelete；truncated 文件拒绝 write/delete
+      body ≤ maxContentBytes=128KB 且 ≤ dreamMaxFileChars，避免下轮无法完整读取；delete 需 dreamAllowDelete；truncated 文件拒绝 write/delete；同文件不能重复变更
  9) 机密扫描 + checkPlanEvidence()：
-      读过会话时，新增正文行须分别有 evidence:{statement,quote}（quote 归一化后 ≥6 字符，能在本轮输入中找到）；
-      user/feedback 类须引用 [user] 行；
+      读过会话时，新事实须有操作级 evidence（quote 归一化后 ≥6 字符，能在本轮输入中找到）；
+      新 user/feedback 事实须引用 [user]，完整既有用户类原句可跨文件搬运；仅基于原记忆的用户类改写即使手动也转待审；
+      任意写入被过滤则移除破坏性删除和索引操作，不推进该批会话水位线；预览列出所有正文删行；
       ≥400 字符的文件缩到一半以下：保留操作并警告；auto 进入 review，不推进水位线
 10) 备份：<projectDir>/.dreams/<ts>/ （apply 时复制全部 memory 文件）
 11) 分支：
       dry-run → 只写 plan.json（applied:false，含 reads/droppedSessions），state.setLastPlan(path)
       review  → 写 .pending/<ts>.json，setPendingProposal，不 done、不清 sessions
       apply   → 逐 op 执行 → writeIndex → reconcileIndex() → changelog → markDreamDone
-                → clearSessions(sessions+droppedSessions,{reads})   # 水位线只在这里移动
+                → 没有被过滤操作时 clearSessions(sessions+droppedSessions,{reads})   # 水位线只在这里移动
       apply-ops → 只应用选中项；clearSessions 不带 reads，水位线不动
 12) 失败：executePlan 内捕获 → 按应用后哈希选择性回滚（并发修改的文件保留并报 conflicts）
            → markDreamFailed（consecutiveFailures+1）→ 返回 {applied:false, rolledBack:true}
@@ -622,6 +624,6 @@ DreamEngine.run({force, dryRun, trigger, noSessions, focus})
 
 ## 0.11.1 可靠性边界修订
 
-模型 save/update 的执行边界统一到 write-review.js；底层 policy 仍提供词面 advisory 评估，工具边界拒绝冲突，不将 advisory 当成写入授权。更新与待审批准使用存储写锁内的 SHA-256 比较保护并发编辑。
+模型 save/update 的执行边界统一到 write-review.js；底层 policy 提供按语句的词面评估，工具边界将冲突放入待审队列，不将 advisory 当成写入授权。更新与待审批准使用存储写锁内的 SHA-256 比较保护并发编辑。
 
-Dream 的 evidence 支持逐新增行的 `{statement,quote}`；来源位置由本轮输入确定，包含短会话和长会话笔记的 sessionId/seq。原始字符串引用兼容但附审阅警告。该检查证明覆盖和引用存在，不证明语义蕴含。自动 Dream 的语义修改先进入提案；纯机械修改才直接应用。大幅缩减保留为待审操作，已有提案阻止后续生成覆盖。
+Dream 的 evidence 使用操作级引用；兼容旧 `{statement,quote}`，来源位置由宿主输入确定，包含短会话和长会话笔记的 sessionId/seq。检查证明引用存在，不证明语义蕴含。自动 Dream 的语义修改先进入提案；纯机械修改才直接应用。既有用户类原句可以搬运，改写转审阅；每次预览列出正文删行，已有提案阻止后续生成覆盖。`POST /dream {action:'estimate'}` 和 `/memory dream estimate` 只读估算输入、不调用模型；界面在付费 dry-run 前展示估算并要求确认。

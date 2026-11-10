@@ -424,7 +424,8 @@ test('v9 tools: memory_save duplicate/conflict/low-confidence/confirm outcomes',
   );
   assert.equal(conflict.ok, true, JSON.stringify(conflict));
   assert.equal(conflict.written, false, 'conflicts must not create a second active fact');
-  assert.equal(conflict.action, 'conflict', JSON.stringify(conflict));
+  assert.equal(conflict.action, 'queued-review', JSON.stringify(conflict));
+  assert.ok((await env.mods.pending.listPendingWrites(env.pctx.paths)).some((item) => item.id === conflict.pendingId));
   assert.ok(Array.isArray(conflict.conflicts) && conflict.conflicts.length >= 1, JSON.stringify(conflict));
   assert.equal(typeof conflict.conflicts[0].file, 'string');
   assert.equal(typeof conflict.conflicts[0].reason, 'string');

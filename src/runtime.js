@@ -419,6 +419,11 @@ export class MemoryRuntime {
     return this.enginePromise;
   }
 
+  async estimateDream(pctx, options = {}) {
+    const engine = await this.engine();
+    return engine.estimate({ pctx, ...options });
+  }
+
   /**
    * Read the newest available dream plan: a review proposal first, then the last
    * dry-run plan. Both are plan JSON files recorded in the project state.

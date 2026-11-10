@@ -46,8 +46,77 @@ test('a single common word is not enough', () => {
   assert.deepEqual(selectRecall({ query: '这个项目怎么样', entries: ENTRIES }), [], '"项目" appears everywhere');
 });
 
+test('one specific English word in a memory name can recall a short request', () => {
+  for (const [name, query] of [
+    ['Deploy process', 'how do I deploy this?'],
+    ['Handoff notes format', 'write handoff notes'],
+  ]) {
+    const entries = [entry('topic.md', name, 'Follow the saved procedure.')];
+    assert.deepEqual(files(selectRecall({ query, entries })), ['topic.md'], query);
+  }
+});
+
+test('one name keyword still requires a whole specific word', () => {
+  for (const [name, description, query] of [
+    ['Deploy process', 'Follow the saved procedure.', 'redeploy this'],
+    ['Handoff notes format', 'Follow the saved procedure.', 'change the format'],
+    ['Project guide', 'deploy using the release procedure', 'how do I deploy this?'],
+    ['Database settings', 'Follow the saved procedure.', 'database unavailable'],
+  ]) {
+    assert.deepEqual(selectRecall({ query, entries: [entry('topic.md', name, description)] }), [], query);
+  }
+});
+
+test('overlapping Chinese bigrams do not turn a shared database topic into a migration request', () => {
+  const entries = [entry('migration.md', '数据库迁移', '迁移前做好备份并准备回滚')];
+  assert.deepEqual(selectRecall({ query: '数据库连不上了', entries }), []);
+  assert.deepEqual(selectRecall({ query: '数据库，数据库，数据库', entries }), []);
+});
+
+test('a meaningful Chinese word in the name can recall a short request', () => {
+  const entries = [entry('migration.md', '数据库迁移', '迁移前做好备份并准备回滚')];
+  assert.deepEqual(files(selectRecall({ query: '怎么做迁移', entries })), ['migration.md']);
+});
+
+test('Chinese strong matches require a word or a genuinely contiguous long phrase', () => {
+  const entries = [entry('topic.md', '交接格式', '在数据库中保存交接文档')];
+  assert.deepEqual(selectRecall({ query: '接格', entries }), [], 'cross-word substring is not a name keyword');
+  assert.deepEqual(selectRecall({ query: '数据和据库', entries }), [], 'separate fragments are not a four-character phrase');
+  assert.deepEqual(files(selectRecall({ query: '整理交接文档', entries })), ['topic.md']);
+});
+
+test('a long shared Chinese phrase still needs a non-generic word', () => {
+  for (const query of ['我们可以', '在数据库中']) {
+    const entries = [entry('migration.md', '数据库迁移', '我们可以在数据库中执行迁移')];
+    assert.deepEqual(selectRecall({ query, entries }), [], query);
+  }
+});
+
+test('one continuous Chinese segment does not outrank two independent topic words', () => {
+  const entries = [
+    entry('migration.md', '数据库迁移', ''),
+    entry('rollback.md', 'cloud rollback', ''),
+  ];
+  assert.deepEqual(files(selectRecall({ query: '数据库迁移 cloud rollback', entries, maxFiles: 1 })), ['rollback.md']);
+});
+
+test('a strong name match does not bypass long-query coverage', () => {
+  const entries = [entry('deploy.md', 'Deploy process', 'cloud release rollback staging monitoring approval traffic')];
+  assert.deepEqual(selectRecall({ query: `deploy ${'unrelated mathematics explanation '.repeat(30)}`, entries }), []);
+});
+
 test('profile memories need a request actually about them', () => {
   assert.deepEqual(selectRecall({ query: '中文注释要不要加', entries: ENTRIES }), [], 'one shared word does not pull in the user profile');
+});
+
+test('profile memories keep three independent matches even for a strong name or Chinese phrase', () => {
+  const profiles = [
+    entry('profile.md', 'Deployment preference', 'cloud region language', 'user'),
+    entry('zh_profile.md', '中文回复风格', '希望用中文回答', 'user'),
+  ];
+  assert.deepEqual(selectRecall({ query: 'deployment cloud', entries: profiles }), []);
+  assert.deepEqual(selectRecall({ query: '中文回复风格', entries: profiles }), []);
+  assert.deepEqual(files(selectRecall({ query: 'deployment cloud region', entries: profiles })), ['profile.md']);
 });
 
 test('a memory already shown in this session is not attached again', () => {
@@ -125,6 +194,34 @@ test('the same memory is attached once per session', async (t) => {
   const message = userMessage('把服务部署到 cloud run 要注意什么');
   assert.equal((await agentCtx.preStep([message])).messages.length, 2);
   assert.equal((await agentCtx.preStep([message])).messages.length, 1);
+});
+
+test('enabled user-scope memories are read from their scope and filename collisions recall once each', async (t) => {
+  const { env, agentCtx } = await recallEnv(t, { userMemoryEnabled: true, autoRecallMaxFiles: 1 });
+  const project = await env.pctx.store.saveEntry({ name: 'Shared handoff', type: 'feedback', description: 'handoff zebra', content: 'Project handoff marker.' });
+  const user = await env.pctx.store.saveEntry({ scope: 'user', name: 'Shared handoff', type: 'feedback', description: 'handoff zebra', content: 'User handoff marker.' });
+  assert.equal(project.file, user.file, 'the fixture has the same filename in each scope');
+  const message = userMessage('handoff zebra');
+  const first = (await agentCtx.preStep([message])).messages;
+  const second = (await agentCtx.preStep([message])).messages;
+  assert.equal(first.length, 2);
+  assert.equal(second.length, 2, 'showing the project file must not suppress the user file');
+  const text = [first[1].content[0].text, second[1].content[0].text].join('\n');
+  assert.match(text, /Project handoff marker/);
+  assert.match(text, /User handoff marker/);
+  assert.match(text, /user\/feedback_shared_handoff\.md/);
+  assert.equal((await agentCtx.preStep([message])).messages.length, 1);
+});
+
+test('disabled user scope is never enumerated by recall', async (t) => {
+  const { env, agentCtx } = await recallEnv(t);
+  const list = env.pctx.store.listEntries.bind(env.pctx.store);
+  env.pctx.store.listEntries = (scope) => {
+    assert.equal(scope, 'project', 'disabled user memory must remain untouched');
+    return list(scope);
+  };
+  const decision = await agentCtx.preStep([userMessage('把服务部署到 cloud run')]);
+  assert.equal(decision.messages.length, 2, 'project recall still works while user scope is off');
 });
 
 test('steps without a typed user message add nothing', async (t) => {

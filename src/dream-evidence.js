@@ -79,9 +79,39 @@ export function locateQuote(quote, blocks) {
   return blocks.find((block) => block.text.includes(needle)) ?? null;
 }
 
-const statementKey = (line) => String(line ?? '').trim().replace(/\s+/g, ' ');
+const statementKey = (line) => String(line ?? '').trimEnd();
 function statementsOf(body) {
   return String(body ?? '').split(/\r\n|\r|\n/).map(statementKey).filter(Boolean);
+}
+
+/** Content-line inventory, preserving indentation, duplicates and line numbers. */
+export function bodyLineChanges(before, after) {
+  const lines = value => String(value ?? '').replace(/\r\n?/g, '\n').split('\n');
+  const oldLines = lines(before);
+  const newLines = lines(after);
+  const unmatched = (source, target) => {
+    const remaining = new Map();
+    for (const text of target) remaining.set(text, (remaining.get(text) ?? 0) + 1);
+    return source.flatMap((text, index) => {
+      const count = remaining.get(text) ?? 0;
+      if (count > 0) { remaining.set(text, count - 1); return []; }
+      return text.trim() ? [{ line: index + 1, text }] : [];
+    });
+  };
+  return { addedLines: unmatched(newLines, oldLines), removedLines: unmatched(oldLines, newLines) };
+}
+
+/** Without explicit model dependencies, a failed write invalidates destructive follow-ups. */
+export function dropDestructiveDependents(original, accepted) {
+  const rejectedWrite = (original ?? []).filter(op => op?.op === 'write').length
+    > (accepted ?? []).filter(op => op?.op === 'write').length;
+  const dropped = [];
+  const operations = (accepted ?? []).filter(op => {
+    if (!rejectedWrite || (op.op !== 'delete' && op.op !== 'index')) return true;
+    dropped.push(`${op.op}${op.file ? ` ${op.file}` : ''}: dropped dependency because a write was rejected; regenerate the plan`);
+    return false;
+  });
+  return { operations, dropped };
 }
 
 /**
@@ -102,45 +132,61 @@ export function checkPlanEvidence(operations, { corpus = [], memoryFiles = [], r
     }
     const previous = files.get(op.file);
     const oldBody = typeof previous?.body === 'string' && previous.truncated !== true ? previous.body : '';
+    const changes = bodyLineChanges(oldBody, op.body);
+    if (changes.removedLines.length > 0) warnings.push(`write ${op.file}: removes ${changes.removedLines.length} existing body line(s); inspect the removed lines in preview before applying`);
     if (oldBody.length >= SHRINK_MIN_CHARS && String(op.body ?? '').length < oldBody.length * SHRINK_MIN_RATIO) {
       const message = `write ${op.file}: shrinks the file from ${oldBody.length} to ${String(op.body ?? '').length} chars`;
       warnings.push(`${message}; review before applying`);
     }
-    const known = new Set(statementsOf(oldBody));
+    // Existing user/feedback facts can move without rereading their old sessions.
+    // Project/reference text cannot be laundered into a new user preference.
+    const needsUser = op.type === 'user' || op.type === 'feedback';
+    const known = new Set(memoryFiles
+      .filter(file => !file.truncated && (file.scope ?? 'project') === (op.scope ?? 'project')
+        && (!needsUser || file.type === 'user' || file.type === 'feedback'
+          || (file.file === op.file && !file.type)))
+      .flatMap(file => statementsOf(file.body)));
     const added = statementsOf(op.body).filter((line) => !known.has(line));
     if (requireEvidence && added.length > 0) {
       const citations = Array.isArray(op.evidence) ? op.evidence : [];
-      const structured = citations.some((item) => item && typeof item === 'object');
-      const covered = new Set();
       const verified = [];
+      const memoryRewriteSources = [];
       for (const item of citations) {
         const quote = typeof item === 'string' ? item : item?.quote;
         const statement = typeof item?.statement === 'string' ? item.statement : '';
         const needle = normalizeForMatch(quote);
         if (needle.length < MIN_QUOTE_CHARS) continue;
         const matches = corpus.filter((block) => block.text.includes(needle));
-        const needsUser = op.type === 'user' || op.type === 'feedback';
         const located = needsUser ? matches.find((block) => block.tag === 'user') : matches[0];
+        if (!located && needsUser && !previous?.truncated && ['user', 'feedback'].includes(previous?.type)) {
+          const ownMemory = matches.find(block => block.tag === 'memory' && block.file === op.file);
+          if (ownMemory) {
+            const { text: _text, ...source } = ownMemory;
+            memoryRewriteSources.push({ quote, ...source });
+          }
+        }
         if (!located) continue;
-        if (structured && (!statement || !added.includes(statementKey(statement)))) continue;
-        covered.add(statementKey(statement));
+        if (statement && !statementsOf(op.body).includes(statementKey(statement))) continue;
         const { text: _text, ...source } = located;
         verified.push({ ...(statement ? { statement } : {}), quote, ...source });
+      }
+      if (verified.length === 0 && memoryRewriteSources.length > 0) {
+        op = { ...op, requiresReview: true, evidenceSources: memoryRewriteSources };
+        warnings.push(`write ${op.file}: existing-memory rewording has no fresh [user] evidence; explicit review required`);
+        kept.push(op);
+        continue;
       }
       if (verified.length === 0) {
         dropped.push(`write ${op.file}: adds statements without evidence from an allowed source${op.type === 'user' || op.type === 'feedback' ? ' ([user] required)' : ''}`);
         continue;
       }
-      if (structured && added.some((statement) => !covered.has(statement))) {
-        dropped.push(`write ${op.file}: uncovered new statements; cite every new statement separately`);
-        continue;
-      }
-      if (!structured) warnings.push(`write ${op.file}: legacy operation-level evidence; review every added statement before applying`);
+      warnings.push(`write ${op.file}: operation-level evidence establishes a source, not semantic support; review the added statements before applying`);
       op = { ...op, evidenceSources: verified };
     }
     kept.push(op);
   }
-  return { operations: kept, dropped, warnings };
+  const guarded = dropDestructiveDependents(operations, kept);
+  return { operations: guarded.operations, dropped: [...dropped, ...guarded.dropped], warnings };
 }
 
 /** Whitespace-only canonicalization; case and punctuation can carry meaning. */

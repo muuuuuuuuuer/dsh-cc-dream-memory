@@ -29,7 +29,7 @@ import { createHash } from 'node:crypto';
 import { DREAM_SYSTEM_PROMPT, buildDreamPrompt } from './dream-prompt.js';
 import { gatherDreamInput, pruneProbeSessions } from './dream-input.js';
 import { analyzeLongSessions, plannedAnalysisChars } from './dream-map.js';
-import { buildEvidenceCorpus, checkPlanEvidence, collectStaleReferences, automaticReviewReasons } from './dream-evidence.js';
+import { buildEvidenceCorpus, checkPlanEvidence, collectStaleReferences, automaticReviewReasons, bodyLineChanges, dropDestructiveDependents } from './dream-evidence.js';
 
 /** Topic file names accepted from the model. Mirrors the v2 memory store. */
 const MEMORY_FILE_RE = /^[\p{L}\p{N}._-]+\.md$/u;
@@ -335,6 +335,7 @@ function normalizeConfig(config) {
     dreamMaxOps: positiveInt(source.dreamMaxOps, DEFAULT_LIMITS.dreamMaxOps),
     dreamAllowDelete: source.dreamAllowDelete === true,
     maxContentBytes: positiveInt(source.maxContentBytes, DEFAULT_LIMITS.maxContentBytes),
+    dreamMaxFileChars: positiveInt(source.dreamMaxFileChars, 20_000),
   };
 }
 
@@ -564,6 +565,10 @@ export function validateDreamPlan(plan, options = {}) {
         dropped.push(`${label}: write body is ${byteLength(body)} bytes, limit is ${cfg.maxContentBytes}`);
         continue;
       }
+      if (body.length > cfg.dreamMaxFileChars) {
+        dropped.push(`${label}: write body exceeds the full-read limit (dreamMaxFileChars=${cfg.dreamMaxFileChars}); split the memory before consolidation`);
+        continue;
+      }
       const evidence = Array.isArray(op.evidence)
         ? op.evidence.slice(0, 40).flatMap((item) => {
           if (typeof item === 'string' && item.trim()) return [item.slice(0, 300)];
@@ -634,6 +639,13 @@ export function validateDreamPlan(plan, options = {}) {
     });
   }
 
+  const targets = new Set();
+  for (const op of normalized.operations) {
+    if (op.op === 'index') continue;
+    const target = `${op.scope}:${op.file.toLowerCase()}`;
+    if (targets.has(target)) return { ok: false, plan: normalized, dropped, error: `multiple mutations target the same memory file: ${op.file}` };
+    targets.add(target);
+  }
   return { ok: true, plan: normalized, dropped };
 }
 
@@ -1262,6 +1274,21 @@ export class DreamEngine {
     return this.config.dreamMode === 'review' ? 'review' : 'apply';
   }
 
+  /** Read-only preflight; no model request, lock, metrics or session watermark writes. */
+  async estimate({ pctx, noSessions = false, focus = '' } = {}) {
+    if (!pctx?.store || !pctx?.state) throw new Error('no-project');
+    const config = this.config;
+    const input = await gatherDreamInput({ ctx: this.ctx, store: pctx.store, config,
+      workspaceDir: pctx.workspaceDir, state: pctx.state, noSessions });
+    input.staleReferences = collectStaleReferences(input.memory.files, [pctx.workspaceDir, pctx.paths?.projectRoot]);
+    const prompt = buildDreamPrompt({ ...input, focus: String(focus).trim().slice(0, 500),
+      limits: dreamLimits(config), workspaceDir: pctx.workspaceDir, trigger: 'manual' });
+    const inputChars = prompt.length + DREAM_SYSTEM_PROMPT.length + plannedAnalysisChars(input.sessions, config);
+    return { estimatedTokens: estimateInputTokens(inputChars), inputChars, limit: maxTotalTokensLimit(config),
+      costMode: dreamCostModeOf(config), rough: true, sessions: input.sessions.length,
+      warnings: input.errors };
+  }
+
   /**
    * Run one dream pass.
    * @param {{pctx?:object, agent?:object, force?:boolean, dryRun?:boolean,
@@ -1505,10 +1532,12 @@ export class DreamEngine {
         requireEvidence: input.sessions.length > 0,
         unattended: trigger === 'auto',
       });
-      plan.operations = evidence.operations;
+      const dependencies = dropDestructiveDependents(parsed.operations, evidence.operations);
+      plan.operations = dependencies.operations;
       const reviewReasons = trigger === 'auto' ? automaticReviewReasons(plan.operations, input.memory.files) : [];
+      for (const op of plan.operations) if (op.requiresReview) reviewReasons.push(`write ${op.file}: memory-sourced user/feedback rewording requires explicit review`);
       if (reviewReasons.length > 0) mode = 'review';
-      dropped = [...validation.dropped, ...secretScan.dropped, ...evidence.dropped];
+      dropped = [...validation.dropped, ...secretScan.dropped, ...evidence.dropped, ...dependencies.dropped];
       const planWarnings = [...secretScan.warnings, ...evidence.warnings, ...reviewReasons];
       notes = planWarnings.length > 0
         ? oneLine([plan.notes, ...planWarnings].filter(Boolean).join(' — '), 2000)
@@ -1970,7 +1999,7 @@ export class DreamEngine {
         usage,
         costExceeded,
       });
-      await callState(state, 'clearSessions', [...sessionIds, ...input.droppedSessions], { reads: input.reads });
+      if (dropped.length === 0) await callState(state, 'clearSessions', [...sessionIds, ...input.droppedSessions], { reads: input.reads });
       await callState(state, 'clearPendingProposal', { silent: true });
       await callState(state, 'clearLastPlan');
       this.invalidate(agent, project);
@@ -2075,6 +2104,10 @@ export class DreamEngine {
     if (!this.config.enabled) return fail('disabled');
     if (this.config.autoMemoryEnabled === false) return fail('auto-memory-disabled');
     if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return fail('invalid-proposal');
+    if (Array.isArray(plan.dropped) && plan.dropped.length > 0
+      && Array.isArray(plan.operations) && plan.operations.some(op => op?.op === 'delete' || op?.op === 'index')) {
+      return fail('incomplete plan contains destructive operations after filtering; reject it and regenerate a new dry-run plan');
+    }
 
     // One dream at a time: auto dream uses the same `.consolidate-lock`, so a
     // manual apply must not run concurrently with it (TTL: lockTtlMs, 1h).
@@ -2113,8 +2146,9 @@ export class DreamEngine {
 
       // Secret scan on the writes that are about to be persisted.
       const secretScan = await this.scanOperationSecrets(normalized.operations, this.config);
-      normalized.operations = secretScan.operations;
-      const dropped = [...validation.dropped, ...secretScan.dropped];
+      const dependencies = dropDestructiveDependents(plan.operations, secretScan.operations);
+      normalized.operations = dependencies.operations;
+      const dropped = [...(Array.isArray(plan.dropped) ? plan.dropped : []), ...validation.dropped, ...secretScan.dropped, ...dependencies.dropped];
       const notes = secretScan.warnings.length > 0
         ? oneLine([normalized.notes, ...secretScan.warnings].filter(Boolean).join(' — '), 2000)
         : normalized.notes;
@@ -2145,7 +2179,7 @@ export class DreamEngine {
           costExceeded,
           ...metrics,
         });
-        await callState(state, 'clearSessions', [...rawSessions, ...normalizeStringArray(plan.droppedSessions)], { reads: Array.isArray(plan.reads) ? plan.reads : [] });
+        if (dropped.length === 0) await callState(state, 'clearSessions', [...rawSessions, ...normalizeStringArray(plan.droppedSessions)], { reads: Array.isArray(plan.reads) ? plan.reads : [] });
         await callState(state, 'clearPendingProposal', { silent: true });
         await callState(state, 'clearLastPlan');
         failure = false;
@@ -2255,7 +2289,7 @@ export class DreamEngine {
         costExceeded,
         ...metrics,
       });
-      await callState(state, 'clearSessions', [...rawSessions, ...normalizeStringArray(plan.droppedSessions)], { reads: Array.isArray(plan.reads) ? plan.reads : [] });
+      if (dropped.length === 0) await callState(state, 'clearSessions', [...rawSessions, ...normalizeStringArray(plan.droppedSessions)], { reads: Array.isArray(plan.reads) ? plan.reads : [] });
       await callState(state, 'clearPendingProposal', { silent: true });
       await callState(state, 'clearLastPlan');
       this.invalidate(agent, project);
@@ -2510,7 +2544,7 @@ export class DreamEngine {
       dropped: Array.isArray(plan.dropped) ? plan.dropped.filter((entry) => typeof entry === 'string') : [],
     };
     // v8: carry the plan's cost fields so the UI can show them in the diff panel.
-    for (const key of ['durationMs', 'inputChars', 'outputChars', 'usage']) {
+    for (const key of ['durationMs', 'inputChars', 'outputChars', 'usage', 'estimatedTokens', 'limit', 'costMode', 'warnings']) {
       if (plan[key] !== undefined) context[key] = plan[key];
     }
     if (plan.costExceeded === true) context.costExceeded = true;
@@ -2558,12 +2592,14 @@ export class DreamEngine {
         const current = await readCurrent(op.file);
         op.before = current.raw;
         op.changed = !current.exists || current.body !== op.after;
+        Object.assign(op, bodyLineChanges(current.body, op.after));
       } else if (kind === 'delete') {
         op.file = typeof raw.file === 'string' ? raw.file : '';
         op.after = '';
         const current = await readCurrent(op.file);
         op.before = current.raw;
         op.changed = current.exists;
+        Object.assign(op, bodyLineChanges(current.body, ''));
       } else {
         op.file = scope === 'user' ? 'user/MEMORY.md' : 'MEMORY.md';
         try {
@@ -2607,6 +2643,10 @@ export class DreamEngine {
     const rawOperations = Array.isArray(plan.operations) ? plan.operations : [];
     const selection = normalizeIndexes(indexes, rawOperations.length);
     if (!selection.ok) return fail(selection.error);
+    if (Array.isArray(plan.dropped) && plan.dropped.length > 0
+      && selection.indexes.some(index => ['delete', 'index'].includes(rawOperations[index]?.op))) {
+      return fail('incomplete plan contains destructive operations after filtering; reject it and regenerate a new dry-run plan');
+    }
 
     let lock;
     try {
@@ -2652,12 +2692,40 @@ export class DreamEngine {
         }
         selected.push(validation.plan.operations[0]);
       }
+      const combinedValidation = validateDreamPlan({ operations: selected }, { config: this.config, existingFiles, truncatedFiles });
+      if (!combinedValidation.ok) return fail(combinedValidation.error);
+      // A selective apply must not remove facts awaiting an unselected merge write.
+      for (const deletion of selected.filter(op => op.op === 'delete')) {
+        let source;
+        try { source = await store.readEntry(deletion.file, 'project'); } catch { continue; }
+        const lines = String(source.body ?? '').split(/\r?\n/).filter(line => line.trim());
+        const destinations = rawOperations.filter(op => op?.op === 'write' && op.file !== deletion.file
+          && !selected.some(other => other.op === 'delete' && other.file === op.file));
+        const plannedLines = new Set(destinations.flatMap(op => String(op.body ?? '').split(/\r?\n/)));
+        const omittedWrite = destinations.some(destination => !selected.some(op => op.op === 'write' && op.file === destination.file));
+        // Paraphrased merges have no safe lexical dependency signal. Treat any
+        // omitted destination as dependent unless the original facts survive.
+        const moved = omittedWrite ? lines : lines.filter(line => plannedLines.has(line));
+        if (moved.length === 0) continue;
+        const surviving = new Set();
+        for (const destination of destinations) {
+          const write = selected.find(op => op.op === 'write' && op.file === destination.file);
+          let body = write?.body;
+          if (body === undefined) {
+            try { body = (await store.readEntry(destination.file, 'project')).body; } catch { body = ''; }
+          }
+          for (const line of String(body).split(/\r?\n/)) surviving.add(line);
+        }
+        if (moved.some(line => !surviving.has(line))) return fail(`merge dependency: select the destination write before deleting ${deletion.file}`);
+      }
       const secretScan = await this.scanOperationSecrets(selected, this.config);
       dropped.push(...secretScan.dropped);
+      const dependencies = dropDestructiveDependents(selection.indexes.map(index => rawOperations[index]), secretScan.operations);
+      dropped.push(...dependencies.dropped);
       const warnings = [...secretScan.warnings];
       if (cost.warning !== '') warnings.push(cost.warning);
       const warningList = warnings.length > 0 ? warnings : undefined;
-      const operations = secretScan.operations;
+      const operations = dependencies.operations;
       if (operations.length === 0) {
         return fail('no-operations-selected', { dropped, warnings: warningList, costExceeded });
       }

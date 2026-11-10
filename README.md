@@ -162,7 +162,8 @@ Look elsewhere if you need:
 
 - Memories stay on your machine, under `$DSH_HOME/cc-memory/`. The plugin has no telemetry.
 - Memory text goes to your model provider as part of normal prompts.
-- Dream sends session text and memories to the provider you configured. A Dream over three short sessions used 6,500 to 11,000 tokens in our tests.
+- Dream sends session text and memories to the provider you configured. The synthetic three-short-session demo used 6,500 to 11,000 tokens. One real-project batch used **149,984 reported total tokens and about 263 seconds**, then applied two memory writes and one index update. These are different workloads, not a typical-use estimate. See the [aggregate observations](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/REAL-WORKSPACE-OBSERVATIONS-2026-11-09.md).
+- Before paying for a dry-run, use `/memory dream estimate`, or review the input estimate shown when starting Dream in the interface. Estimation makes no model call; dry-run does. Actual total usage can exceed the rough input estimate. `dreamMaxTotalTokens: 0` means unlimited; set an explicit budget and `dreamCostMode: block` if you need the existing cost guard.
 - Writes that match common key formats are refused. This is a heuristic and will not catch every secret. See [SECURITY.md](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/SECURITY.md).
 
 ## Status
