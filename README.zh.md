@@ -8,6 +8,7 @@
 
 让 agent 跨会话记住事情。Dream 提出的每一处改动，你都能先审阅，也能撤销。
 
+[![npm](https://img.shields.io/npm/v/dsh-cc-dream-memory)](https://www.npmjs.com/package/dsh-cc-dream-memory)
 [![CI](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml)
 [![MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/LICENSE)
 
@@ -33,26 +34,24 @@
 
 ## 安装
 
-需要 Node 22 或更新版本，以及 DeepSeek Harness 0.2.2-rc.1 或更新版本。首个 npm 版本尚待发布，目前从 GitHub 安装：
+需要 Node 22 或更新版本，以及 DeepSeek Harness 0.2.2-rc.1 或更新版本。
 
 ```bash
-dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
+dsh plugin --profile web add dsh-cc-dream-memory
 ```
 
 重启 DeepSeek Harness，新建一个会话。如果 PATH 上没有 `dsh`，用 `npx`：
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
+npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
 ```
 
-桌面版可以打开**插件 → 添加插件**，输入 `github:muuuuuuuuuer/dsh-cc-dream-memory`。
+桌面版可以打开**插件 → 添加插件**，输入 `dsh-cc-dream-memory`。
 
-发布到 npm 后，也可以按包名安装：
+也可以直接从 GitHub 安装：
 
 ```bash
-dsh plugin --profile web add dsh-cc-dream-memory
-# 如果 PATH 上没有 dsh：
-npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
+dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
 ```
 
 ## Dream

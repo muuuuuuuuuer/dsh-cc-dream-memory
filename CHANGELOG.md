@@ -11,7 +11,7 @@ First public release, under a new name.
 - Added a model-free Dream input estimate in commands and the interface before paid dry-run; documented the 149,984-token real-project observation separately from the small synthetic demo. The existing unlimited default is explicit rather than presented as a spending cap.
 - Added an explicit loopback Host allowlist before bridge token discovery and API actions. Evaluation now verifies the installed profile's package identity and canonical source before real model execution.
 - Corrected the author and contributor metadata to list muuuuuuuuuer and Claude, with DeepSeek Harness acknowledged separately.
-- Prepared public npm publishing with verification before publish, included the security notice, and made README documentation links absolute. GitHub installation remains available while the first npm publication is pending.
+- Prepared public npm publishing with verification before publish, included the security notice, and made README documentation links absolute. Both npm package-name and GitHub installation commands are documented.
 - **Renamed to `dsh-cc-dream-memory`.** npm's `dsh-cc-memory` is an unrelated plugin. Your memories stay in `$DSH_HOME/cc-memory/`. Remove the old package and install this one.
 - **The row id is now `cc-dream-memory`.** That plugin also used `cc-memory`, and when two rows share an id the later one silently replaces the earlier one. If your profile patch overrides `id: cc-memory`, rename it.
 - The interface title is now "Memory" / "记忆".

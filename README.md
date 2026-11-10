@@ -8,6 +8,7 @@
 
 Your agent remembers across sessions. Every change Dream proposes is one you can review and undo.
 
+[![npm](https://img.shields.io/npm/v/dsh-cc-dream-memory)](https://www.npmjs.com/package/dsh-cc-dream-memory)
 [![CI](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml)
 [![MIT](https://img.shields.io/badge/license-MIT-blue)](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/LICENSE)
 
@@ -29,26 +30,24 @@ We ran the second session three times on each side. The deploy step was `legacy-
 
 ## Install
 
-Requires Node 22 or newer and DeepSeek Harness 0.2.2-rc.1 or newer. Install from GitHub while the first npm publication is pending:
+Requires Node 22 or newer and DeepSeek Harness 0.2.2-rc.1 or newer.
 
 ```bash
-dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
+dsh plugin --profile web add dsh-cc-dream-memory
 ```
 
 Restart DeepSeek Harness and start a new session. If `dsh` is not on your PATH, use `npx`:
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
+npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
 ```
 
-In the desktop app, open **Plugins → Add plugin** and enter `github:muuuuuuuuuer/dsh-cc-dream-memory`.
+In the desktop app, open **Plugins → Add plugin** and enter `dsh-cc-dream-memory`.
 
-After the package is published to npm, you can also install by package name:
+You can also install directly from GitHub:
 
 ```bash
-dsh plugin --profile web add dsh-cc-dream-memory
-# Or, if dsh is not on PATH:
-npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
+dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
 ```
 
 ## Dream

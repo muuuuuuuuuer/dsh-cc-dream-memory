@@ -30,7 +30,7 @@ npm login --registry=https://registry.npmjs.org/
 npm publish
 ```
 
-`publishConfig` selects the public npm registry and public access. Check that `npm view dsh-cc-dream-memory@<version> version` resolves after publishing, then tag that commit and create its GitHub Release. Restore the npm version badge and make the package-name command the primary README install command only after the package is available. Until then, the READMEs use the GitHub install spec.
+`publishConfig` selects the public npm registry and public access. Direct publishing requires account 2FA or a publishing token with the required permission. Check that `npm view dsh-cc-dream-memory@<version> version` resolves after publishing, then tag that commit and create its GitHub Release. The READMEs include both the npm package command and the GitHub install spec.
 
 ## Rules for changes
 
