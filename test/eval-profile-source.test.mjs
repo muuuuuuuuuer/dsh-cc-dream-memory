@@ -28,7 +28,8 @@ test('eval source preflight accepts the owning release and reports its canonical
   const result = env.assertProfileSource(env);
   assert.equal(result.name, 'dsh-cc-dream-memory');
   assert.equal(result.version, '0.12.0');
-  assert.equal(result.target, await fs.realpath(env.expectedRoot));
+  // Windows sync/async realpath may spell the same directory as 8.3/long paths.
+  assert.equal(await fs.realpath(result.target), await fs.realpath(env.expectedRoot));
   assert.equal(await fs.readFile(path.join(env.profileDir, 'package.json'), 'utf8'), before);
 });
 
@@ -59,7 +60,8 @@ test('eval source preflight follows the host DSH_HOME rather than another profil
   const previous = process.env.DSH_HOME;
   try {
     process.env.DSH_HOME = path.dirname(path.dirname(env.profileDir));
-    assert.equal(env.assertProfileSource({ expectedRoot: env.expectedRoot }).target, await fs.realpath(env.expectedRoot));
+    const result = env.assertProfileSource({ expectedRoot: env.expectedRoot });
+    assert.equal(await fs.realpath(result.target), await fs.realpath(env.expectedRoot));
   } finally {
     if (previous === undefined) delete process.env.DSH_HOME;
     else process.env.DSH_HOME = previous;
