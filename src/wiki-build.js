@@ -76,6 +76,7 @@ Respond with ONLY:
 
 /** Staging directory under the wiki root; hidden from `listPages()`. */
 export const WIKI_STAGING_DIR = '.staging';
+export const WIKI_CLAIMS_DIR = '.claims';
 const REQUIRED_STAGES = Object.freeze(['normalize', 'extract', 'analyze', 'organize']);
 const TEXT_EXT = new Set(['.txt', '.md', '.markdown', '.log']);
 
@@ -177,6 +178,27 @@ function dateOf(value) {
 
 function sha256(value) {
   return createHash('sha256').update(String(value ?? '')).digest('hex');
+}
+
+/** Claims of one document, kept beside the generation they produced. */
+async function readCachedClaims(store, sourceId, digest) {
+  if (typeof store?.contentDir !== 'string' || typeof sourceId !== 'string' || sourceId === '') return null;
+  const file = path.join(store.contentDir, WIKI_CLAIMS_DIR, `${sourceId}.json`);
+  try {
+    const cached = JSON.parse(await fs.readFile(file, 'utf8'));
+    if (cached?.sha256 !== digest || !Array.isArray(cached.claims)) return null;
+    return cached.claims.filter((claim) => typeof claim?.quote === 'string' && claim.quote !== '' && typeof claim?.text === 'string');
+  } catch (error) {
+    if (!isMissing(error)) manifestWarning(`read claims of ${sourceId}`, error);
+    return null;
+  }
+}
+
+async function writeCachedClaims(store, sourceId, digest, claims) {
+  if (typeof store?.contentDir !== 'string' || claims.length === 0) return;
+  const dir = path.join(store.contentDir, WIKI_CLAIMS_DIR);
+  await fs.mkdir(dir, { recursive: true });
+  await store._atomicWrite(path.join(dir, `${sourceId}.json`), `${JSON.stringify({ sha256: digest, claims }, null, 2)}\n`);
 }
 
 /** Split a long document into bounded chunks on paragraph boundaries. */
@@ -601,7 +623,7 @@ export class WikiBuilder {
       staged: true,
       applied: false,
       published: false,
-      documents: { expected: 0, processed: 0, failed: [], skipped: 0 },
+      documents: { expected: 0, processed: 0, failed: [], skipped: 0, reused: 0 },
       pages: { created: 0, updated: 0, total: 0 },
       files: { created: [], updated: [], deleted: [] },
       links: { added: 0, dangling: 0 },
@@ -678,6 +700,26 @@ export class WikiBuilder {
       // citation can only be pinned to a passage the extractor actually read.
       const passageLocators = new Map();
       let passageSeq = 0;
+      const addClaim = (claim, haystack, doc) => {
+        const normalizedQuote = claim.quote.toLowerCase().replace(/\s+/g, ' ');
+        if (!haystack.includes(normalizedQuote)) {
+          manifest.warnings.push(`extractor quote not found in ${doc.sourceId}: ${claim.quote.slice(0, 80)}`);
+          return;
+        }
+        const passage = locateParagraph(doc.text, claim.quote);
+        if (passage < 0) {
+          manifest.warnings.push(`extractor quote not found in the paragraphs of ${doc.sourceId}: ${claim.quote.slice(0, 80)}`);
+          return;
+        }
+        const passageKey = `${doc.sourceId}::${passage}`;
+        let locator = passageLocators.get(passageKey);
+        if (locator === undefined) {
+          passageSeq += 1;
+          locator = `p${passageSeq}`;
+          passageLocators.set(passageKey, locator);
+        }
+        extracted.push({ ...claim, locator });
+      };
       await mapLimit(collected.documents, Number(config.wikiBuildConcurrency) || 2, async (doc) => {
         try {
           if (!dryRun) {
@@ -689,6 +731,17 @@ export class WikiBuilder {
             });
           }
           const chunks = chunkDocument(doc.text, Number(config.wikiChunkChars) || 20_000);
+          // A document whose bytes did not change does not need its claims
+          // extracted again: the previous generation carries them with the same
+          // digest, so a rebuild spends its calls on what actually changed.
+          const cached = dryRun ? null : await readCachedClaims(liveStore, doc.sourceId, doc.sha256);
+          if (cached !== null) {
+            for (const claim of cached) addClaim(claim, doc.text.toLowerCase().replace(/\s+/g, ' '), doc);
+            manifest.documents.reused += 1;
+            manifest.documents.processed += 1;
+            return;
+          }
+          const authored = [];
           for (let index = 0; index < chunks.length; index += 1) {
             const reply = await complete(
               WIKI_EXTRACTOR_PROMPT,
@@ -704,25 +757,12 @@ export class WikiBuilder {
             }
             const normalizedChunk = String(chunks[index] ?? '').toLowerCase().replace(/\s+/g, ' ');
             for (const claim of claims) {
-              const normalizedQuote = claim.quote.toLowerCase().replace(/\s+/g, ' ');
-              if (!normalizedChunk.includes(normalizedQuote)) {
-                manifest.warnings.push(`extractor quote not found in ${doc.sourceId}: ${claim.quote.slice(0, 80)}`);
-                continue;
-              }
-              const passage = locateParagraph(doc.text, claim.quote);
-              if (passage < 0) {
-                manifest.warnings.push(`extractor quote not found in the paragraphs of ${doc.sourceId}: ${claim.quote.slice(0, 80)}`);
-                continue;
-              }
-              const passageKey = `${doc.sourceId}::${passage}`;
-              let locator = passageLocators.get(passageKey);
-              if (locator === undefined) {
-                passageSeq += 1;
-                locator = `p${passageSeq}`;
-                passageLocators.set(passageKey, locator);
-              }
-              extracted.push({ ...claim, locator });
+              authored.push(claim);
+              addClaim(claim, normalizedChunk, doc);
             }
+          }
+          if (!dryRun && authored.length > 0) {
+            await writeCachedClaims(stagedStore, doc.sourceId, doc.sha256, authored);
           }
           manifest.documents.processed += 1;
         } catch (error) {
@@ -734,7 +774,8 @@ export class WikiBuilder {
       stage('extract', {
         ok: failedDocs.length === 0,
         durationMs: Date.now() - extractStarted,
-        calls: collected.documents.length,
+        calls: Math.max(0, collected.documents.length - manifest.documents.reused),
+        reused: manifest.documents.reused,
         claims: extracted.length,
         documents: manifest.documents.processed,
         failed: failedDocs.length,

@@ -353,6 +353,8 @@ test('an extractor failure skips the remaining stages and publishes nothing', as
   const store = new WikiStore({ rootDir: env.paths.wikiDir });
   const claim = (await readWikiPage(store, 'deal-overview.md')).claims[0];
   const before = await snapshotWiki(env.paths.wikiDir);
+  // A doc whose bytes changed must be extracted again, so the outage is hit.
+  await fs.writeFile(path.join(env.docs, 'a.txt'), 'Revenue is $123M this year.', 'utf8');
 
   const failingBuilder = new WikiBuilder({
     ctx: fakeCtx(twoSourceHandler({ failStage: 'extract' })),
@@ -599,4 +601,27 @@ test('a decimal value survives wiki sentence splitting', async (t) => {
   assert.equal(rejected.ok, false, 'the source says 1.5, so 15 is not a fact it carries');
   assert.equal(rejected.error, 'claim-not-verified');
   assert.match(rejected.failures[0].error, /a#p1 does not support "The release timeout is 15 seconds/u);
+});
+
+test('an unchanged source reuses its claims instead of calling the extractor again', async (t) => {
+  const env = await makeEnv(t);
+  const first = await new WikiBuilder({ ctx: fakeCtx(twoSourceHandler()), config: env.config })
+    .build({ pctx: { paths: env.paths }, docsDir: env.docs });
+  assert.equal(first.ok, true, `ok=false: ${first.error}`);
+  assert.equal(first.manifest.documents.reused, 0);
+
+  let extractCalls = 0;
+  const counting = ({ stage, prompt }) => {
+    if (stage === 'extract') extractCalls += 1;
+    return twoSourceHandler()({ stage, prompt });
+  };
+  const second = await new WikiBuilder({ ctx: fakeCtx(counting), config: env.config })
+    .build({ pctx: { paths: env.paths }, docsDir: env.docs });
+
+  assert.equal(second.ok, true, `ok=false: ${second.error}`);
+  assert.equal(second.manifest.documents.reused, 2);
+  assert.equal(extractCalls, 0, 'the extractor must not see an unchanged document');
+  const store = new WikiStore({ rootDir: env.paths.wikiDir });
+  t.after(() => store.close());
+  assert.equal((await readWikiPage(store, 'deal-overview.md')).claims.length >= 2, true);
 });
