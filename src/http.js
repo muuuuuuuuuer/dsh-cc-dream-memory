@@ -221,6 +221,8 @@ export function createHttpHandler({ runtime, token }) {
         agent: projectContext.agent,
         sessionId: body.sessionId,
         action,
+        runId: typeof body.runId === 'string' ? body.runId : '',
+        dryRun: body.dryRun === true,
         indexes: body.indexes,
         focus: body.focus,
         pipeline: body.pipeline === 'v2' || body.pipeline === 'classic' ? body.pipeline : '',

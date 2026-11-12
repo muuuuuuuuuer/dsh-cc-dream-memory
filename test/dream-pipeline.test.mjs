@@ -45,7 +45,7 @@ async function env(t, overrides = {}) {
   return { tmp, paths, config, store, state, pctx: { workspaceDir, paths, store, state } };
 }
 
-test('Dream v2 reports capped chunks as partial and rejects every apply path', async (t) => {
+test('Dream v2 analyzes every unit of a long session and reports complete coverage', async (t) => {
   const e = await env(t, { dreamMaxAnalyzerCalls: 1, dreamMaxSessionChars: 1000, dreamMapChunkChars: 2000 });
   const original = 'Run the existing release check.';
   const saved = await e.store.saveEntry({ name: 'Release', type: 'project', content: original });
@@ -54,13 +54,13 @@ test('Dream v2 reports capped chunks as partial and rejects every apply path', a
   await e.state.ensureSession('long');
   await e.state.ensureSession('deferred');
   const before = e.state.snapshot();
+  // Long enough to need several transport units even though the legacy chunk
+  // caps below ask for a tiny budget: the run planner splits, never drops.
   const events = Array.from({ length: 8 }, (_, i) => ({
     type: 'user/message', seq: i + 1, time: Date.parse('2026-11-11T15:00:00Z'),
-    data: { source: { kind: 'user' }, content: [{ type: 'text', text: `Release evidence ${i} ${'word '.repeat(160)}` }] },
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: `Release evidence ${i} ${'word '.repeat(2000)}` }] },
   }));
-  const fake = fakeCtx({ summary: 'analyzed', claims: [], patches: [], verify: [],
-    writes: [{ file: saved.file, name: 'Release', type: 'project', description: '', body: 'New release check.' }] });
-  const completeFake = fakeCtx({
+  const fake = fakeCtx({
     summary: 'analyzed',
     claims: [{ text: 'Release evidence 0', quote: 'Release evidence 0', kind: 'fact', confidence: 'high' }],
     patches: [],
@@ -75,28 +75,30 @@ test('Dream v2 reports capped chunks as partial and rejects every apply path', a
   });
   const ctx = { get(name) {
     if (name !== 'sessionQuery') return fake.get(name);
-    return { readSession: async id => ({ session: { id }, events }), filterSessions: async () => [] };
-  } };
-  const completeCtx = { get(name) {
-    if (name !== 'sessionQuery') return completeFake.get(name);
-    return { readSession: async id => ({ session: { id }, events }), filterSessions: async () => [] };
+    return { readSession: async id => ({ session: { id, createdAt: events[0].time }, events }), filterSessions: async () => [] };
   } };
   const engine = new DreamEngine({ ctx, config: e.config });
   const pipeline = new DreamPipeline({ ctx, config: e.config, engine });
   const run = (options = {}) => pipeline.run({ pctx: e.pctx, force: true, ...options });
   const dry = await run({ dryRun: true });
+  assert.equal(dry.error, undefined);
   const plan = JSON.parse(await fs.readFile(dry.planPath, 'utf8'));
-  assert.deepEqual(plan.partialSessions.sort(), ['deferred', 'long']);
-  assert.equal(plan.processedSessions, 0);
-  assert.deepEqual(plan.reads, []);
+  assert.deepEqual(plan.partialSessions, []);
+  assert.deepEqual(plan.failedSessions, []);
+  assert.equal(plan.coverageComplete, true);
+  assert.equal(plan.processedSessions, 2);
+  assert.deepEqual(plan.reads.map(read => read.id).sort(), ['deferred', 'long']);
+  for (const read of plan.reads) assert.equal(read.complete, true);
+  assert.ok(dry.manifest.input.expectedUnits > 2, `expected split units, got ${dry.manifest.input.expectedUnits}`);
+  assert.equal(dry.manifest.counts.pending, 0);
+  assert.equal(dry.manifest.counts.done, dry.manifest.input.expectedUnits);
 
-  const direct = await run();
-  assert.equal(direct.applied, false);
-  assert.match(direct.error, /coverage/i);
+  // Every apply path still refuses an incomplete candidate.
+  const incomplete = { ...plan, coverageComplete: false, partialSessions: ['long'] };
   for (const result of [
-    await engine.applyPending({ pctx: e.pctx, plan, fromLastPlan: true }),
-    await engine.applyPending({ pctx: e.pctx, plan: { ...plan, dryRun: false, review: true } }),
-    await engine.applyPlanOperations({ pctx: e.pctx, plan, indexes: [0] }),
+    await engine.applyPending({ pctx: e.pctx, plan: incomplete, fromLastPlan: true }),
+    await engine.applyPending({ pctx: e.pctx, plan: { ...incomplete, dryRun: false, review: true } }),
+    await engine.applyPlanOperations({ pctx: e.pctx, plan: incomplete, indexes: [0] }),
   ]) {
     assert.equal(result.applied, false);
     assert.match(result.error, /coverage/i);
@@ -107,9 +109,7 @@ test('Dream v2 reports capped chunks as partial and rejects every apply path', a
   assert.deepEqual(e.state.snapshot().sessionsSince, before.sessionsSince);
   assert.deepEqual(e.state.snapshot().dreamProcessedSessions, before.dreamProcessedSessions);
 
-  const config = resolveConfig({ ...e.config, dreamMaxAnalyzerCalls: 30 });
-  const completePipeline = new DreamPipeline({ ctx: completeCtx, config, engine });
-  const complete = await completePipeline.run({ pctx: e.pctx, force: true });
+  const complete = await run();
   assert.equal(complete.applied, true, complete.error);
   assert.equal(complete.manifest.coverageComplete, true);
   assert.equal(complete.manifest.processed, 2);

@@ -36,7 +36,7 @@ import { entryFingerprint, readLedger } from './verification-ledger.js';
  * compares it with its own and says so when the running backend is older
  * (the host keeps imported modules until it restarts).
  */
-export const UI_API = 1;
+export const UI_API = 2;
 
 /** Changelog tail length used by the UI. */
 export const DEFAULT_LOG_LINES = 40;
@@ -1162,6 +1162,17 @@ export function createStatusService(runtime) {
       /* trust facts are optional; the plain entries still describe the store */
     }
 
+    // Phase 2: resumable Dream runs (newest five) so a stopped run is visible
+    // and can be continued from the panel or `/dream status`.
+    let dreamRuns = [];
+    try {
+      const { listRunManifests, summarizeRun } = await import('./dream-run.js');
+      const manifests = await listRunManifests(pctx?.paths, 5);
+      dreamRuns = manifests.map((manifest) => summarizeRun(manifest, { running: false }));
+    } catch {
+      dreamRuns = [];
+    }
+
     return {
       ok: true,
       version: VERSION,
@@ -1199,6 +1210,7 @@ export function createStatusService(runtime) {
         usage: userUsage,
       },
       state: stateView,
+      dreamRuns,
       changelogTail,
       trashCount,
       rules: rulesValue,
@@ -1327,6 +1339,44 @@ export function createStatusService(runtime) {
         throw coded('invalid-indexes', 'indexes must be a non-empty array of operation numbers');
       }
       return { ok: true, result: lossless(await rt.applyPlanOperations(pctx, { indexes, agent })) };
+    }
+    if (action === 'start' || action === 'background') {
+      if (typeof rt.startDream !== 'function') {
+        return { ok: false, error: 'dream-unavailable', message: 'this runtime cannot start a background dream run' };
+      }
+      const result = await rt.startDream(pctx, {
+        agent,
+        sessionId: options.sessionId,
+        force: true,
+        dryRun: options.dryRun === true,
+        trigger: options.trigger || 'manual',
+        reason: options.reason || '',
+        focus: typeof options.focus === 'string' ? options.focus : '',
+        noSessions: options.noSessions === true,
+        signal: options.signal,
+      });
+      return { ok: true, result: lossless(result) };
+    }
+    if (action === 'status' || action === 'run-status') {
+      if (typeof rt.dreamRun !== 'function') {
+        return { ok: false, error: 'dream-unavailable', message: 'this runtime cannot report dream runs' };
+      }
+      return { ok: true, result: lossless(await rt.dreamRun(pctx, String(options.runId ?? ''))) };
+    }
+    if (action === 'cancel' || action === 'run-cancel') {
+      if (typeof rt.cancelDreamRun !== 'function') {
+        return { ok: false, error: 'dream-unavailable', message: 'this runtime cannot cancel dream runs' };
+      }
+      return { ok: true, result: lossless(await rt.cancelDreamRun(pctx, String(options.runId ?? ''))) };
+    }
+    if (action === 'resume' || action === 'run-resume') {
+      if (typeof rt.resumeDreamRun !== 'function') {
+        return { ok: false, error: 'dream-unavailable', message: 'this runtime cannot resume dream runs' };
+      }
+      return {
+        ok: true,
+        result: lossless(await rt.resumeDreamRun(pctx, String(options.runId ?? ''), { agent, sessionId: options.sessionId })),
+      };
     }
     if (action === 'run' || action === 'dry-run') {
       if (typeof rt.dream !== 'function') {

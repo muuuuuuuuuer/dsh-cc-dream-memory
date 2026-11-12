@@ -438,6 +438,36 @@ export class MemoryRuntime {
     return this.pipelinePromise;
   }
 
+  /**
+   * Start a resumable Dream run and return its id immediately. Only the v2
+   * pipeline keeps per-unit state; the classic path has nothing to resume.
+   */
+  async startDream(pctx, options = {}) {
+    if (this.config.dreamPipeline === 'classic' && options.pipeline !== 'v2') {
+      return { ok: false, error: 'no-resumable-pipeline' };
+    }
+    const pipeline = await this.dreamPipeline();
+    return pipeline.start({ pctx, ...options });
+  }
+
+  /** Read one Dream run (or the newest) from disk. */
+  async dreamRun(pctx, runId = '') {
+    const pipeline = await this.dreamPipeline();
+    return pipeline.status(pctx, runId);
+  }
+
+  /** Ask a running Dream run to stop; finished units stay on disk. */
+  async cancelDreamRun(pctx, runId = '') {
+    const pipeline = await this.dreamPipeline();
+    return pipeline.cancel(pctx, runId);
+  }
+
+  /** Resume a stopped/failed Dream run, analyzing only the units left. */
+  async resumeDreamRun(pctx, runId = '', options = {}) {
+    const pipeline = await this.dreamPipeline();
+    return pipeline.resume(pctx, runId, options);
+  }
+
   /** Run the v2 knowledge-wiki builder for one project. */
   async wikiBuild(pctx, options = {}) {
     const context = pctx && typeof pctx === 'object' && pctx.paths ? pctx : undefined;

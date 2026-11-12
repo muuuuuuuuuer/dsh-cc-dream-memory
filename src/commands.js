@@ -1145,15 +1145,57 @@ export function registerCommands(ctx, runtime) {
       if (typeof snapshot.lastError === 'string' && snapshot.lastError !== '') {
         lines.push(`last error: ${snapshot.lastError}`);
       }
+      const runs = Array.isArray(status.payload?.dreamRuns) ? status.payload.dreamRuns : [];
+      if (runs.length > 0) {
+        const latest = runs[0];
+        lines.push('');
+        lines.push(`latest run: ${latest.runId} — ${latest.status}${latest.stage ? ` at ${latest.stage}` : ''}`);
+        lines.push(
+          `  units: ${latest.counts?.done ?? 0}/${latest.input?.expectedUnits ?? 0} done, ${latest.counts?.failed ?? 0} failed, ${latest.counts?.pending ?? 0} pending`,
+        );
+        if (latest.error) lines.push(`  error: ${truncate(latest.error, 240)}`);
+      }
       lines.push('');
       lines.push('Run /memory dream run [--dry-run] [--focus <text>] to consolidate now, or /memory dream apply to apply a review-mode proposal.');
+      lines.push('Long runs can be checked with /memory dream status <runId>, stopped with /memory dream cancel, and continued with /memory dream resume <runId>.');
       return ok(lines.join('\n'));
     }
     if (sub === 'run') {
       const dryRun = flags['dry-run'] === true || flags.dryrun === true || flags.dry === true;
+      const wait = flags.wait === true || flags.sync === true;
       const status = await collectStatus(invocation);
       if (!status.ok) return fail(`cc-memory: ${status.error}`);
       let response;
+      if (!dryRun && !wait) {
+        try {
+          response = await service.dream(status.pctx, {
+            agent: invocation.agent,
+            sessionId: invocation?.agent?.id,
+            action: 'start',
+            trigger: 'manual',
+            focus: typeof flags.focus === 'string' ? flags.focus : '',
+          });
+        } catch (error) {
+          return fail(`dream run: ${errorText(error)}`);
+        }
+        const started = response.ok === true ? response.result : null;
+        if (started?.started === true) {
+          invalidate(invocation);
+          const runId = String(started.runId ?? '');
+          const note = started.reused === true ? 'already running' : 'started';
+          return ok(
+            [
+              `dream run ${note}: ${runId}`,
+              `progress:  /memory dream status ${runId}`,
+              `stop:      /memory dream cancel ${runId}`,
+              `continue:  /memory dream resume ${runId}`,
+              'the run continues in the background; each finished unit is saved, so stopping loses no completed work.',
+            ].join('\n'),
+          );
+        }
+        // Classic pipeline and older builds have no resumable run: fall through
+        // to the synchronous path so /dream run still works everywhere.
+      }
       try {
         response = await service.dream(status.pctx, {
           agent: invocation.agent,
@@ -1169,6 +1211,35 @@ export function registerCommands(ctx, runtime) {
       if (!response.ok) return fail(`dream run: ${response.message || response.error}`);
       invalidate(invocation);
       return ok(formatDreamRun(response.result, dryRun));
+    }
+    if (sub === 'cancel' || sub === 'resume' || sub === 'run-status') {
+      const status = await collectStatus(invocation);
+      if (!status.ok) return fail(`cc-memory: ${status.error}`);
+      const runId = positional[1] ?? (typeof flags.run === 'string' ? flags.run : '');
+      const action = sub === 'cancel' ? 'cancel' : sub === 'resume' ? 'resume' : 'status';
+      let response;
+      try {
+        response = await service.dream(status.pctx, { agent: invocation.agent, action, runId });
+      } catch (error) {
+        return fail(`dream ${action}: ${errorText(error)}`);
+      }
+      if (!response.ok) return fail(`dream ${action}: ${response.message || response.error}`);
+      if (action === 'cancel') {
+        const result = response.result ?? {};
+        return result.cancelled === true
+          ? ok(`dream run ${result.runId} is stopping; finished units stay saved, so it can be resumed.`)
+          : fail(`no running dream run${runId ? ` ${runId}` : ''} to cancel`);
+      }
+      if (action === 'resume') {
+        const result = response.result ?? {};
+        if (result.started !== true) return fail(`dream resume: ${result.message || result.error || 'could not resume'}`);
+        invalidate(invocation);
+        return ok([
+          `dream run ${result.runId} resumed${result.reused === true ? ' (was already running)' : ''}`,
+          `progress:  /memory dream status ${result.runId}`,
+        ].join('\n'));
+      }
+      return ok(formatDreamRunStatus(response.result));
     }
     if (sub === 'apply') {
       const status = await collectStatus(invocation);
@@ -1255,7 +1326,9 @@ export function registerCommands(ctx, runtime) {
       invalidate(invocation);
       return ok(formatDreamApply(response.result, 'selected operations'));
     }
-    return fail('usage: /memory dream on|off|status|run [--dry-run]|apply|reject|preview|apply-ops <indexes>');
+    return fail(
+      'usage: /memory dream on|off|status|cancel [runId]|resume [runId]|run [--dry-run] [--wait]|apply|reject|preview|apply-ops <indexes>',
+    );
   }
 
   // -- /memory backups | trash | restore -------------------------------------
@@ -1831,7 +1904,7 @@ export function registerCommands(ctx, runtime) {
   register({
     name: 'dream',
     // Short human entry point for the same feature the Memory page calls Dream.
-    description: 'Dream: consolidate memory now (/dream run [--dry-run] [--focus <text>] | status | apply | history | undo).',
+    description: 'Dream: consolidate memory now (/dream status [runId] | run [--dry-run] [--wait] | cancel [runId] | resume [runId] | apply | history | undo).',
     input: { hint: 'run [--dry-run]|status|apply|history|undo' },
     handler: (invocation) =>
       handleMemory({ ...invocation, rawInput: `dream ${String(invocation?.rawInput ?? '')}`.trimEnd() }),
@@ -1851,6 +1924,42 @@ export function registerCommands(ctx, runtime) {
 // ---------------------------------------------------------------------------
 // Dream result rendering
 // ---------------------------------------------------------------------------
+
+/** Render one resumable-run summary as chat text. */
+function formatDreamRunStatus(run) {
+  if (!run || typeof run !== 'object') return 'no dream run recorded';
+  if (run.ok === false) return `dream status: ${run.error ?? 'unavailable'}${run.message ? ` — ${run.message}` : ''}`;
+  if (run.status === 'none') return 'no dream runs recorded yet; start one with /memory dream run';
+  const lines = [];
+  lines.push(`dream run ${run.runId || '(unknown)'} — ${run.status || 'unknown'}${run.stage ? ` at ${run.stage}` : ''}`);
+  if (run.dryRun === true) lines.push('mode: dry run (analyzes and plans; writes nothing)');
+  const counts = run.counts && typeof run.counts === 'object' ? run.counts : {};
+  const expected = Number(run.input?.expectedUnits) || 0;
+  lines.push(`units: ${Number(counts.done) || 0}/${expected} done, ${Number(counts.failed) || 0} failed, ${Number(counts.pending) || 0} pending`);
+  if (run.coverageComplete === true) lines.push('coverage: complete');
+  if (run.coverageComplete === false) lines.push('coverage: incomplete — apply stays blocked until every unit finishes');
+  if (run.planPath) lines.push(`plan: ${run.planPath}${run.status === 'review' ? ' (apply with /memory dream apply)' : ''}`);
+  if (run.blockedReason) lines.push(`blocked: ${truncate(run.blockedReason, 300)}`);
+  if (run.error) lines.push(`error: ${truncate(run.error, 300)}`);
+  const sessions = Array.isArray(run.sessions) ? run.sessions : [];
+  for (const session of sessions.slice(0, 5)) {
+    lines.push(`- ${session.id}: ${session.done}/${session.units} unit(s)${session.failed ? `, ${session.failed} failed` : ''}`);
+  }
+  const pending = Array.isArray(run.pendingUnits) ? run.pendingUnits : [];
+  if (pending.length > 0) {
+    lines.push(`pending units: ${pending.slice(0, 5).map((unit) => `${unit.sessionId}#${unit.firstSeq ?? '?'}-${unit.lastSeq ?? '?'}`).join(', ')}${pending.length > 5 ? ' …' : ''}`);
+  }
+  const errors = Array.isArray(run.errors) ? run.errors : [];
+  for (const item of errors.slice(0, 3)) {
+    lines.push(`failed unit ${item.sessionId ?? '?'}/${item.unitId ?? '?'}: ${truncate(String(item.error ?? ''), 200)}`);
+  }
+  if (run.status === 'running') {
+    lines.push(`stop: /memory dream cancel ${run.runId}`);
+  } else if (['failed', 'cancelled', 'blocked', 'ready'].includes(run.status)) {
+    lines.push(`continue: /memory dream resume ${run.runId}`);
+  }
+  return lines.join('\n');
+}
 
 /** Render one `DreamRunResult` as chat text. */
 function formatDreamRun(result, dryRun) {

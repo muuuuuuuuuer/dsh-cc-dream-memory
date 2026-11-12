@@ -629,9 +629,16 @@ DreamEngine.run({force, dryRun, trigger, noSessions, focus})
 
 Dream 的 evidence 使用操作级引用；兼容旧 `{statement,quote}`，来源位置由宿主输入确定，包含短会话和长会话笔记的 sessionId/seq。检查证明引用存在，不证明语义蕴含。自动 Dream 的语义修改先进入提案；纯机械修改才直接应用。既有用户类原句可以搬运，改写转审阅；每次预览列出正文删行，已有提案阻止后续生成覆盖。`POST /dream {action:'estimate'}` 和 `/memory dream estimate` 只读估算输入、不调用模型；界面在付费 dry-run 前展示估算并要求确认。
 
+## 0.12.1 首轮可见性与可续跑 Dream
+
+- **显式写入进首轮**：`/remember`、`memory_save`、`memory_update` 在用户原话通过 `verifyUserEvidence` 且写入成功后，由宿主补 `STATUS: current` 并把 `verification.json` 记录为该页当前指纹（`source: 'user-explicit'`）。工具自己写的 STATUS/VERIFIED 不能升级任何页面。
+- **首轮索引只藏简介**：`injectHotOnly: false` 时首轮注入完整索引，但只有「当前指纹 + 合格 STATUS」的笔记显示一行简介，其余只显示名称（`buildNavigationIndex`）。旧笔记可按需 `memory_read`；热点集合仍可用 `injectHotOnly: true` 开启。
+- **Dream 运行可观测、可续跑**：每次运行在 `.dreams/<runId>/` 先落 `manifest.json`（runId、项目、模型、输入会话与单元范围、计数、用量、错误、状态），每个单元通过解析与证据校验后写 `analysis/<session>/<unitId>.json`。同一项目同时只有一个 worker，锁由 runId 持有并在每个单元后续期；`/memory dream status|cancel|resume` 与 `POST /dream {action:'status'|'cancel'|'resume', runId}` 操作同一个运行。重启、取消或失败后 `resume` 只补齐缺失单元，已完成单元不再调用模型。
+- **输入按单元切分，不再静默截断**：v2 路径按 `unitChars`（24k）切分会话，分析调用次数、单会话字符上限与 claim/patch 上限不再截断输入；一次输出被 max-tokens 截断时把该单元对半拆开重试，拆不开才记为失败并保留范围与原因。
+
 ## 0.12.0 Dream v2 与 Knowledge Wiki
 
-- **Dream v2**（`dreamPipeline: v2`）：`dream-pipeline.js` 导出 transcript → 每 session 一个 analyzer（`dream-analyzer.js`）→ host 校验（`dream-verifier.js`）→ 一次 organizer（`dream-organizer.js`）→ 复用 `DreamEngine.executePlan` 的备份/回滚/undo。覆盖度写在 `manifest.json`（expected/processed/failed/partial），不完整批次不移动水位线。新配置：`dreamAnalyzerConcurrency`、分阶段模型、analyzer/organizer 输入上限。
+- **Dream v2**（`dreamPipeline: v2`）：`dream-pipeline.js` 导出 transcript → 按单元切分 → analyzer（`dream-analyzer.js`）→ host 校验（`dream-verifier.js`）→ 一次 organizer（`dream-organizer.js`）→ 复用 `DreamEngine.executePlan` 的备份/回滚/undo。运行状态与单元记录写在 `.dreams/<runId>/`（`dream-run.js`），`manifest.json` 记录 expected/processed/failed/partial 与每单元范围；不完整批次不移动水位线。新配置：`dreamAnalyzerConcurrency`、分阶段模型、analyzer/organizer 输入上限。
 - **共享 wiki 格式**：`wiki-core.js` 提供 `[[slug]]`、citation、index、SKILL、validation；`wiki-store.js` 提供独立 `wiki/` 根、原子写、search、link audit、build manifest。`memory/` 继续由 `MemoryStore` 管理，新增 `SKILL.md`（保留名）。
 - **Knowledge Wiki build**：`wiki-build.js` 支持 `.txt/.md` 文档 → source manifest → extractor → analyzer → organizer → `_index.md`/`SKILL.md`；入口 `/memory wiki build <dir>` 与 `POST /api/cc-memory/wiki`。PDF/Office 需先转文本。
 - **Read-only query**：`wiki-query.js` + `wiki-tools.js` 注册 `wiki_search`、`wiki_read`、`wiki_links`、`wiki_answer`；没有任何 wiki 写工具，`wiki_answer` 由 host 校验 page/quote。

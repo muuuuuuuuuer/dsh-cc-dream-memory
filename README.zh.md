@@ -118,12 +118,15 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
 
 2. 新建一个会话。`MEMORY.md` 索引只加载一次，在这个会话里保持不变。消息明显涉及某条记忆时，插件会把它附到这一步。列表里只有宿主核实过“这段原文”的笔记才显示简介（用户明说后保存、通过核验的 `memory_save`/`memory_update`、`/remember`，或 Dream 写入）；旧笔记只列名称，需要时再读取。
 
-3. 积累几个会话后生成方案。这一步不会改动任何文件：
+3. 积累几个会话后在后台生成方案，命令立刻返回运行 ID，这一步不会改动任何文件：
 
    ```text
    /memory dream run --dry-run
+   /memory dream status
    /memory dream preview
    ```
+
+   长会话会切成多段，每段只分析一次。`/memory dream cancel` 停止运行并保留已完成的分段，`/memory dream resume` 只重试缺失的分段；`/memory dream run --wait` 仍可阻塞到方案生成。
 
 4. 应用你认可的改动，改主意了就撤销：
 

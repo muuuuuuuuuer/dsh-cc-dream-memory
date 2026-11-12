@@ -263,6 +263,17 @@ window.__ModuleLoader__.load({
       'tidy.never': 'Never dreamed',
       'tidy.sessionsSince': '{n} conversations since',
       'tidy.lastError': 'Last dream failed: {error}',
+    'tidy.runTitle': 'This run',
+    'tidy.runState.running': 'Running',
+    'tidy.runState.failed': 'Stopped with errors',
+    'tidy.runState.cancelled': 'Stopped',
+    'tidy.runState.blocked': 'Needs a retry',
+    'tidy.runUnits': '{done} of {total} parts analyzed',
+    'tidy.runFailed': '{n} parts failed and can be retried.',
+    'tidy.runCancel': 'Stop',
+    'tidy.runResume': 'Continue',
+    'tidy.runStarted': 'Dream started. You can keep working; the plan appears when the run finishes.',
+    'tidy.runAlready': 'A dream is already running for this project.',
       'tidy.auto': 'Dream automatically',
       'tidy.autoHint': 'Runs a dream in the background once {hours} h and {sessions} conversations have passed.',
       'tidy.ready': 'Ready: the next dream runs after the next conversation turn.',
@@ -587,6 +598,17 @@ window.__ModuleLoader__.load({
       'tidy.never': '还没 Dream 过',
       'tidy.sessionsSince': '之后有 {n} 次对话',
       'tidy.lastError': '上次 Dream 失败：{error}',
+    'tidy.runTitle': '本次运行',
+    'tidy.runState.running': '进行中',
+    'tidy.runState.failed': '有部分未完成',
+    'tidy.runState.cancelled': '已停止',
+    'tidy.runState.blocked': '需要重试',
+    'tidy.runUnits': '已分析 {done}/{total} 段',
+    'tidy.runFailed': '{n} 段失败，可以继续重试。',
+    'tidy.runCancel': '停止',
+    'tidy.runResume': '继续',
+    'tidy.runStarted': 'Dream 已开始，你可以继续做事，完成后会出现计划。',
+    'tidy.runAlready': '这个项目已经有一次 Dream 在运行。',
       'tidy.auto': '自动 Dream',
       'tidy.autoHint': '距上次至少 {hours} 小时且有 {sessions} 次对话后，会在后台自动 Dream。',
       'tidy.ready': '条件已满足，下一轮对话结束后会自动 Dream。',
@@ -694,7 +716,7 @@ window.__ModuleLoader__.load({
 
     const DICTIONARIES = { en: EN, zh: ZH };
     /** Data contract this page expects from the backend (`/status.uiApi`). */
-    const UI_API = 1;
+    const UI_API = 2;
     const MONO =
       'var(--ds-font-family-code,ui-monospace,"Cascadia Code",SFMono-Regular,Menlo,Consolas,monospace)';
 
@@ -2142,12 +2164,18 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           const body = { sessionId: sid, action };
           const focus = options && typeof options.focus === 'string' ? options.focus.trim() : '';
           if (focus !== '') body.focus = focus;
+          if (options && typeof options.runId === 'string' && options.runId !== '') body.runId = options.runId;
+          if (options && options.dryRun === true) body.dryRun = true;
           const data = await apiRequest(api, 'POST', '/dream', { body });
           return data.result;
         }
         const lines = {
           'dry-run': '/memory dream run --dry-run',
           run: '/memory dream run',
+          start: '/memory dream run',
+          status: '/memory dream status',
+          cancel: '/memory dream cancel',
+          resume: '/memory dream resume',
           'apply-last': '/memory dream apply',
           'apply-pending': '/memory dream apply',
           reject: '/memory dream reject',
@@ -4013,12 +4041,13 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
     }
 
     function DreamTab(props) {
-      const { status, backend, t, busy, run, notify, readOnly } = props;
+      const { status, backend, t, busy, run, notify, readOnly, refresh } = props;
       const [preview, setPreview] = React.useState({ phase: 'idle', plan: null, error: '' });
       const [picked, setPicked] = React.useState([]);
       const [openOp, setOpenOp] = React.useState(-1);
       const [history, setHistory] = React.useState(status.dreamHistory.items);
       const [estimate, setEstimate] = React.useState(null);
+      const [live, setLive] = React.useState(null);
       const [focus, setFocus] = React.useState('');
       const state = status.state;
       const config = status.config;
@@ -4026,8 +4055,36 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       const isProposal = state.pendingProposal !== '';
       const planKey = state.pendingProposal || state.lastPlanPath;
       const idle = busy === '';
-      const generating = busy === 'dry-run';
+      const generating = busy === 'dry-run' || busy === 'start';
       const canRun = !readOnly && config.enabled && config.autoMemoryEnabled;
+      // A background run reports its own progress; /status only carries a log.
+      const runs = Array.isArray(status.dreamRuns) ? status.dreamRuns : [];
+      const shownRun = live || runs[0] || null;
+      const showRun = backend.mode === 'api' && shownRun !== null &&
+        (shownRun.status === 'running' || shownRun.status === 'failed' || shownRun.status === 'cancelled' || shownRun.status === 'blocked');
+
+      React.useEffect(() => {
+        if (!showRun || shownRun.status !== 'running' || readOnly) return undefined;
+        let cancelled = false;
+        const timer = setInterval(() => {
+          backend.dream('status', { runId: shownRun.runId }).then(
+            (value) => {
+              if (cancelled || !value) return;
+              setLive(value);
+              // A finished run may have written a plan; reload the page data.
+              if (value.status !== 'running') refresh();
+            },
+            () => {
+              /* polling is best effort: the next tick retries */
+            },
+          );
+        }, 2500);
+        return () => {
+          cancelled = true;
+          clearInterval(timer);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, [showRun, shownRun && shownRun.runId, shownRun && shownRun.status, readOnly, backend]);
 
       React.useEffect(() => {
         if (!waiting || readOnly) {
@@ -4084,10 +4141,38 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       };
       const startDream = async () => {
         setEstimate(null);
+        if (backend.mode === 'api') {
+          const started = await run('start', () => backend.dream('start', { focus, dryRun: true }), {
+            check: (result) => (result && result.ok === false ? result.error || 'failed' : ''),
+            refresh: false,
+          });
+          if (!started) return;
+          const value = started.value || {};
+          if (value.started === false) {
+            notify('ok', t('tidy.runAlready'));
+          } else {
+            notify('ok', t('tidy.runStarted'));
+          }
+          setLive({ ...value, status: value.status || 'running' });
+          return;
+        }
         const done = await run('dry-run', () => backend.dream('dry-run', { focus }), {
           check: (result) => (result && result.skipped ? result.skipReason || 'skipped' : result && result.error ? result.error : ''),
         });
         if (done && asNumber(done.value && done.value.ops, 0) === 0) notify('ok', t('tidy.nothing'));
+      };
+      const runAction = async (action, key) => {
+        const done = await run(key, () => backend.dream(action, { runId: shownRun ? shownRun.runId : '' }), {
+          check: (result) => (result && result.ok === false ? result.error || 'failed' : ''),
+          refresh: false,
+        });
+        if (!done) return;
+        const value = done.value || {};
+        if (action === 'resume') {
+          setLive({ ...(shownRun || {}), ...value, status: value.status || 'running' });
+          return;
+        }
+        setLive({ ...(shownRun || {}), ...value, status: 'cancelled' });
       };
       const apply = async () => {
         const indexes = [...picked].sort((left, right) => left - right);
@@ -4509,7 +4594,50 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
               ),
             );
 
-      return h(React.Fragment, null, h(Steps, { current: step, t }), main, statusCard, historyCard);
+      // ---- background run: progress, stop, continue -------------------------
+      const runCounts = (shownRun && shownRun.counts) || {};
+      const runTotal = asNumber(shownRun && shownRun.input && shownRun.input.expectedUnits, 0);
+      const runCard = showRun
+        ? h(
+            'section',
+            { className: 'ccm-card' },
+            h(
+              'div',
+              { className: 'ccm-card-head' },
+              h('span', { className: 'ccm-card-title' }, t('tidy.runTitle')),
+              h(
+                'span',
+                { className: 'ccm-pill' + (shownRun.status === 'running' ? ' ccm-pill-warn' : shownRun.status === 'failed' ? ' ccm-pill-danger' : '') },
+                t('tidy.runState.' + shownRun.status),
+              ),
+              h('span', { className: 'ccm-spacer' }),
+              h('span', { className: 'ccm-card-sub' }, shownRun.runId || ''),
+            ),
+            h('p', { className: 'ccm-plan-summary' }, t('tidy.runUnits', { done: asNumber(runCounts.done, 0), total: runTotal })),
+            asNumber(runCounts.failed, 0) > 0
+              ? h('p', { className: 'ccm-plan-summary ccm-note-warn' }, t('tidy.runFailed', { n: asNumber(runCounts.failed, 0) }))
+              : null,
+            shownRun.error ? h('p', { className: 'ccm-plan-summary ccm-note-error' }, shownRun.error) : null,
+            h(
+              'div',
+              { className: 'ccm-toolbar', style: { marginTop: 10 } },
+              shownRun.status === 'running'
+                ? h(
+                    'button',
+                    { type: 'button', className: 'ccm-btn ccm-btn-ghost', disabled: !idle, onClick: () => runAction('cancel', 'cancel-run') },
+                    t('tidy.runCancel'),
+                  )
+                : h(
+                    'button',
+                    { type: 'button', className: 'ccm-btn', disabled: !idle, onClick: () => runAction('resume', 'resume-run') },
+                    icon('refresh', 14),
+                    t('tidy.runResume'),
+                  ),
+            ),
+          )
+        : null;
+
+      return h(React.Fragment, null, h(Steps, { current: step, t }), runCard, main, statusCard, historyCard);
     }
 
     // -----------------------------------------------------------------------
@@ -5445,7 +5573,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
               : null,
         });
       } else {
-        const tabProps = { status, backend, t, busy, run, notify, readOnly };
+        const tabProps = { status, backend, t, busy, run, notify, readOnly, refresh };
         if (activeTab === 'tidy') body = h(DreamTab, tabProps);
         else if (activeTab === 'inbox') body = h(InboxTab, { ...tabProps, goTo: selectTab, openNote });
         else if (activeTab === 'wiki') body = h(WikiTab, tabProps);

@@ -355,7 +355,7 @@ test('client: Dream click shows an input estimate before confirmation can start 
   assert.deepEqual(ui.actions, ['estimate']);
   confirm.render().props.onClick();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(ui.actions, ['estimate', 'dry-run']);
+  assert.deepEqual(ui.actions, ['estimate', 'start']);
 });
 
 test('client: cancelling the Dream cost preview prevents the model run', async () => {

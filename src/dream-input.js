@@ -173,13 +173,24 @@ export async function pruneProbeSessions({ ctx, state } = {}) {
  *   errors: string[],
  * }>}
  */
-export async function gatherDreamInput({ ctx, store, config, workspaceDir, state, noSessions = false } = {}) {
+export async function gatherDreamInput({
+  ctx,
+  store,
+  config,
+  workspaceDir,
+  state,
+  noSessions = false,
+  // Run-based Dream: enumerate every candidate session and split each one into
+  // transport-sized units instead of deferring sessions over a total budget.
+  unboundedSessions = false,
+  unitChars = 0,
+} = {}) {
   const maxChars = positiveInt(config?.dreamInputMaxChars, DEFAULT_MAX_CHARS, 1_000_000);
   const fileMaxChars = positiveInt(config?.dreamMaxFileChars, DEFAULT_FILE_CHARS, 500_000);
   const sessionMaxChars = positiveInt(config?.dreamMaxSessionChars, DEFAULT_SESSION_CHARS, 100_000);
   const chunkChars = positiveInt(config?.dreamMapChunkChars, DEFAULT_CHUNK_CHARS, 500_000);
   const toolChars = Number.isFinite(Number(config?.dreamMaxToolChars)) ? Math.max(0, Number(config.dreamMaxToolChars)) : DEFAULT_TOOL_CHARS;
-  const lookback = positiveInt(config?.sessionLookback, DEFAULT_LOOKBACK, 100);
+  const lookback = unboundedSessions ? Infinity : positiveInt(config?.sessionLookback, DEFAULT_LOOKBACK, 100);
   const errors = [];
   const truncatedFiles = [];
   const skippedSessions = [];
@@ -368,6 +379,25 @@ export async function gatherDreamInput({ ctx, store, config, workspaceDir, state
       if (transcript.blocks.length === 0) continue;
       const at = Number.isFinite(header.createdAt) ? header.createdAt : (createdAt.get(id) ?? null);
       const [whole] = chunkTranscript(transcript, { chunkChars: Infinity, toolCharsPerChunk: toolChars });
+      if (unboundedSessions) {
+        const chunks = chunkTranscript(transcript, {
+          chunkChars: positiveInt(unitChars, chunkChars, 500_000),
+          toolCharsPerChunk: toolChars,
+        });
+        sessions.push({
+          id,
+          at,
+          lastAt: transcript.lastAt,
+          excerpt: '',
+          chunks,
+          baseSeq,
+          maxSeq: transcript.maxSeq,
+          chars: whole.text.length,
+          truncated: false,
+        });
+        sessionsChars += whole.text.length;
+        continue;
+      }
       if (whole.text.length > sessionMaxChars) {
         sessions.push({
           id,

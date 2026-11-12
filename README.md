@@ -114,12 +114,15 @@ Run these in a session.
 
 2. Start a new session. The `MEMORY.md` index loads once and stays frozen for that session. When a message clearly matches a memory, the plugin attaches that memory to the step. A listed note shows its summary only when the host verified that exact text (an explicit save, a verified `memory_save`/`memory_update`, `/remember`, or a Dream write); older notes stay listed by name and are read on demand.
 
-3. After a few sessions, make a plan. This changes nothing:
+3. After a few sessions, make a plan in the background. The command returns a run id immediately; this changes nothing:
 
    ```text
    /memory dream run --dry-run
+   /memory dream status
    /memory dream preview
    ```
+
+   A long session is split into parts and each part is analyzed once. `/memory dream cancel` stops a run and keeps the parts it finished; `/memory dream resume` retries only the missing parts. `/memory dream run --wait` still blocks until the plan is ready.
 
 4. Apply what you agree with, and undo it if you change your mind:
 
