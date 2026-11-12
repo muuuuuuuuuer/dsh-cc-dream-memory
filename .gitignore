@@ -8,4 +8,6 @@ coverage/
 
 eval/runs/
 
+.baseline/
+
 eval/rescores/
