@@ -290,6 +290,7 @@ export function mergeClaims({
     const lines = page ? bodyLines(page.body) : [];
     let changed = false;
     let corrected = false;
+    let descriptionChanged = false;
     let nextDescription = page?.description ?? '';
     let nextType = page?.type ?? 'project';
     let nextName = page?.name ?? file.replace(/\.md$/u, '');
@@ -299,15 +300,18 @@ export function mergeClaims({
       const { claim, citations } = entry;
       const line = claimLine(claim, citations);
       const existingText = normalizeForMatch(lines.join('\n'));
+      // A one-line summary for the first-turn index is a proposal in its own
+      // right: a fact that is already recorded can still get a better line.
+      if (entry.description !== '' && entry.description !== nextDescription) {
+        nextDescription = entry.description;
+        descriptionChanged = true;
+      } else if (nextDescription === '') {
+        nextDescription = descriptionFromClaim(claim);
+      }
       if (existingText.includes(normalizeForMatch(claim.text))) continue;
       if (entry.created) {
         nextType = typeFromClaim(claim);
         nextName = oneLine(claim.description, 90) || nextName;
-      }
-      if (entry.description !== '' && entry.description !== nextDescription) {
-        nextDescription = entry.description;
-      } else if (nextDescription === '') {
-        nextDescription = descriptionFromClaim(claim);
       }
 
       const matching = verdicts.filter((verdict) =>
@@ -345,12 +349,13 @@ export function mergeClaims({
       changed = true;
     }
 
-    if (!changed) continue;
+    if (!changed && !(descriptionChanged && page !== undefined)) continue;
     let nextLines = lines;
     if (corrected) nextLines = withStatusCurrent(nextLines);
     if (historyEntries.length > 0) nextLines = appendToHistory(nextLines, historyEntries);
     const body = `${nextLines.join('\n').replace(/\s+$/u, '')}\n`;
-    if (page !== undefined && body === `${text(page.body).replace(/\s+$/u, '')}\n`) continue;
+    const sameBody = page !== undefined && body === `${text(page.body).replace(/\s+$/u, '')}\n`;
+    if (sameBody && !(descriptionChanged && nextDescription !== oneLine(page.description, 400))) continue;
     operations.push({
       op: 'write',
       scope: 'project',

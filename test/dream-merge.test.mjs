@@ -260,3 +260,36 @@ test('the default pipeline path never calls the organizer', async (t) => {
   assert.equal(write.file, saved.file);
   assert.match(write.body, /Deploy with make release\./);
 });
+
+test('a better one-line summary is proposed on its own, even for a known fact', () => {
+  const result = mergeClaims({
+    analyses: [{
+      sessionId: 's1',
+      claims: [claim({ description: 'How this project ships a release' })],
+      verify: [],
+    }],
+    memoryPages: [page({
+      body: '- Deploy with make release. ^[s0#1, 2026-11-01]\n',
+      description: 'Release steps',
+    })],
+  });
+
+  const write = result.operations.find((op) => op.op === 'write');
+  assert.ok(write, 'a summary-only change is still one operation');
+  assert.equal(write.description, 'How this project ships a release');
+  assert.equal(write.body, '- Deploy with make release. ^[s0#1, 2026-11-01]\n', 'the body is not rewritten');
+  assert.match(write.baseHash ?? '', /^[0-9a-f]{64}$/);
+  assert.deepEqual(result.touched, ['project_deploy.md']);
+});
+
+test('a summary that repeats the current line is not a change', () => {
+  const result = mergeClaims({
+    analyses: [{
+      sessionId: 's1',
+      claims: [claim({ description: 'Release steps' })],
+      verify: [],
+    }],
+    memoryPages: [page({ body: '- Deploy with make release. ^[s0#1, 2026-11-01]\n' })],
+  });
+  assert.deepEqual(result.operations, []);
+});
