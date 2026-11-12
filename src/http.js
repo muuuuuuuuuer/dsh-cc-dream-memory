@@ -161,11 +161,22 @@ function readBody(req) {
 export function createHttpHandler({ runtime, token }) {
   const service = createStatusService(runtime);
 
-  /** Resolve one project context for the request. */
+  /**
+   * Resolve one project context for the request.
+   *
+   * An explicit session id that this process cannot map is a hard error: a
+   * stale page must never be served by, or write into, whichever project
+   * happens to be loaded. Only a request that names no session may fall back
+   * to the single loaded project.
+   */
   async function resolveProject(sessionId) {
-    if (typeof sessionId === 'string' && sessionId !== '') {
-      const projectContext = await runtime.forSessionId(sessionId);
+    const explicit = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (explicit !== '') {
+      const projectContext = await runtime.forSessionId(explicit);
       if (projectContext) return projectContext;
+      throw Object.assign(new Error(`session ${explicit} is not loaded in this process`), {
+        code: 'UNKNOWN_SESSION',
+      });
     }
     const projects = typeof runtime.projects === 'function' ? runtime.projects() : [];
     if (projects.length === 1) return projects[0];
@@ -583,6 +594,13 @@ export function createHttpHandler({ runtime, token }) {
       }
       if (code === 'BODY_TOO_LARGE') {
         return sendJson(res, 413, { ok: false, error: 'body-too-large', message: 'request body exceeds 256 KiB' });
+      }
+      if (code === 'UNKNOWN_SESSION') {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'unknown-session',
+          message: 'the request names a session that is not loaded; reopen the project and try again',
+        });
       }
       return sendJson(res, 500, {
         ok: false,

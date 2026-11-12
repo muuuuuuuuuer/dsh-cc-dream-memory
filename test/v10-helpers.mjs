@@ -216,6 +216,9 @@ export async function commandEnv(t, configOverrides = {}, llmOptions = {}) {
 /** HTTP handler over a runtime env with a fixed token. */
 export async function httpEnv(t, configOverrides = {}, llmOptions = {}) {
   const env = await runtimeEnv(t, configOverrides, llmOptions);
+  // The page always names its live session; register one so request routing
+  // resolves it instead of treating the id as stale.
+  await env.runtime.forAgent({ id: 's1' });
   const token = 'v10-test-token-abcdef';
   const handler = env.mods.http.createHttpHandler({ runtime: env.runtime, token });
   const handle = typeof handler === 'function' ? handler : handler.handle.bind(handler);
