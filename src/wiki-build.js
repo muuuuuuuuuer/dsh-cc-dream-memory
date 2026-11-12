@@ -201,6 +201,38 @@ async function writeCachedClaims(store, sourceId, digest, claims) {
   await store._atomicWrite(path.join(dir, `${sourceId}.json`), `${JSON.stringify({ sha256: digest, claims }, null, 2)}\n`);
 }
 
+/**
+ * Parts of a long document that were already extracted, kept outside the
+ * generation so an interrupted build only redoes the parts that failed.
+ */
+async function readCachedParts(store, sourceId, digest) {
+  if (typeof store?.contentDir !== 'string' || typeof sourceId !== 'string' || sourceId === '') return new Map();
+  const file = path.join(store.contentDir, WIKI_CLAIMS_DIR, `${sourceId}.parts.json`);
+  try {
+    const cached = JSON.parse(await fs.readFile(file, 'utf8'));
+    if (cached?.sha256 !== digest || typeof cached.parts !== 'object' || cached.parts === null) return new Map();
+    return new Map(Object.entries(cached.parts).map(([index, part]) => [Number(index), part]));
+  } catch (error) {
+    if (!isMissing(error)) manifestWarning(`read parts of ${sourceId}`, error);
+    return new Map();
+  }
+}
+
+async function writeCachedPart(store, sourceId, digest, index, chunkDigest, claims) {
+  if (typeof store?.contentDir !== 'string') return;
+  const dir = path.join(store.contentDir, WIKI_CLAIMS_DIR);
+  await fs.mkdir(dir, { recursive: true });
+  const parts = await readCachedParts(store, sourceId, digest);
+  parts.set(index, { digest: chunkDigest, claims });
+  const record = { sha256: digest, parts: Object.fromEntries([...parts].sort((a, b) => a[0] - b[0])) };
+  await store._atomicWrite(path.join(dir, `${sourceId}.parts.json`), `${JSON.stringify(record, null, 2)}\n`);
+}
+
+async function clearCachedParts(store, sourceId) {
+  if (typeof store?.contentDir !== 'string') return;
+  await fs.rm(path.join(store.contentDir, WIKI_CLAIMS_DIR, `${sourceId}.parts.json`), { force: true });
+}
+
 /** Split a long document into bounded chunks on paragraph boundaries. */
 export function chunkDocument(text, maxChars = 20_000) {
   const value = String(text ?? '').replace(/\r\n?/g, '\n');
@@ -760,7 +792,7 @@ export class WikiBuilder {
       staged: true,
       applied: false,
       published: false,
-      documents: { expected: 0, processed: 0, failed: [], skipped: 0, reused: 0 },
+      documents: { expected: 0, processed: 0, failed: [], skipped: 0, reused: 0, partsReused: 0 },
       pages: { created: 0, updated: 0, total: 0, merged: 0 },
       files: { created: [], updated: [], deleted: [] },
       links: { added: 0, dangling: 0, repaired: 0 },
@@ -880,7 +912,21 @@ export class WikiBuilder {
             return;
           }
           const authored = [];
+          const partCache = await readCachedParts(liveStore, doc.sourceId, doc.sha256);
           for (let index = 0; index < chunks.length; index += 1) {
+            const chunkDigest = sha256(chunks[index]);
+            const cachedPart = partCache.get(index);
+            if (cachedPart && cachedPart.digest === chunkDigest && Array.isArray(cachedPart.claims)) {
+              // A part that was extracted before the interruption is reused as
+              // is: only the parts that never finished cost another call.
+              manifest.documents.partsReused += 1;
+              const normalizedChunk = String(chunks[index] ?? '').toLowerCase().replace(/\s+/g, ' ');
+              for (const claim of cachedPart.claims) {
+                authored.push(claim);
+                addClaim(claim, normalizedChunk, doc);
+              }
+              continue;
+            }
             const reply = await complete(
               WIKI_EXTRACTOR_PROMPT,
               buildExtractorPrompt({ doc, chunk: chunks[index], part: index + 1, parts: chunks.length, focus }),
@@ -898,9 +944,11 @@ export class WikiBuilder {
               authored.push(claim);
               addClaim(claim, normalizedChunk, doc);
             }
+            if (!dryRun) await writeCachedPart(liveStore, doc.sourceId, doc.sha256, index, chunkDigest, claims);
           }
           if (!dryRun && authored.length > 0) {
             await writeCachedClaims(stagedStore, doc.sourceId, doc.sha256, authored);
+            await clearCachedParts(liveStore, doc.sourceId).catch((error) => manifestWarning('clear parts', error));
           }
           manifest.documents.processed += 1;
         } catch (error) {
@@ -914,6 +962,7 @@ export class WikiBuilder {
         durationMs: Date.now() - extractStarted,
         calls: Math.max(0, collected.documents.length - manifest.documents.reused),
         reused: manifest.documents.reused,
+        partsReused: manifest.documents.partsReused,
         claims: extracted.length,
         documents: manifest.documents.processed,
         failed: failedDocs.length,
