@@ -202,6 +202,7 @@
   "tidy.addedLines": "将新增的正文行",
   "tidy.truncated": "以下文件太长，方案不会改写：{files}",
   "tidy.dropped": "有 {n} 项不安全的改动已被剔除。",
+  "tidy.reviewItems": "有 {n} 条结论需要人来判断，已暂不写入。",
   "tidy.costExceeded": "这个方案超出了 token 上限。",
   "tidy.last": "上次 Dream：{time}",
   "tidy.never": "还没 Dream 过",

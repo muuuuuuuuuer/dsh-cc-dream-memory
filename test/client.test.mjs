@@ -408,6 +408,25 @@ test('client: Dream cost preview localizes unlimited usage and also guards regen
   }
 });
 
+test('client: a claim the host left for review is shown with its reason', async () => {
+  const ui = await dreamTabHarness({
+    waiting: true,
+    previewPlan: {
+      kind: 'dream-v2',
+      coverageComplete: true,
+      ops: [{
+        index: 0, op: 'write', file: 'release.md', before: '', after: '- Release takes 9 seconds. ^[a#p1, 2026-01-01]',
+        changed: true, removedLines: [], addedLines: [],
+      }],
+      review: [{ file: 'release.md', claim: 'Release takes 12 seconds', reason: 'more than one line could be meant' }],
+    },
+  });
+  const text = collectText(ui.render().tree);
+  assert.match(text, /1 claim\(s\) need a person to decide/u);
+  assert.match(text, /Release takes 12 seconds/u);
+  assert.match(text, /more than one line could be meant/u);
+});
+
 test('client: expanding a Dream operation lists removed body lines as literal numbered text', async (t) => {
   for (const [localeActive, label] of [['en', 'Removed body lines'], ['zh', '将删除的正文行']]) {
     await t.test(localeActive, async () => {

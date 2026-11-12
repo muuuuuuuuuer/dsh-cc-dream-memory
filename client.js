@@ -258,6 +258,7 @@ window.__ModuleLoader__.load({
       'tidy.addedLines': 'Added body lines',
       'tidy.truncated': 'Too long to rewrite safely, left as is: {files}',
       'tidy.dropped': '{n} unsafe changes were left out of the plan.',
+  'tidy.reviewItems': '{n} claim(s) need a person to decide; nothing was written for them.',
       'tidy.costExceeded': 'This plan went over the token limit.',
       'tidy.last': 'Last dream {time}',
       'tidy.never': 'Never dreamed',
@@ -593,6 +594,7 @@ window.__ModuleLoader__.load({
       'tidy.addedLines': '将新增的正文行',
       'tidy.truncated': '以下文件太长，方案不会改写：{files}',
       'tidy.dropped': '有 {n} 项不安全的改动已被剔除。',
+  'tidy.reviewItems': '有 {n} 条结论需要人来判断，已暂不写入。',
       'tidy.costExceeded': '这个方案超出了 token 上限。',
       'tidy.last': '上次 Dream：{time}',
       'tidy.never': '还没 Dream 过',
@@ -1805,6 +1807,15 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           ? source.evidenceWarnings.filter((item) => typeof item === 'string')
           : [],
         evidenceError: typeof source.evidenceError === 'string' ? source.evidenceError : '',
+        review: Array.isArray(source.review)
+          ? source.review
+              .filter((item) => item && typeof item === 'object')
+              .map((item) => ({
+                file: typeof item.file === 'string' ? item.file : '',
+                claim: typeof item.claim === 'string' ? item.claim : '',
+                reason: typeof item.reason === 'string' ? item.reason : '',
+              }))
+          : [],
       };
     }
 
@@ -4290,6 +4301,18 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         }
         if (plan && plan.costExceeded) {
           notes.push(h('div', { key: 'co', className: 'ccm-note ccm-note-error' }, t('tidy.costExceeded')));
+        }
+        if (plan && plan.review.length > 0) {
+          notes.push(h('div', { key: 'rv', className: 'ccm-note ccm-note-warn' }, t('tidy.reviewItems', { n: plan.review.length })));
+          plan.review.slice(0, 3).forEach((item, index) => {
+            notes.push(
+              h(
+                'div',
+                { key: 'rv' + index, className: 'ccm-note' },
+                `${item.file || '—'}: ${item.claim}${item.reason ? ` (${item.reason})` : ''}`,
+              ),
+            );
+          });
         }
         if (plan) {
           [...plan.warnings, ...plan.evidenceWarnings].slice(0, 6).forEach((warning, index) => {

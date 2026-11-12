@@ -202,6 +202,7 @@
   "tidy.addedLines": "Added body lines",
   "tidy.truncated": "Too long to rewrite safely, left as is: {files}",
   "tidy.dropped": "{n} unsafe changes were left out of the plan.",
+  "tidy.reviewItems": "{n} claim(s) need a person to decide; nothing was written for them.",
   "tidy.costExceeded": "This plan went over the token limit.",
   "tidy.last": "Last dream {time}",
   "tidy.never": "Never dreamed",
