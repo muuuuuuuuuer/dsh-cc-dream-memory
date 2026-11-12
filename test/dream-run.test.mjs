@@ -49,7 +49,7 @@ function streamOf(text, { finish = 'stop', signal, block } = {}) {
  * Scripted host: `onAnalyzer(options, call)` decides each analyzer call.
  * The organizer always answers with ORGANIZER_REPLY.
  */
-function scriptedCtx({ onAnalyzer, events, startedAt = Date.parse('2026-11-11T12:00:00Z') }) {
+function scriptedCtx({ onAnalyzer, events, eventsById, startedAt = Date.parse('2026-11-11T12:00:00Z') }) {
   let analyzerCalls = 0;
   return {
     calls: () => analyzerCalls,
@@ -70,7 +70,7 @@ function scriptedCtx({ onAnalyzer, events, startedAt = Date.parse('2026-11-11T12
         if (name === 'agentDefaultModel') return { currentSelection: () => ({ provider: 'fake', model: 'fake' }) };
         if (name === 'sessionQuery') {
           return {
-            readSession: async (id) => ({ session: { id, createdAt: startedAt }, events }),
+            readSession: async (id) => ({ session: { id, createdAt: startedAt }, events: (eventsById && eventsById[id]) || events }),
             filterSessions: async () => [],
           };
         }
@@ -339,4 +339,54 @@ test('status reports unknown and empty runs without throwing', async (t) => {
   assert.deepEqual([unknown.ok, unknown.error], [false, 'unknown-run']);
   assert.deepEqual((await pipeline.cancel(e.pctx, '')).error, 'not-running');
   assert.deepEqual((await pipeline.resume(e.pctx, '2026-11-11T00-00-00-abcdef')).error, 'unknown-run');
+});
+
+test('eight long sessions survive one truncated unit and one transport failure without duplicate analysis', async (t) => {
+  const e = await env(t);
+  const ids = Array.from({ length: 8 }, (_, index) => `s${index + 1}`);
+  for (const id of ids) await e.state.ensureSession(id);
+  const eventsById = Object.fromEntries(ids.map((id, index) => [id, longEvents(index === 0 ? 80_000 : 30_000)]));
+  let truncating = true;
+  let failing = true;
+  const script = scriptedCtx({
+    eventsById,
+    onAnalyzer: ({ call }) => {
+      if (truncating && call === 0) {
+        truncating = false;
+        return streamOf(JSON.stringify(ANALYZER_REPLY), { finish: 'max-tokens' });
+      }
+      if (failing && call === 3) {
+        failing = false;
+        return streamOf('', { finish: 'error' });
+      }
+      return streamOf(JSON.stringify(ANALYZER_REPLY));
+    },
+  });
+  const { pipeline } = pipelineFor(e, script);
+  const started = await pipeline.start({ pctx: e.pctx, force: true });
+  const first = await waitForStatus(pipeline, e.pctx, started.runId, settled);
+  assert.equal(first.status, 'failed', 'a unit out of retries is a resumable failure');
+  assert.equal(first.counts.failed, 1);
+  assert.match(first.error, /unit\(s\) failed/u);
+  assert.equal(first.counts.done + first.counts.failed, first.input.expectedUnits);
+  const doneBefore = first.counts.done;
+  assert.ok(first.input.sessions.length === 8, 'every session is in the plan');
+  await pipeline.settled(e.pctx);
+
+  const resumedScript = scriptedCtx({ eventsById, onAnalyzer: () => streamOf(JSON.stringify(ANALYZER_REPLY)) });
+  const resumed = pipelineFor(e, resumedScript);
+  const again = await resumed.pipeline.resume(e.pctx, started.runId);
+  assert.equal(again.started, true);
+  await resumed.pipeline.settled(e.pctx, started.runId);
+  const second = await waitForStatus(resumed.pipeline, e.pctx, started.runId, settled);
+  assert.equal(second.status, 'done', second.error);
+  assert.equal(second.coverageComplete, true);
+  assert.equal(second.counts.done, second.input.expectedUnits);
+  assert.equal(second.counts.failed, 0);
+  assert.equal(
+    resumedScript.calls(),
+    second.input.expectedUnits - doneBefore,
+    'resume must only analyze the units that were not done',
+  );
+  await resumed.pipeline.settled(e.pctx);
 });
