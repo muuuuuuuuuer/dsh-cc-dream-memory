@@ -114,8 +114,11 @@
 - [ ] 借用 Dream 的运行状态语义，使用 Wiki 现有 .staging 与 .builds 保存每份文档的提取进度和归一化来源摘要。构建范围由开始时的文件清单和摘要固定。长来源分段，长页面按主题或章节拆分并维持链接。已知两处会悄悄截断：页面正文按 `maxPageChars` 直接截掉（[wiki-build.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/wiki-build.js:268>)），organizer 提示词超过 80K 字符后丢弃余下内容（[wiki-build.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/wiki-build.js:311>)）；另外检查 chunkDocument、normalizeExtraction、normalizeWikiWrites 的输出裁剪。单次输出失败时重做该段，继续使用已核验的提取记录。
   - 已完成（0.12.2）：静默截断已消除——`splitPageBody` 在行/标题边界把超长页面拆成 `x.md`、`x-2.md`…（`normalizeWikiWrites` 不再 `slice`）；organizer 超预算时在提示词里点名被略过的页面，并写入 `manifest.warnings`，那些页面保持不动；`normalizeExtraction` 丢弃的 claim 数记入构建警告；`chunkDocument` 本身无损。
   - 未完成：每份文档的提取进度（失败后续跑）与宿主合并主题；跨构建复用已做——`.claims/<sourceId>.json` 随当前 generation 保存归一化来源摘要与已核验 claims，重建时摘要相同则不调 extractor（`manifest.documents.reused`）。
-- [ ] 现有段落 locator、claimId 和整代指针继续负责来源和发布。按段写出可引用事实，宿主生成索引；每条断言绑定可读来源，保留跨页链接。完整构建校验后原子切换 GENERATION。旧代的查询请求继续读原来的代，读取结束明确关闭引用，清理只处理无活跃读者的旧代。新代失败时仍能查询当前代。
+- [x] 现有段落 locator、claimId 和整代指针继续负责来源和发布。按段写出可引用事实，宿主生成索引；每条断言绑定可读来源，保留跨页链接。完整构建校验后原子切换 GENERATION。旧代的查询请求继续读原来的代，读取结束明确关闭引用，清理只处理无活跃读者的旧代。新代失败时仍能查询当前代。
+  - 实施说明（0.12.2）：这部分为已有实现，本次核对并在测试中确认：`publishStagedWiki` 先写 manifest 再原子写 `GENERATION`；`test/wiki-build.test.mjs` 覆盖「发布中断不混代」「新代失败时旧代仍可查询」「活读者在用的代不被清理」。
 - [ ] 以来源分段为并发提取单元，独立保存已核验的证据，由宿主在发布前统一合并主题和修复明确的同义链接。源文里的命令、数值、条件和需要逐字核查的事实保留可定位原文。悬空链接在能唯一定位目标时修正，无法定位时保留明确缺口。相同语料二次构建复用来源摘要与已核验记录；改动来源只重做受影响内容，并复查旧引用。两份来源对同一数字或条件说法不一致时，两条都保留并各自标注来源，标为冲突；被新资料取代的旧数字标为被取代。回答时说明存在冲突。
+  - 已做：按文档并发提取（`wikiBuildConcurrency`），claims 带 `sourceId#locator`，宿主写索引；两次相同语料只重做改动过的文档（`.claims/<sourceId>.json` 按摘要复用）；不同来源的同一数字各自保留并带自己的引用（`test/wiki-build.test.mjs` 的 `$123M` / `$125M` 双来源用例）。
+  - 未做：发布前的宿主主题合并与同义链接修复、`被取代` 标记、答案中显式的冲突声明。
 - [ ] 用最终真实模型构建双来源语料，其中至少一份超过旧分块阈值，并把关键事实放在末尾。验收跨来源答案、错误 claimId、引用错段、无记录、失败时旧代可读，以及新会话是否能看到 Wiki 提示。问答走只读 Wiki 工具，返回事实出处或明确缺哪类资料。
 
 **交付条件**  
