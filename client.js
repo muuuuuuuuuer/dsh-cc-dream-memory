@@ -716,7 +716,7 @@ window.__ModuleLoader__.load({
 
     const DICTIONARIES = { en: EN, zh: ZH };
     /** Data contract this page expects from the backend (`/status.uiApi`). */
-    const UI_API = 2;
+    const UI_API = 3;
     const MONO =
       'var(--ds-font-family-code,ui-monospace,"Cascadia Code",SFMono-Regular,Menlo,Consolas,monospace)';
 
@@ -1557,6 +1557,25 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         },
         version: typeof record.version === 'string' ? record.version : '',
         uiApi: asNumber(record.uiApi, 0),
+        build:
+          record.build && typeof record.build === 'object'
+            ? {
+                id: typeof record.build.id === 'string' ? record.build.id : '',
+                packageVersion:
+                  typeof record.build.packageVersion === 'string' ? record.build.packageVersion : '',
+              }
+            : null,
+        capabilities:
+          record.capabilities && typeof record.capabilities === 'object'
+            ? {
+                dreamPipeline:
+                  record.capabilities.dreamPipeline === 'v2' ? 'v2' : 'classic',
+                dreamRuns: record.capabilities.dreamRuns === true,
+                claimMerge: record.capabilities.claimMerge === true,
+                wiki: record.capabilities.wiki === true,
+                explicitSaveLedger: record.capabilities.explicitSaveLedger === true,
+              }
+            : null,
         injection: (() => {
           const injection = record.injection && typeof record.injection === 'object' ? record.injection : {};
           return {
@@ -5307,7 +5326,13 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
                   }),
                 )
               : null,
-            status.version ? h('div', { className: 'ccm-help', style: { marginTop: 6 } }, t('about.version', { v: status.version })) : null,
+            status.version
+              ? h(
+                  'div',
+                  { className: 'ccm-help', style: { marginTop: 6 } },
+                  `${t('about.version', { v: status.version })}${status.build?.id ? ` · ${status.build.id}` : ''}`,
+                )
+              : null,
           ),
         ),
       );

@@ -18,6 +18,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { VERSION, buildHealth } from './meta.js';
+import { buildIdentity } from './build-id.js';
 import { NEVER_READ_LIMIT, metricsSummary, metricsTrend, readMetrics, recordWrite } from './metrics.js';
 import {
   SECRET_DETECTED,
@@ -36,7 +37,7 @@ import { entryFingerprint, readLedger } from './verification-ledger.js';
  * compares it with its own and says so when the running backend is older
  * (the host keeps imported modules until it restarts).
  */
-export const UI_API = 2;
+export const UI_API = 3;
 
 /** Changelog tail length used by the UI. */
 export const DEFAULT_LOG_LINES = 40;
@@ -1190,6 +1191,14 @@ export function createStatusService(runtime) {
       ok: true,
       version: VERSION,
       uiApi: UI_API,
+      build: buildIdentity(),
+      capabilities: {
+        dreamPipeline: config.dreamPipeline === 'v2' ? 'v2' : 'classic',
+        dreamRuns: config.dreamPipeline !== 'classic',
+        claimMerge: config.dreamOrganizerMode !== 'maintenance',
+        wiki: config.wikiEnabled === true,
+        explicitSaveLedger: true,
+      },
       project: {
         projectRoot: String(pctx?.paths?.projectRoot ?? ''),
         memoryDir: String(pctx?.paths?.memoryDir ?? ''),
