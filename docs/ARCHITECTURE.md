@@ -64,7 +64,7 @@
 | `src/runtime.js` | 项目上下文（按 **projectRoot** 缓存，repo/子目录共享）、会话→项目解析、运行时 overrides、rules 读写、dream 入口、注入失效广播 | `MemoryRuntime` |
 | `src/store.js` | 记忆文件 CRUD、索引维护、预算截断、unicode 文件名、冲突后缀、软删除、索引一致性、中文 bigram 检索 | `MemoryStore`, `MEMORY_TYPES`, `slugify` |
 | `src/state.js` | 项目状态 JSON：lastDreamAt、sessionsSince、dreamProcessedSessions（水位线）、lastPlanPath、pendingProposal、连续失败数 | `ProjectState` |
-| `src/inject.js` | 每 agent 注册 `systemPrompt.context`；会话级冻结/live 两种模式；compaction 刷新；子会话开关 | `registerInjection`, `buildInjectionText`, `CONTEXT_NAME` |
+| `src/inject.js` | 每 agent 注册 `systemPrompt.context`；会话级冻结/live 两种模式；compaction 刷新；子会话开关；索引导航按核验记录遮罩简介 | `registerInjection`, `buildInjectionText`, `buildNavigationIndex`, `CONTEXT_NAME` |
 | `src/write-review.js` | 模型写入的共用边界：低置信/confirm/冲突待审，force 仅绕过重复 | `reviewWrite`, `memoryHash` |
 | `src/tools.js` | 4 个 `memory_*` 工具（JSON Schema + output.render）；关闭态门控 | `registerTools` |
 | `src/commands.js` | `/memory` 子命令族、`/remember`；纯函数解析器；JSON 输出 | `registerCommands`, `parseCommandLine`, `parseRememberInput` |
@@ -272,6 +272,7 @@ DSH 创建 agent
             ├─ buildText(agent):
             │    runtime.forAgent(agent) → ProjectContext
             │    store.injectedIndex('project')      # 前 200 行/25KB
+            │    buildNavigationIndex(index)         # 只给已核验的现行笔记显示简介
             │    runtime.rulesFor(ctx)               # project > global > 默认
             │    buildInjectionText({memoryDir, index, rules, caution})
             └─ ensureRegistered(agent): agent.ctx.systemPrompt.context({

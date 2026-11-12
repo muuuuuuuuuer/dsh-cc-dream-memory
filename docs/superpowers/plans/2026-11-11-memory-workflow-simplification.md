@@ -48,11 +48,11 @@
 
 ## 0. 固定真实交付基线
 
-- [ ] 先在 default-workspace 源码里把当前未提交的改动提交为两个 commit：后端、文档与测试一个；client.js、locale 和 .ui-freeze.json 一个，以 `UI-FREEZE:` 开头。提交前确认哪些未跟踪目录应入库。从这里切出实施分支，并把本计划移入该仓库的 docs/superpowers/plans/。不要以旧 worktree 的干净 HEAD 覆盖当前源码。
-- [ ] 从桌面 profile 的安装指向反查实际源码、包版本和启动加载路径。记录分支、打包文件清单及关键模块哈希，确认安装指向的就是上一步的提交。
-- [ ] 将现有项目记忆和旧运行清单复制到隔离 profile，形成可重复的现场样例。使用测试数据运行，真实笔记留在原项目。保存四个基准现象：11 条旧笔记、首轮索引空、失败预览被当待处理、整理输出截断。
-- [ ] 冷启动实际包并验证命令、工具、Host HTTP。跑 node scripts/verify.mjs、node scripts/ui-freeze.mjs、node eval/validate.mjs，记下实际基线结果。基线异常先记录并判断归属，后续验收使用同一份产物。
-- [ ] 写入的请求严格定位项目。先修 [HTTP resolveProject](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/http.js:165>)：显式 sessionId 失效时拒绝，写入必须有可验证的目标项目。为只有一个已加载项目的反例加回归。命令、工具与 HTTP 使用统一的项目身份。
+- [x] 先在 default-workspace 源码里把当前未提交的改动提交为两个 commit：后端、文档与测试一个；client.js、locale 和 .ui-freeze.json 一个，以 `UI-FREEZE:` 开头。提交前确认哪些未跟踪目录应入库。从这里切出实施分支，并把本计划移入该仓库的 docs/superpowers/plans/。不要以旧 worktree 的干净 HEAD 覆盖当前源码。
+- [x] 从桌面 profile 的安装指向反查实际源码、包版本和启动加载路径。记录分支、打包文件清单及关键模块哈希，确认安装指向的就是上一步的提交。
+- [x] 将现有项目记忆和旧运行清单复制到隔离 profile，形成可重复的现场样例。使用测试数据运行，真实笔记留在原项目。保存四个基准现象：11 条旧笔记、首轮索引空、失败预览被当待处理、整理输出截断。
+- [x] 冷启动实际包并验证命令、工具、Host HTTP。跑 node scripts/verify.mjs、node scripts/ui-freeze.mjs、node eval/validate.mjs，记下实际基线结果。基线异常先记录并判断归属，后续验收使用同一份产物。
+- [x] 写入的请求严格定位项目。先修 [HTTP resolveProject](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/http.js:165>)：显式 sessionId 失效时拒绝，写入必须有可验证的目标项目。为只有一个已加载项目的反例加回归。命令、工具与 HTTP 使用统一的项目身份。
 
 **交付条件**  
 现有改动已提交入库，桌面包与测试 checkout 可相互核对；旧会话 ID 不会把构建或写入路由到另一项目。
@@ -61,12 +61,12 @@
 
 涉及 [commands.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/commands.js:1646>)、[tools.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/tools.js:384>)、[user-evidence.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/user-evidence.js:91>)、[store.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/store.js:928>)、[inject.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/inject.js:350>)、[recall.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/recall.js:441>)、[verification-ledger.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/verification-ledger.js:57>)。
 
-- [ ] 把已有 /remember、memory_save、memory_update 的成功回执统一为条目身份、作用域和结果。保留现有命令和工具名称。明确保存的核对已经存在，本任务不重做：宿主用 `verifyUserEvidence` 在会话记录里找到用户原话，再用 `bindUserClaim` 检查写入内容出自这句原话（[tools.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/tools.js:418>)）。/remember 作为明确的人类操作，继续使用已有直接路径。用例覆盖明确采纳一条报告、无关原话、必要条件丢失、重复保存和旧值纠正。
-- [ ] 明确保存和纠正当场写入核验记录。首轮要求笔记正文有 `STATUS: current`，且指纹与核验记录一致（[inject.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/inject.js:45>)）。目前 `STATUS: current` 只在纠正时写入（[write-review.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/write-review.js:150>)），核验记录只由 Dream 写入（[dream.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/dream.js:1263>)）。所以 /remember 和 memory_save 新存的笔记进不了首轮；memory_update 纠正后指纹变化，笔记会从首轮掉出，直到下次 Dream。/remember，以及宿主核对过用户原话的 memory_save 和 memory_update，当场用 `recordVerification` 写入记录，来源标为 `user-explicit`；转发和推断的写入不写。索引导航下，这份记录决定是否展示简介；若保留 Hot-only 选项，新存笔记还要补 `STATUS: current`。用例覆盖：保存后新会话首轮可见，纠正后首轮显示新值，转发材料保存后不会被当作已核验。
-- [ ] 启动注入改为短规则和可导航的项目索引。完整索引已经存在，本任务不另做：关闭 `injectHotOnly` 时，宿主加载自己生成的 MEMORY.md 开头部分，每条一行「名称 — 简介」，上限 200 行 / 25 KB（[store.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/store.js:282>)）。把 bundle 默认改为索引导航，再加一条过滤：已核验现行条目展示简介，缺核验的旧笔记只显示名称，正文按需读取；失效和 Superseded 历史留在显式读取路径。验证 11 条旧笔记无台账时仍有查找入口。同阶段更新记忆页里首轮加载的说明和信任标记。
-- [ ] 读取和搜索的续读入口已经存在，本任务只补测试。memory_read 返回完整正文；自动召回超过 3,000 字时截断，并提示用 memory_read 读余下部分（[recall.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/recall.js:44>)）；搜索按 limit 取，最多 100 条；首轮说明还有多少条笔记可以搜索（[inject.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/inject.js:187>)）。记忆笔记不需要分页读取，真正的截断在 Wiki 构建，见阶段 4。测试超过启动索引预算的条目可搜索，且末尾正文可读。现有旧值排除和更正后同会话版本召回继续验证。
-- [ ] 调整现有 rules.js / inject.js 中的保存提示，让模型知道记忆用于减少下一次的重复试错。保留「用户明确要求」与「对未来有用且有依据」两条主线。自动提议优先保留方法、依据和适用条件，能从仓库恢复的文件清单、一次性进度、尚未验证的猜测留在原会话。覆盖同一工作流里同时出现已验证经验、失败猜测和转发材料的场景。不要把只有失败经验可保存、每轮必须保存或固定每轮条数写成规则。
-- [ ] 补充读取和验证的提示：开工前先看首轮索引；照着记忆里的命令或值行动前先核实，发现错误当场用 memory_update 纠正。
+- [x] 把已有 /remember、memory_save、memory_update 的成功回执统一为条目身份、作用域和结果。保留现有命令和工具名称。明确保存的核对已经存在，本任务不重做：宿主用 `verifyUserEvidence` 在会话记录里找到用户原话，再用 `bindUserClaim` 检查写入内容出自这句原话（[tools.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/tools.js:418>)）。/remember 作为明确的人类操作，继续使用已有直接路径。用例覆盖明确采纳一条报告、无关原话、必要条件丢失、重复保存和旧值纠正。
+- [x] 明确保存和纠正当场写入核验记录。首轮要求笔记正文有 `STATUS: current`，且指纹与核验记录一致（[inject.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/inject.js:45>)）。目前 `STATUS: current` 只在纠正时写入（[write-review.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/write-review.js:150>)），核验记录只由 Dream 写入（[dream.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/dream.js:1263>)）。所以 /remember 和 memory_save 新存的笔记进不了首轮；memory_update 纠正后指纹变化，笔记会从首轮掉出，直到下次 Dream。/remember，以及宿主核对过用户原话的 memory_save 和 memory_update，当场用 `recordVerification` 写入记录，来源标为 `user-explicit`；转发和推断的写入不写。索引导航下，这份记录决定是否展示简介；若保留 Hot-only 选项，新存笔记还要补 `STATUS: current`。用例覆盖：保存后新会话首轮可见，纠正后首轮显示新值，转发材料保存后不会被当作已核验。
+- [x] 启动注入改为短规则和可导航的项目索引。完整索引已经存在，本任务不另做：关闭 `injectHotOnly` 时，宿主加载自己生成的 MEMORY.md 开头部分，每条一行「名称 — 简介」，上限 200 行 / 25 KB（[store.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/store.js:282>)）。把 bundle 默认改为索引导航，再加一条过滤：已核验现行条目展示简介，缺核验的旧笔记只显示名称，正文按需读取；失效和 Superseded 历史留在显式读取路径。验证 11 条旧笔记无台账时仍有查找入口。同阶段更新记忆页里首轮加载的说明和信任标记。
+- [x] 读取和搜索的续读入口已经存在，本任务只补测试。memory_read 返回完整正文；自动召回超过 3,000 字时截断，并提示用 memory_read 读余下部分（[recall.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/recall.js:44>)）；搜索按 limit 取，最多 100 条；首轮说明还有多少条笔记可以搜索（[inject.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/inject.js:187>)）。记忆笔记不需要分页读取，真正的截断在 Wiki 构建，见阶段 4。测试超过启动索引预算的条目可搜索，且末尾正文可读。现有旧值排除和更正后同会话版本召回继续验证。
+- [x] 调整现有 rules.js / inject.js 中的保存提示，让模型知道记忆用于减少下一次的重复试错。保留「用户明确要求」与「对未来有用且有依据」两条主线。自动提议优先保留方法、依据和适用条件，能从仓库恢复的文件清单、一次性进度、尚未验证的猜测留在原会话。覆盖同一工作流里同时出现已验证经验、失败猜测和转发材料的场景。不要把只有失败经验可保存、每轮必须保存或固定每轮条数写成规则。
+- [x] 补充读取和验证的提示：开工前先看首轮索引；照着记忆里的命令或值行动前先核实，发现错误当场用 memory_update 纠正。
 - [ ] 先做一次桌面真实会话测试。在同一个项目中，会话 A 当场保存，会话 B 通过真实召回使用，用户更正后会话 C 使用新值。禁用 Dream 和 Wiki 做同一闭环，验证它们不参与日常保存。确认实际写入、展示、工具调用和回答，出现问题在本阶段收口。
 
 **交付条件**  

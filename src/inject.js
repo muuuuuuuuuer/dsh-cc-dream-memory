@@ -17,7 +17,7 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { verifiedPage } from './verification-ledger.js';
+import { entryFingerprint, readLedger, verifiedPage } from './verification-ledger.js';
 import { resolveWikiIndexFile } from './wiki-store.js';
 import { readMetrics, recordInjection } from './metrics.js';
 import { CORE_RULES, DEFAULT_RULES } from './rules.js';
@@ -86,6 +86,68 @@ export async function buildHotIndex({ store, paths, config, limit, scope = 'proj
     hotFiles: hot.map((entry) => entry.file),
     omitted: Math.max(0, entries.length - hot.length),
   };
+}
+
+/**
+ * Navigation index: list every note, but only attach the summary of a page the
+ * host verified as current.
+ *
+ * The full list stays inside the 200-line / 25 KB budget, so a new session can
+ * see that eleven notes exist without being able to trust them; the summary of
+ * each is revealed after its exact bytes are verified. A page edited after
+ * verification drops back to name-only until it is written again. Entries with
+ * no ledger record are never read here, so legacy projects cost no extra I/O.
+ * @param {{store:object, scope?:'project'|'user', index:object}} input
+ * @returns {Promise<object>} the index payload, with summaries masked.
+ */
+export async function buildNavigationIndex({ store, scope = 'project', index }) {
+  const base = index && typeof index === 'object' ? index : {};
+  const text = typeof base.text === 'string' ? base.text : '';
+  if (text === '' || typeof store.listEntries !== 'function') return base;
+  let ledger;
+  try {
+    ledger = await readLedger(store, scope);
+  } catch {
+    return base;
+  }
+  const records = ledger && typeof ledger.entries === 'object' && ledger.entries !== null ? ledger.entries : {};
+  const entries = new Map();
+  for (const entry of await Promise.resolve(store.listEntries(scope)).catch(() => [])) {
+    if (entry && typeof entry.file === 'string') entries.set(entry.file, entry);
+  }
+  const lines = [];
+  let masked = false;
+  for (const line of text.replace(/\n$/, '').split('\n')) {
+    const match = /^- \[([^\]]*)\]\(([^()]*)\)(.*)$/u.exec(line);
+    if (match === null) {
+      lines.push(line);
+      continue;
+    }
+    const entry = entries.get(match[2]);
+    const record = entry && records[entry.file] ? records[entry.file] : null;
+    let trusted = false;
+    if (entry && record) {
+      try {
+        const read = await store.readEntry(entry.file, scope);
+        const body = typeof read?.body === 'string' ? read.body : '';
+        trusted =
+          hotEligible(body) &&
+          record.hash ===
+            entryFingerprint({ name: entry.name, description: entry.description, body });
+      } catch {
+        trusted = false;
+      }
+    }
+    if (trusted) {
+      lines.push(line);
+      continue;
+    }
+    lines.push(`- [${match[1]}](${match[2]})`);
+    masked = true;
+  }
+  if (!masked) return base;
+  const nextText = `${lines.join('\n')}\n`;
+  return { ...base, text: nextText, bytes: Buffer.byteLength(nextText, 'utf8'), masked: true };
 }
 
 
@@ -177,6 +239,11 @@ export function buildInjectionText(input = {}) {
       lines.push(head === '' ? '(empty — no memories saved yet)' : head.replace(/\n$/, ''));
     }
     lines.push('</index>');
+    if (index.masked === true) {
+      lines.push(
+        '<index-note>entries without a summary are unverified; read one with memory_read before relying on it, and correct it with memory_update when it is wrong.</index-note>',
+      );
+    }
     if (index.hot === true) {
       const hotCount = Number(index.lines) || 0;
       const omitted = Number(index.omitted) || 0;
@@ -375,6 +442,12 @@ export function registerInjection(ctx, runtime, configOverride) {
         }
       } catch (error) {
         warn('hot index', error);
+      }
+    } else {
+      try {
+        injectedIndex = await buildNavigationIndex({ store, scope: 'project', index });
+      } catch (error) {
+        warn('navigation index', error);
       }
     }
     let user = null;

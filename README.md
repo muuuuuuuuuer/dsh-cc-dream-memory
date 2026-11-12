@@ -112,7 +112,7 @@ Run these in a session.
    /remember --type=project Release notes live in docs/releases.md
    ```
 
-2. Start a new session. The `MEMORY.md` index loads once and stays frozen for that session. When a message clearly matches a memory, the plugin attaches that memory to the step.
+2. Start a new session. The `MEMORY.md` index loads once and stays frozen for that session. When a message clearly matches a memory, the plugin attaches that memory to the step. A listed note shows its summary only when the host verified that exact text (an explicit save, a verified `memory_save`/`memory_update`, `/remember`, or a Dream write); older notes stay listed by name and are read on demand.
 
 3. After a few sessions, make a plan. This changes nothing:
 

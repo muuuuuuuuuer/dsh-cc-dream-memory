@@ -104,12 +104,14 @@ CONFLICT: [doc-1#p12, 2026-01-15] says revenue $123M;
 
 ## Recall and injection
 
-- New sessions can use a tiny hot set instead of the full index:
-  `injectHotOnly: true`, `injectHotEntries: 3`. A page is eligible only when it
-  explicitly says `STATUS: current` and carries `VERIFIED: YYYY-MM-DD`,
-  `USER CONFIRMED: YYYY-MM-DD` or `CONFIRMED: YYYY-MM-DD`. The host ranks
-  eligible pages by recorded reads, then recent updates; old unmarked notes stay
-  searchable but are never promoted into a first turn.
+- New sessions load the `MEMORY.md` index (200 lines / 25 KB): every note is
+  listed, but a line shows its summary only when the host ledger
+  (`verification.json`) matches the note's name, description and exact body.
+  Old unverified notes stay listed by name and are read on demand.
+- `injectHotOnly: true` (with `injectHotEntries`, default 3) switches to a tiny
+  hot set instead: the most-read verified current notes. The same ledger check
+  applies, so a hand-typed `STATUS: current`, `VERIFIED:` or `VERIFIED AGAINST:`
+  cannot promote a note.
 - The same eligibility filter applies to the compaction digest; an old note
   cannot enter it just because it was updated or read often.
 - `MEMORY.md` remains the full catalog for `memory_search`/`memory_read`.
@@ -166,7 +168,7 @@ No wiki tool writes. Query instructions are added to the injected context when
 
 ```yaml
 dreamPipeline: v2            # classic | v2
-injectHotOnly: true          # new sessions get a tiny hot set
+injectHotOnly: false         # true = tiny hot set instead of the full index
 injectHotEntries: 3
 autoRecallBody: true         # body search only when metadata finds nothing
 dreamAnalyzerConcurrency: 3

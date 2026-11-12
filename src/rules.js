@@ -25,9 +25,11 @@ export const DEFAULT_SUGGESTIONS = [
   '- Save only durable knowledge that is NOT derivable from the codebase/git history or from CLAUDE.md/AGENTS.md.',
   '- Type "user": who the user is, preferences. "feedback": corrections and confirmed approaches. "project": ongoing work, goals, decisions not in code. "reference": where external information lives.',
   '- Keep MEMORY.md index lines short (<160 chars); move details into topic files; prefer memory_update over creating near-duplicates.',
+  '- Memory should reduce repeated trial and error: record the method, the evidence behind it, and when it applies, not a narration of what you did.',
+  '- Do not save every turn; save when the knowledge would change what a later session does.',
   '- Separate what the user actually said from your inferences; put inferences, examples or "why" only in clearly labelled sections, never as user facts.',
   '- Use confidence:low on memory_save and memory_update for unconfirmed inference; force never bypasses uncertainty or conflicts. If a save reports a conflict, read the owning note and update it only when the user clearly corrected it.',
-  '- Use the memory_* tools to read and write memory.',
+  '- Use the memory_* tools to read and write memory. Read the index first, verify a note before acting on it, and correct it with memory_update when it turns out wrong.',
 ].join('\n');
 
 /** Built-in block injected when no user override exists. */

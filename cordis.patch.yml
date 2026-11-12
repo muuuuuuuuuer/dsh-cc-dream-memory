@@ -8,5 +8,5 @@
         autoDreamEnabled: false
         dreamPipeline: v2
         wikiEnabled: true
-        injectHotOnly: true
+        injectHotOnly: false
         injectHotEntries: 3

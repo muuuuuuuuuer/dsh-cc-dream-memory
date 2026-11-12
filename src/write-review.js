@@ -163,6 +163,20 @@ export function composeCorrection({ existingBody, content, source = {}, date, no
 }
 
 /**
+ * Mark a body the user just stated as the current value.
+ *
+ * Only writes backed by a verified user quote reach here: a hand-edited note
+ * keeps whatever status it had, so an inference can never mint one.
+ * @param {string} content
+ * @returns {string}
+ */
+export function ensureCurrentStatus(content) {
+  const text = normalizeNewlines(String(content ?? ''));
+  if (/^\s*status:\s*current\s*$/imu.test(text)) return text;
+  return `${CURRENT_STATUS_LINE}\n${text.replace(/^\n+/, '')}`;
+}
+
+/**
  * Returns a tool result when the write must stop, otherwise null.
  *
  * `basis` (v21) adds attribution review on top of the existing confidence,

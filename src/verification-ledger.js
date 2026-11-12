@@ -68,6 +68,29 @@ export async function recordVerification({ store, scope = 'project', file, name 
 }
 
 /**
+ * Record the bytes on disk as verified, using the same name and description the
+ * index shows. The fingerprint covers all three, so writing it from a different
+ * source would leave the page permanently masked.
+ */
+export async function recordVerifiedEntry({ store, scope = 'project', file, date, source = 'user-explicit' }) {
+  if (typeof file !== 'string' || file === '') return null;
+  const read = await store.readEntry(file, scope);
+  const meta = typeof store.listEntries === 'function'
+    ? (await store.listEntries(scope)).find((candidate) => candidate.file === file)
+    : null;
+  return recordVerification({
+    store,
+    scope,
+    file,
+    name: meta?.name ?? '',
+    description: meta?.description ?? '',
+    body: read?.body ?? '',
+    date,
+    source,
+  });
+}
+
+/**
  * True only when the ledger holds a record for this page whose fingerprint
  * matches the name, description and body about to be injected.
  */

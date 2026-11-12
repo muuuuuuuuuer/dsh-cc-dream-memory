@@ -28,7 +28,28 @@ import { queuePendingWrite } from './pending-writes.js';
 import { evaluateWrite, normalizeBasis, textSimilarity } from './policy.js';
 import { subagentWriteBlocked } from './status.js';
 import { verifyUserEvidence, bindUserClaim } from './user-evidence.js';
-import { composeCorrection, memoryHash, reviewWrite } from './write-review.js';
+import { recordVerifiedEntry } from './verification-ledger.js';
+import { composeCorrection, ensureCurrentStatus, memoryHash, reviewWrite } from './write-review.js';
+
+/**
+ * Record that the host verified a page the user just stated.
+ *
+ * The ledger is what the next session's injection trusts; a page written
+ * without it stays findable by name but never shows a summary until Dream or
+ * another explicit write verifies it. A failed ledger write must not undo a
+ * successful memory write, so it degrades to a warning.
+ * @param {{store:object, scope:'project'|'user', file:string}} input
+ * @returns {Promise<object|null>}
+ */
+async function recordExplicitVerification({ store, scope, file }) {
+  if (typeof file !== 'string' || file === '') return null;
+  try {
+    return await recordVerifiedEntry({ store, scope, file });
+  } catch (error) {
+    warn('record verification', error);
+    return null;
+  }
+}
 
 /** Permissive output schema: every result is a JSON object. */
 const OUTPUT_SCHEMA = Object.freeze({
@@ -459,23 +480,32 @@ export function registerTools(ctx, runtime) {
           return {
             ...stopped,
             basis: basis || 'legacy',
+            scope,
             ...(evidenceReason === '' ? {} : { evidenceCheck: evidenceReason }),
           };
         }
         const advisory = input.force === true ? {} : advisoryOf(evaluateWrite({ candidate, entries, config }));
+        // A verified user statement is the current value: mark it active so the
+        // next session can show its summary instead of only its name. The
+        // marker is added after the evidence binding, so it never counts as a
+        // model-invented claim.
+        const writeContent = verifiedEvidence !== '' ? ensureCurrentStatus(input.content) : input.content;
         const result = await projectContext.store.saveEntry({
           scope,
           name: input.name,
           type: input.type,
           description: input.description,
-          content: input.content,
+          content: writeContent,
           source,
         });
         invalidate(runtime, resolved.agent);
         if (typeof result?.file === 'string' && result.file !== '') {
           await recordWrite(projectContext.paths, result.file);
+          if (verifiedEvidence !== '') {
+            await recordExplicitVerification({ store: projectContext.store, scope, file: result.file });
+          }
         }
-        return { ...result, written: true, basis: basis || 'legacy', ...advisory };
+        return { ...result, written: true, basis: basis || 'legacy', scope, ...advisory };
       } catch (error) {
         return toolError(error);
       }
@@ -554,13 +584,15 @@ export function registerTools(ctx, runtime) {
               written: false,
               action: 'queued-review',
               pendingId: queued.id,
+              scope,
+              file: input.file,
               reasons: [config.writeMode === 'confirm' ? 'writeMode is confirm: every write needs review' : 'confidence is low'],
               hint: 'Queued for human review. Review with /memory writes; approve with /memory approve <id>.',
             };
           }
           await projectContext.store.trashEntry(input.file, { scope, reason: 'memory_update delete', expectedHash: memoryHash(existing.raw) });
           invalidate(runtime, resolved.agent);
-          return { ok: true, deleted: true, file: input.file };
+          return { ok: true, deleted: true, file: input.file, scope };
         }
         const candidate = policyCandidate({
           scope,
@@ -597,7 +629,11 @@ export function registerTools(ctx, runtime) {
           basis === 'user-explicit' && typeof input.content === 'string'
             ? composeCorrection({ existingBody: existing.body, content: input.content, source })
             : null;
-        const writeContent = correction?.changed ? correction.content : input.content;
+        const composed = correction?.changed ? correction.content : input.content;
+        const writeContent =
+          verifiedEvidence !== '' && typeof composed === 'string'
+            ? ensureCurrentStatus(composed)
+            : composed;
         const stopped = await reviewWrite({ paths: projectContext.paths, action: 'update', file: input.file,
           name: renameTo, content: typeof input.content === 'string' ? writeContent : null,
           description: typeof input.description === 'string' ? input.description : null,
@@ -607,6 +643,7 @@ export function registerTools(ctx, runtime) {
           return {
             ...stopped,
             basis: basis || 'legacy',
+            scope,
             ...(evidenceReason === '' ? {} : { evidenceCheck: evidenceReason }),
             ...(correction?.changed
               ? { correction: { superseded: correction.superseded, until: correction.until, source: correction.source } }
@@ -645,6 +682,9 @@ export function registerTools(ctx, runtime) {
         invalidate(runtime, resolved.agent);
         if (typeof result?.file === 'string' && result.file !== '') {
           await recordWrite(projectContext.paths, result.file);
+          if (verifiedEvidence !== '' && typeof input.content === 'string') {
+            await recordExplicitVerification({ store: projectContext.store, scope, file: result.file });
+          }
         }
         return {
           ...(renameResult ?? {}),
@@ -652,6 +692,7 @@ export function registerTools(ctx, runtime) {
           ...advisory,
           written: true,
           basis: basis || 'legacy',
+          scope,
           ...(correction?.changed
             ? {
                 correction: {

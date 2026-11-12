@@ -13,6 +13,8 @@ import fs from 'node:fs/promises';
 import { VERSION } from './meta.js';
 import { recordRead, recordWrite } from './metrics.js';
 import { createStatusService, subagentWriteBlocked } from './status.js';
+import { recordVerifiedEntry } from './verification-ledger.js';
+import { ensureCurrentStatus } from './write-review.js';
 
 /** Root command names, also accepted by `parseCommandLine` with a leading slash. */
 const MEMORY_NAME = 'memory';
@@ -1671,13 +1673,22 @@ export function registerCommands(ctx, runtime) {
         name,
         type,
         description,
-        content: parsed.text,
+        // The human typed this themselves, so it is the current value without a
+        // model-authored status line or an evidence gate.
+        content: ensureCurrentStatus(parsed.text),
         source: { sessionId: invocation?.agent?.id, via: 'command:/remember' },
       });
       invalidate(invocation);
       if (typeof saved?.file === 'string' && saved.file !== '') {
         // Effect metrics: every saved note counts as one write.
         await recordWrite(pctx.paths, saved.file);
+        // Mark the exact bytes as verified by the user so the next session can
+        // show this note's summary in its first-turn index.
+        try {
+          await recordVerifiedEntry({ store: pctx.store, scope, file: saved.file });
+        } catch {
+          // A note that is written but not recorded stays listed by name.
+        }
       }
       const lines = [`saved ${scope} memory: ${typeof saved?.file === 'string' ? saved.file : name}`];
       lines.push(`type: ${typeof saved?.type === 'string' ? saved.type : type}   name: ${typeof saved?.name === 'string' ? saved.name : name}`);
