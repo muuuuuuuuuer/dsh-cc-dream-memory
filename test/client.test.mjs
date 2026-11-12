@@ -309,7 +309,7 @@ async function dreamTabHarness({ estimate, localeActive = 'en', estimateError = 
     actions,
     render() {
       const viewTree = viewRenderer.render();
-      const tab = findNode(viewTree, (node) => node.type?.name === 'TidyTab');
+      const tab = findNode(viewTree, (node) => node.type?.name === 'DreamTab');
       tabRenderer ??= componentRenderer(client.react, tab.type, tab.props, tabInitialStates);
       return { tree: tabRenderer.render(tab.props), viewTree };
     },
@@ -514,6 +514,7 @@ function makeStatusPayload(overrides = {}) {
   return {
     ok: true,
     version: '0.5.0',
+    uiApi: 1,
     config: { enabled: true, autoMemoryEnabled: false, autoDreamEnabled: true, dreamMode: 'review', indexMaxLines: 100 },
     overrides: { enabled: false },
     index: { text: '- [a](a.md) — note', lines: 1, bytes: 18, truncated: false, overflow: false },
@@ -1071,8 +1072,187 @@ test('client v4: every literal t() key used by client.js exists in both dictiona
   for (const kind of ['create', 'update', 'delete', 'index']) keys.add('tidy.op.' + kind);
   for (const source of ['default', 'project', 'global']) keys.add('rules.source.' + source);
   for (const scope of ['project', 'user']) keys.add('scope.' + scope);
+  for (const trust of ['all', 'hot', 'verified', 'changed', 'unverified', 'stale']) keys.add('trust.' + trust);
+  for (const status of ['stale', 'superseded', 'disputed', 'review-needed', 'retired']) keys.add('status.' + status);
+  for (const note of ['appliesWhen', 'verify', 'exception', 'observed']) keys.add('notes.' + note);
+  for (const action of ['save', 'update', 'delete']) {
+    for (const prefix of ['inbox.action.', 'inbox.approve.', 'inbox.reject.']) keys.add(prefix + action);
+  }
+  for (const pipeline of ['classic', 'v2']) keys.add('tidy.pipeline.' + pipeline);
   for (const key of keys) {
     assert.equal(typeof dicts.en[key], 'string', `en dictionary is missing ${key}`);
     assert.equal(typeof dicts.zh[key], 'string', `zh dictionary is missing ${key}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// v5 UI: trust, note bodies, header summary, Dream v2 coverage, wiki links
+// ---------------------------------------------------------------------------
+
+test('client v5: trust levels come from host facts, never from typed body lines', async () => {
+  const internals = (await loadClient()).windowObject.__CC_MEMORY_INTERNALS__;
+  assert.equal(internals.trustOf({ current: false, hot: true }), 'stale', 'an outdated note is never shown as loaded');
+  assert.equal(internals.trustOf({ hot: true, verified: { date: '2026-11-10' } }), 'hot');
+  assert.equal(internals.trustOf({ verified: { date: '2026-11-10' } }), 'verified');
+  assert.equal(internals.trustOf({ verified: null, verifiedOutdated: true }), 'changed');
+  assert.equal(internals.trustOf({}), 'unverified', 'old entries without trust facts are unverified');
+  const entries = [
+    { file: 'a.md', name: 'a', description: '', hot: true, verified: { date: 'x' } },
+    { file: 'b.md', name: 'b', description: '', verified: { date: 'x' } },
+    { file: 'c.md', name: 'c', description: '', verifiedOutdated: true },
+    { file: 'd.md', name: 'd', description: '' },
+    { file: 'e.md', name: 'e', description: '', current: false },
+  ];
+  assert.deepEqual({ ...internals.countByTrust(entries) }, { all: 5, hot: 1, verified: 2, unverified: 2, stale: 1 });
+  const files = (list) => Array.from(list, (entry) => entry.file).sort();
+  assert.deepEqual(files(internals.filterEntries(entries, { trust: 'verified' })), ['a.md', 'b.md']);
+  assert.deepEqual(files(internals.filterEntries(entries, { trust: 'unverified' })), ['c.md', 'd.md']);
+  const status = internals.normalizeStatus({ entries: [{ file: 'a.md', hot: true, verified: { date: '2026-11-10', source: 'dream' } }] });
+  assert.equal(status.entries[0].hot, true);
+  assert.equal(status.entries[0].verified.date, '2026-11-10');
+  assert.equal(status.entries[0].current, true);
+});
+
+test('client v5: splitBody separates conditions, conflicts and earlier values and drops typed stamps', async () => {
+  const internals = (await loadClient()).windowObject.__CC_MEMORY_INTERNALS__;
+  const parts = internals.splitBody([
+    'STATUS: current',
+    'VERIFIED: 2026-11-10',
+    'VERIFIED AGAINST: abc123',
+    'Read timeout is 15 seconds.',
+    'APPLIES WHEN: calling the billing API',
+    'EXCEPTION: batch jobs use 90 seconds',
+    'CONFLICT: spec says 15 s; runbook says 20 s',
+    '- Superseded: 10 seconds (until 2026-11-01) — session abc',
+    '```',
+    'STATUS: inside code stays',
+    '```',
+    '## History',
+    '- 5 seconds before October',
+  ].join('\n'));
+  assert.equal(parts.status, 'current');
+  assert.deepEqual(Array.from(parts.notes, (note) => note.key), ['appliesWhen', 'exception']);
+  assert.equal(parts.conflicts.length, 1);
+  assert.deepEqual(Array.from(parts.superseded), ['10 seconds (until 2026-11-01) — session abc', '5 seconds before October']);
+  assert.match(parts.rest, /Read timeout is 15 seconds\./);
+  assert.match(parts.rest, /STATUS: inside code stays/);
+  assert.doesNotMatch(parts.rest, /VERIFIED/);
+});
+
+test('client v5: the header says what a new conversation loads', async () => {
+  const internals = (await loadClient()).windowObject.__CC_MEMORY_INTERNALS__;
+  const t = (key, params) => (params ? key + JSON.stringify(params) : key);
+  const hot = internals.normalizeStatus({
+    config: { injectHotOnly: true },
+    injection: { hotOnly: true, hotLimit: 3, hotFiles: ['a.md'] },
+    entries: [{ file: 'a.md', hot: true }, { file: 'b.md' }],
+  });
+  assert.equal(internals.loadSummary(hot, t).text, 'load.hot{"n":1,"total":2}');
+  const none = internals.normalizeStatus({ injection: { hotOnly: true, hotFiles: [] }, entries: [{ file: 'b.md' }] });
+  assert.equal(internals.loadSummary(none, t).tone, 'warn');
+  const index = internals.normalizeStatus({ config: { indexMaxLines: 200 }, index: { lines: 12, bytes: 900 }, entries: [] });
+  assert.equal(internals.loadSummary(index, t).text, 'load.index{"lines":12,"maxLines":200}');
+  const off = internals.normalizeStatus({ config: { autoMemoryEnabled: false } });
+  assert.equal(internals.loadSummary(off, t).text, 'load.off');
+});
+
+test('client v5: preview keeps Dream v2 coverage and per-op evidence', async () => {
+  const internals = (await loadClient()).windowObject.__CC_MEMORY_INTERNALS__;
+  const plan = internals.normalizePreviewPlan({
+    kind: 'dream-v2',
+    coverageComplete: false,
+    expectedSessions: 3,
+    processedSessions: 2,
+    failedSessions: ['s3'],
+    partialSessions: [],
+    verifiedFiles: ['user_lang.md'],
+    ops: [{ index: 0, op: 'write', file: 'user_lang.md', before: '', after: 'x', evidence: ['quote one', { statement: 's', quote: 'q' }, 7] }],
+  });
+  assert.equal(plan.v2, true);
+  assert.equal(plan.coverageComplete, false);
+  assert.equal(plan.failedSessions, 1);
+  assert.equal(plan.verifiedFiles.length, 1);
+  assert.equal(plan.ops[0].evidence.length, 2, 'malformed evidence is dropped');
+  assert.equal(plan.ops[0].evidence[0].quote, 'quote one');
+  assert.equal(internals.normalizePreviewPlan({ ops: [] }).v2, false, 'classic plans carry no coverage');
+});
+
+test('client v5: citations render as chips and wiki links as buttons that know broken targets', async () => {
+  const internals = (await loadClient()).windowObject.__CC_MEMORY_INTERNALS__;
+  const opened = [];
+  const nodes = internals.renderInline('15 s ^[spec.md#p2, 2026-11-10] see [[retries]] and [[gone|old page]]', {
+    onWikiLink: (slug) => opened.push(slug),
+    hasPage: (slug) => slug === 'retries',
+  });
+  const cite = findNode(nodes, (node) => node.props?.className === 'ccm-cite');
+  assert.equal(collectText(cite), 'spec.md#p2');
+  assert.equal(cite.props.title, 'spec.md#p2, 2026-11-10');
+  const live = findNode(nodes, (node) => node.type === 'button' && collectText(node) === 'retries');
+  live.props.onClick();
+  assert.deepEqual(opened, ['retries']);
+  const dead = findNode(nodes, (node) => node.type === 'button' && collectText(node) === 'old page');
+  assert.equal(dead.props.disabled, true);
+  const plain = internals.renderInline('see [[retries]]');
+  assert.equal(findNode(plain, (node) => node.type === 'button'), undefined, 'without a handler links are plain text');
+});
+
+test('client v5: review marks refused changes, keeps them out of the selection and explains why', async () => {
+  const ui = await dreamTabHarness({
+    waiting: true,
+    previewPlan: {
+      kind: 'dream-v2',
+      coverageComplete: true,
+      ops: [
+        { index: 0, op: 'write', file: 'a.md', before: 'old', after: 'new', changed: true,
+          rejected: 'a.md: new line has no source citation: "相关：[[b]]（插件）"' },
+        { index: 1, op: 'write', file: 'b.md', before: 'x', after: 'y', changed: true },
+        { index: 2, op: 'write', file: 'c.md', before: 'p', after: 'q', changed: true },
+      ],
+    },
+  });
+  let tree = ui.render().tree;
+  const box = (file) => findNode(tree, (node) => node.props?.role === 'checkbox' && node.props['aria-label'] === file);
+  assert.equal(box('a.md').props.disabled, true, 'a refused change cannot be selected');
+  assert.equal(box('b.md').props.disabled, false);
+  assert.match(collectText(tree), /Can’t apply/);
+  assert.match(collectText(tree), /1 changes fail the checks apply runs/);
+  findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Select all').props.onClick();
+  tree = ui.render().tree;
+  const apply = findNode(tree, (node) => node.type?.name === 'ConfirmButton');
+  assert.equal(apply.props.label, 'Apply 2 selected', 'select all skips the refused change');
+  findNode(tree, (node) => node.type === 'button' && node.props['aria-expanded'] === 'false').props.onClick();
+  assert.match(collectText(ui.render().tree), /A new line has no source citation: “相关：\[\[b\]\]（插件）”/);
+});
+
+test('client v5: a plan-level evidence refusal blocks apply', async () => {
+  const ui = await dreamTabHarness({
+    waiting: true,
+    previewPlan: { kind: 'dream-v2', coverageComplete: true, evidenceError: 'plan has no evidence bundle; regenerate a v2 dry-run',
+      ops: [{ index: 0, op: 'write', file: 'a.md', before: 'old', after: 'new', changed: true }] },
+  });
+  const tree = ui.render().tree;
+  assert.match(collectText(tree), /cannot be applied as a whole: plan has no evidence bundle/);
+  assert.equal(findNode(tree, (node) => node.type?.name === 'ConfirmButton').props.disabled, true);
+});
+
+test('client v5: long host refusals become a headline and a list; a stale backend is named', async () => {
+  const client = await loadClient();
+  const internals = client.windowObject.__CC_MEMORY_INTERNALS__;
+  const { dictionaries } = await mountClient(client);
+  const en = dictionaries[0].dicts.en;
+  const t = (key, params) => String(en[key] ?? key).replace(/\{(\w+)\}/g, (match, name) => (params && name in params ? String(params[name]) : match));
+  const info = internals.errorInfo(new Error(
+    'evidence-rejected: a.md: new line has no source citation: "x; y"; b.md: line attributes a requirement to the user without [user] evidence: "z"',
+  ), t);
+  assert.equal(info.text, en['err.evidenceRejected']);
+  assert.deepEqual(Array.from(info.items), [
+    'a.md — A new line has no source citation: “x; y”',
+    'b.md — ' + en['reason.userAttribution'],
+  ]);
+  assert.equal(internals.errorInfo(new Error('unknown-action: action must be "build" or "status"'), t).text, en['err.backendStale']);
+  assert.equal(
+    internals.errorInfo(new Error("wiki-failed: The requested module './wiki-core.js' does not provide an export named 'X'"), t).text,
+    en['err.backendStale'],
+  );
+  assert.equal(internals.errorInfo(new Error('short failure'), t).items.length, 0);
 });

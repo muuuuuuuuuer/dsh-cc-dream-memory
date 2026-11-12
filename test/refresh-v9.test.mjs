@@ -187,7 +187,7 @@ test('v9 refresh: a live session refreshes its injection after memory_save', asy
 
   await env.runtime.setSessionMode(env.agent.id, 'live');
   const saved = await definitions.get('memory_save').execute(
-    { name: 'beta', type: 'user', description: 'live refresh note', content: 'beta body from a live session' },
+    { name: 'beta', type: 'project', description: 'live refresh note', content: 'beta body from a live session' },
     { agent: env.agent, sessionId: env.agent.id },
   );
   assert.equal(saved.ok, true, JSON.stringify(saved));

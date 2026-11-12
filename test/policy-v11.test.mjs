@@ -4,15 +4,16 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toolsEnv, makeEnv, sleep } from './v10-helpers.mjs';
+import { toolsEnv, makeEnv, sleep, seedUserMessages } from './v10-helpers.mjs';
 
 test('v11 policy: a very short body is written directly (no low-confidence gate)', async (t) => {
   const env = await toolsEnv(t);
+  seedUserMessages(env, '用户要求回答简短。');
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
 
   const short = await save.execute(
-    { name: 'brevity', type: 'user', description: 'reply style', content: '用户要求回答简短。' },
+    { name: 'brevity', type: 'user', description: 'reply style', content: '用户要求回答简短。', basis: 'user-explicit', evidence: '用户要求回答简短。' },
     exec,
   );
   assert.equal(short.ok, true, JSON.stringify(short));
@@ -40,17 +41,18 @@ test('v11 policy: "vitest --run ..." short bodies are written directly', async (
 
 test('policy: conflicting writes stop and identify the owning memory', async (t) => {
   const env = await toolsEnv(t);
+  seedUserMessages(env, '用户喜欢中文回复。', '用户讨厌中文回复。');
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
   await save.execute(
-    { name: 'language', type: 'user', description: 'reply language', content: '用户喜欢中文回复。' },
+    { name: 'language', type: 'user', description: 'reply language', content: '用户喜欢中文回复。', basis: 'user-explicit', evidence: '用户喜欢中文回复。' },
     exec,
   );
 
   // Same topic, opposite polarity, but worded differently enough to avoid the
   // duplicate gate: the tool refuses a second active contradictory fact.
   const conflicting = await save.execute(
-    { name: 'reply preference', type: 'user', description: 'Chinese replies', content: '用户讨厌中文回复。' },
+    { name: 'reply preference', type: 'user', description: 'Chinese replies', content: '用户讨厌中文回复。', basis: 'user-explicit', evidence: '用户讨厌中文回复。' },
     exec,
   );
   assert.equal(conflicting.ok, true, JSON.stringify(conflicting));
@@ -70,16 +72,17 @@ test('policy: conflicting writes stop and identify the owning memory', async (t)
 
 test('v11 policy: a high-similarity duplicate is still blocked', async (t) => {
   const env = await toolsEnv(t);
+  seedUserMessages(env, 'the same durable body');
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
   const first = await save.execute(
-    { name: 'dup note', type: 'user', description: 'duplicate target', content: 'the same durable body' },
+    { name: 'dup note', type: 'user', description: 'duplicate target', content: 'the same durable body', basis: 'user-explicit', evidence: 'the same durable body' },
     exec,
   );
   assert.equal(first.ok, true, JSON.stringify(first));
 
   const duplicate = await save.execute(
-    { name: 'dup note', type: 'user', description: 'duplicate target', content: 'the same durable body' },
+    { name: 'dup note', type: 'user', description: 'duplicate target', content: 'the same durable body', basis: 'user-explicit', evidence: 'the same durable body' },
     exec,
   );
   assert.equal(duplicate.ok, true, JSON.stringify(duplicate));
@@ -90,10 +93,11 @@ test('v11 policy: a high-similarity duplicate is still blocked', async (t) => {
 
 test('v11 policy: possible-duplicate is advisory (write + candidates, not blocked)', async (t) => {
   const env = await toolsEnv(t);
+  seedUserMessages(env, 'Prefer tabs for indentation in code.', 'Prefer tabs for indentation in all source files.');
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
   await save.execute(
-    { name: 'indent style', type: 'feedback', description: 'prefer tabs for indentation', content: 'Prefer tabs for indentation in code.' },
+    { name: 'indent style', type: 'feedback', description: 'prefer tabs for indentation', content: 'Prefer tabs for indentation in code.', basis: 'user-explicit', evidence: 'Prefer tabs for indentation in code.' },
     exec,
   );
   const similar = await save.execute(
@@ -102,6 +106,8 @@ test('v11 policy: possible-duplicate is advisory (write + candidates, not blocke
       type: 'feedback',
       description: 'prefer tabs for indentation in code',
       content: 'Prefer tabs for indentation in all source files.',
+    basis: 'user-explicit',
+    evidence: 'Prefer tabs for indentation in all source files.',
     },
     exec,
   );

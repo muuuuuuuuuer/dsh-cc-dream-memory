@@ -184,6 +184,7 @@ export async function gatherDreamInput({ ctx, store, config, workspaceDir, state
   const truncatedFiles = [];
   const skippedSessions = [];
   const droppedSessions = [];
+  const deferredSessions = [];
   const reads = [];
   let truncated = false;
 
@@ -382,6 +383,7 @@ export async function gatherDreamInput({ ctx, store, config, workspaceDir, state
       }
       if (sessionsChars + whole.text.length > sessionBudget) {
         truncated = true;
+        deferredSessions.push(id);
         continue;
       }
       sessions.push({
@@ -404,6 +406,7 @@ export async function gatherDreamInput({ ctx, store, config, workspaceDir, state
     sessions,
     reads,
     droppedSessions,
+    deferredSessions,
     chars: memoryChars + sessionsChars,
     truncated,
     truncatedFiles,

@@ -6,3 +6,7 @@
       name: dsh-cc-dream-memory
       config:
         autoDreamEnabled: false
+        dreamPipeline: v2
+        wikiEnabled: true
+        injectHotOnly: true
+        injectHotEntries: 3

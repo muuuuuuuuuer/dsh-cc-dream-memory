@@ -27,6 +27,11 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { DREAM_SYSTEM_PROMPT, buildDreamPrompt } from './dream-prompt.js';
+import { checkWriteOperations } from './dream-write-evidence.js';
+import { buildIndex } from './wiki-core.js';
+import { recordVerification } from './verification-ledger.js';
+import { currentFactLines } from './memory-body.js';
+import { supportsStatement } from './support.js';
 import { gatherDreamInput, pruneProbeSessions } from './dream-input.js';
 import { analyzeLongSessions, plannedAnalysisChars } from './dream-map.js';
 import { buildEvidenceCorpus, checkPlanEvidence, collectStaleReferences, automaticReviewReasons, bodyLineChanges, dropDestructiveDependents } from './dream-evidence.js';
@@ -388,7 +393,66 @@ function normalizeStringArray(value) {
   return out;
 }
 
+/** Older v2 plans counted scheduled chunks as coverage and must be regenerated. */
+export function dreamV2CoverageError(plan) {
+  if (plan?.kind !== 'dream-v2') return '';
+  const { sessions, reads, expectedSessions, processedSessions, failedSessions, partialSessions } = plan;
+  if (plan.coverageVersion !== 1) return 'dream coverage unverified: regenerate the v2 plan';
+  if (plan.coverageComplete !== true || !Array.isArray(sessions) || !Array.isArray(reads)
+    || !Array.isArray(failedSessions) || failedSessions.length > 0
+    || !Array.isArray(partialSessions) || partialSessions.length > 0
+    || sessions.length !== expectedSessions || processedSessions !== expectedSessions
+    || reads.length !== expectedSessions
+    || reads.some(read => read?.complete !== true || !sessions.includes(read.id))
+    || new Set(reads.map(read => read.id)).size !== expectedSessions) {
+    return 'dream coverage incomplete: regenerate a complete v2 plan before applying';
+  }
+  return '';
+}
+
+/**
+ * Replace a v2 plan's index operation with a host-built catalog from the
+ * current pages plus the operations that passed the evidence gate. MEMORY.md
+ * headings are therefore controlled values (memory type), never organizer text.
+ */
+function withControlledIndex(currentPages, operations) {
+  const pages = new Map();
+  for (const page of Array.isArray(currentPages) ? currentPages : []) {
+    if (!page || typeof page.file !== 'string') continue;
+    pages.set(page.file, {
+      file: page.file,
+      name: page.name || page.file.replace(/\.md$/, ''),
+      description: typeof page.description === 'string' ? page.description : '',
+      type: page.type || 'project',
+      body: typeof page.body === 'string' ? page.body : '',
+    });
+  }
+  for (const op of Array.isArray(operations) ? operations : []) {
+    if (op?.op === 'write' && typeof op.file === 'string') {
+      const previous = pages.get(op.file);
+      pages.set(op.file, {
+        file: op.file,
+        name: op.name || previous?.name || op.file.replace(/\.md$/, ''),
+        description: typeof op.description === 'string' ? op.description : (previous?.description || ''),
+        type: op.type || previous?.type || 'project',
+        body: typeof op.body === 'string' ? op.body : (previous?.body || ''),
+      });
+    } else if (op?.op === 'delete' && typeof op.file === 'string') {
+      pages.delete(op.file);
+    }
+  }
+  const content = buildIndex({
+    pages: [...pages.values()].map((page) => ({ ...page, slug: page.file.replace(/\.md$/, '') })),
+    style: 'memory',
+    groupBy: 'type',
+  });
+  const kept = (Array.isArray(operations) ? operations : []).filter((op) => op?.op !== 'index');
+  kept.push({ op: 'index', scope: 'project', content });
+  return kept;
+}
+
 /** Number of operations a failed `executePlan` had already applied. */
+
 function partialOperationCount(error) {
   const counts = error && error.partialCounts && typeof error.partialCounts === 'object' ? error.partialCounts : {};
   return (Number(counts.write) || 0) + (Number(counts.delete) || 0) + (Number(counts.index) || 0);
@@ -488,6 +552,20 @@ export function validateDreamPlan(plan, options = {}) {
   }
   normalized.summary = oneLine(plan.summary, 1000);
   normalized.notes = oneLine(plan.notes, 2000);
+  if (typeof plan.skill === 'string' && plan.skill.trim() !== '') normalized.skill = plan.skill.slice(0, 20_000);
+  // v0.12.0: retain the v2 evidence bundle and plan kind so the final apply
+  // path can re-run the evidence gate instead of trusting the dry-run process.
+  if (plan.kind === 'dream-v2') {
+    normalized.kind = 'dream-v2';
+    for (const key of ['sessions', 'reads', 'expectedSessions', 'processedSessions', 'failedSessions', 'partialSessions']) {
+      if (plan[key] !== undefined) normalized[key] = plan[key];
+    }
+    for (const key of ['coverageVersion', 'coverageComplete', 'evidenceRequired']) {
+      if (plan[key] !== undefined) normalized[key] = plan[key];
+    }
+  }
+  if (plan.kind === 'dream-v2' && plan.evidenceRequired !== false) normalized.evidenceRequired = true;
+  if (Array.isArray(plan.evidence)) normalized.evidence = plan.evidence;
 
   const operations = plan.operations;
   if (!Array.isArray(operations)) {
@@ -1141,6 +1219,60 @@ async function reconcileStoreIndex(store) {
     supported: true,
     result: result && typeof result === 'object' ? result : undefined,
   };
+}
+
+/**
+ * Record host verification for the pages this dream run verified. The ledger —
+ * not a `VERIFIED AGAINST` line inside the page — is what promotes a page into
+ * the hot set, and it is fingerprinted over the name, description and body now
+ * on disk, so any later edit drops the page out again.
+ */
+async function recordDreamVerifications({ store, plan, operations }) {
+  const verified = new Set(Array.isArray(plan?.verifiedFiles) ? plan.verifiedFiles : []);
+  if (verified.size === 0 || !store || typeof store.readEntry !== 'function') return;
+  const written = new Set(operations
+    .filter((op) => op && op.op === 'write' && typeof op.file === 'string' && op.file !== '')
+    .map((op) => op.file));
+  const claims = (Array.isArray(plan?.verifiedClaims) ? plan.verifiedClaims : [])
+    .filter((item) => item && typeof item.claim === 'string' && item.claim !== '');
+  for (const file of verified) {
+    if (!written.has(file)) continue;
+    try {
+      const entry = await store.readEntry(file, 'project');
+      const name = entry?.frontmatter?.name;
+      const description = entry?.frontmatter?.description;
+      const body = entry?.body;
+      // The stamp only covers the facts a verdict supported. A page also carries
+      // the name, the description and every uncited fact, all of which reach the
+      // hot set and the digest, so each one has to be supported too.
+      const facts = currentFactLines(body);
+      const vouched = claims.filter((item) => item.file === file);
+      // A `contradicts` verdict names the wrong value in `claim` and the right
+      // one in the transcript quote, so only the quote is evidence for the new
+      // page: the old value must never license the new one.
+      const evidence = vouched.map((item) => (item.result === 'contradicts'
+        ? item.quote
+        : `${item.claim}\n${item.quote}`));
+      const gaps = [...facts, name, description].filter((value) => typeof value === 'string'
+        && value.trim() !== ''
+        && !evidence.some((text) => supportsStatement(value, text, { minRatio: 0.5, minMatched: 2 })));
+      if (facts.length === 0 || vouched.length === 0 || gaps.length > 0) {
+        if (gaps.length > 0) warn(`verification ledger ${file}`, `unsupported: ${gaps.slice(0, 3).join(' | ')}`);
+        continue;
+      }
+      await recordVerification({
+        store,
+        scope: 'project',
+        file,
+        name,
+        description,
+        body,
+        source: 'dream',
+      });
+    } catch (error) {
+      warn(`verification ledger ${file}`, error);
+    }
+  }
 }
 
 /** Move one memory file out of the memory directory into a trash location. */
@@ -2083,6 +2215,134 @@ export class DreamEngine {
   }
 
   /**
+   * v0.12.0: one evidence gate shared by full apply, apply-last, review apply and
+   * selective apply-ops. Missing evidence on a v2 transcript plan fails closed;
+   * pure-consolidation plans still allow moving existing lines but not new facts.
+   * @returns {Promise<{ok:boolean, operations?:object[], error?:string}>}
+   */
+  async checkV2Evidence({ plan, operations, store }) {
+    if (!plan || plan.kind !== 'dream-v2') return { ok: true, operations };
+    const expected = Number(plan.expectedSessions) || 0;
+    const hasEvidence = Array.isArray(plan.evidence);
+    if (expected > 0 && !hasEvidence) {
+      return { ok: false, error: 'evidence-rejected: plan has no evidence bundle; regenerate a v2 dry-run' };
+    }
+    const currentPages = await this.readCurrentPages(store);
+    if (currentPages === null) {
+      return { ok: false, error: 'evidence-rejected: current memory could not be read' };
+    }
+    const checked = checkWriteOperations({
+      operations: Array.isArray(operations) ? operations : [],
+      currentPages,
+      evidence: hasEvidence ? plan.evidence : [],
+    });
+    if (checked.dropped.length > 0) {
+      return { ok: false, error: `evidence-rejected: ${checked.dropped.slice(0, 5).join('; ')}` };
+    }
+    return { ok: true, operations: withControlledIndex(currentPages, checked.operations) };
+  }
+
+  /** Current project pages as the evidence gate sees them; null when unreadable. */
+  async readCurrentPages(store) {
+    const currentPages = [];
+    try {
+      const entries = await store.listEntries('project');
+      for (const entry of Array.isArray(entries) ? entries : []) {
+        const read = await store.readEntry(entry.file, 'project').catch(() => undefined);
+        if (read) {
+          currentPages.push({
+            file: entry.file,
+            body: read.body,
+            type: entry.type,
+            name: entry.name,
+            description: entry.description,
+          });
+        }
+      }
+    } catch {
+      return null;
+    }
+    return currentPages;
+  }
+
+  /**
+   * The per-operation checks `applyPlanOperations` runs (single-operation
+   * validation, then the v2 evidence gate), evaluated for the review screen so
+   * an operation that would be refused is marked before anyone selects it.
+   * Read-only. `byIndex` maps a raw operation index to its refusal reason;
+   * `error` is a plan-level refusal that blocks every operation.
+   * @returns {Promise<{error:string, byIndex:Map<number,string>}>}
+   */
+  async previewVerdicts({ plan, store }) {
+    const byIndex = new Map();
+    const rawOperations = Array.isArray(plan?.operations) ? plan.operations : [];
+    const truncatedFiles = normalizeStringArray(plan?.truncatedFiles);
+    const existingFiles = await this.existingFiles(store, this.config);
+    const validated = [];
+    rawOperations.forEach((raw, index) => {
+      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return;
+      const validation = validateDreamPlan(
+        { summary: '', operations: [raw] },
+        { config: this.config, existingFiles, truncatedFiles },
+      );
+      if (!validation.ok || validation.plan.operations.length !== 1) {
+        byIndex.set(index, validation.ok
+          ? (validation.dropped[0] || 'operation was dropped by validation')
+          : (validation.error || 'invalid operation'));
+        return;
+      }
+      validated.push({ index, op: validation.plan.operations[0] });
+    });
+    if (plan?.kind !== 'dream-v2') return { error: '', byIndex };
+    const hasEvidence = Array.isArray(plan.evidence);
+    if ((Number(plan.expectedSessions) || 0) > 0 && !hasEvidence) {
+      return { error: 'plan has no evidence bundle; regenerate a v2 dry-run', byIndex };
+    }
+    const currentPages = await this.readCurrentPages(store);
+    if (currentPages === null) return { error: 'current memory could not be read', byIndex };
+    const checked = checkWriteOperations({
+      operations: validated.map((item) => item.op),
+      currentPages,
+      evidence: hasEvidence ? plan.evidence : [],
+    });
+    for (const reason of checked.dropped) {
+      const hit = validated.find((item) => (item.op.op === 'index'
+        ? reason.startsWith('index:')
+        : reason.startsWith(`${item.op.file}: `)));
+      if (hit && !byIndex.has(hit.index)) byIndex.set(hit.index, reason);
+    }
+    // The merge-dependency guard of apply-ops, against the largest selection
+    // the user can still make: a delete whose facts were meant to move into a
+    // refused write would lose them, so it is refused too.
+    const selectable = validated.filter((item) => !byIndex.has(item.index)).map((item) => item.op);
+    for (const item of validated) {
+      if (byIndex.has(item.index) || item.op.op !== 'delete') continue;
+      let source;
+      try { source = await store.readEntry(item.op.file, 'project'); } catch { continue; }
+      const lines = String(source.body ?? '').split(/\r?\n/).filter((line) => line.trim());
+      const destinations = rawOperations.filter((op) => op?.op === 'write' && op.file !== item.op.file
+        && !selectable.some((other) => other.op === 'delete' && other.file === op.file));
+      const plannedLines = new Set(destinations.flatMap((op) => String(op.body ?? '').split(/\r?\n/)));
+      const omittedWrite = destinations.some((destination) => !selectable.some((op) => op.op === 'write' && op.file === destination.file));
+      const moved = omittedWrite ? lines : lines.filter((line) => plannedLines.has(line));
+      if (moved.length === 0) continue;
+      const surviving = new Set();
+      for (const destination of destinations) {
+        const write = selectable.find((op) => op.op === 'write' && op.file === destination.file);
+        let body = write?.body;
+        if (body === undefined) {
+          try { body = (await store.readEntry(destination.file, 'project')).body; } catch { body = ''; }
+        }
+        for (const line of String(body).split(/\r?\n/)) surviving.add(line);
+      }
+      if (moved.some((line) => !surviving.has(line))) {
+        byIndex.set(item.index, `merge dependency: its facts were meant to move into a change that cannot be applied, so deleting ${item.op.file} would lose them`);
+      }
+    }
+    return { error: '', byIndex };
+  }
+
+  /**
    * Apply a previously produced plan (review proposal or the last dry-run plan).
    * The model is never called again: the plan is validated, backed up, applied,
    * reconciled and recorded exactly like a direct apply.
@@ -2104,6 +2364,8 @@ export class DreamEngine {
     if (!this.config.enabled) return fail('disabled');
     if (this.config.autoMemoryEnabled === false) return fail('auto-memory-disabled');
     if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return fail('invalid-proposal');
+    const coverageError = dreamV2CoverageError(plan);
+    if (coverageError) return fail(coverageError);
     if (Array.isArray(plan.dropped) && plan.dropped.length > 0
       && Array.isArray(plan.operations) && plan.operations.some(op => op?.op === 'delete' || op?.op === 'index')) {
       return fail('incomplete plan contains destructive operations after filtering; reject it and regenerate a new dry-run plan');
@@ -2143,6 +2405,17 @@ export class DreamEngine {
         return fail(`invalid proposal: ${validation.error ?? 'unknown error'}`);
       }
       const normalized = validation.plan;
+
+      // v0.12.0: the final write path re-checks organizer-added lines against
+      // the evidence bundle. A plan cannot become applyable just because its
+      // dry-run JSON was edited or its organizer paraphrased pasted material.
+      const evidenceChecked = await this.checkV2Evidence({
+        plan: normalized,
+        operations: normalized.operations,
+        store,
+      });
+      if (!evidenceChecked.ok) return fail(evidenceChecked.error);
+      normalized.operations = evidenceChecked.operations;
 
       // Secret scan on the writes that are about to be persisted.
       const secretScan = await this.scanOperationSecrets(normalized.operations, this.config);
@@ -2204,6 +2477,7 @@ export class DreamEngine {
           paths,
           plan: normalized,
           config: this.config,
+          skill: typeof normalized.skill === 'string' ? normalized.skill : '',
           changelog: {
             at: Date.now(),
             trigger: 'manual',
@@ -2547,6 +2821,11 @@ export class DreamEngine {
     for (const key of ['durationMs', 'inputChars', 'outputChars', 'usage', 'estimatedTokens', 'limit', 'costMode', 'warnings']) {
       if (plan[key] !== undefined) context[key] = plan[key];
     }
+    // Dream v2: session coverage and verification, so the review shows what was read.
+    for (const key of ['kind', 'coverageComplete', 'expectedSessions', 'processedSessions', 'failedSessions',
+      'partialSessions', 'verifiedFiles', 'evidenceWarnings']) {
+      if (plan[key] !== undefined) context[key] = plan[key];
+    }
     if (plan.costExceeded === true) context.costExceeded = true;
 
     const readCurrent = async (file) => {
@@ -2614,6 +2893,18 @@ export class DreamEngine {
       if (Array.isArray(raw.evidence) && raw.evidence.length > 0) op.evidence = raw.evidence;
       context.ops.push(op);
     }
+    // Mark what apply-ops would refuse, so review never offers a change that
+    // makes the whole batch fail at apply time.
+    try {
+      const verdicts = await this.previewVerdicts({ plan, store });
+      if (verdicts.error !== '') context.evidenceError = verdicts.error;
+      for (const op of context.ops) {
+        const reason = verdicts.byIndex.get(op.index);
+        if (reason) op.rejected = reason;
+      }
+    } catch (error) {
+      warn('preview verdicts', error);
+    }
     return context;
   }
 
@@ -2639,6 +2930,8 @@ export class DreamEngine {
     if (!this.config.enabled) return fail('disabled');
     if (this.config.autoMemoryEnabled === false) return fail('auto-memory-disabled');
     if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return fail('invalid-plan');
+    const coverageError = dreamV2CoverageError(plan);
+    if (coverageError) return fail(coverageError);
 
     const rawOperations = Array.isArray(plan.operations) ? plan.operations : [];
     const selection = normalizeIndexes(indexes, rawOperations.length);
@@ -2676,10 +2969,9 @@ export class DreamEngine {
       // Re-validate each selected operation individually (same rules as a full
       // plan, so truncated files / derived-name collisions / disabled deletes
       // are still refused).
-      const selected = [];
+      let selected = [];
       const dropped = [];
-      for (const index of selection.indexes) {
-        const validation = validateDreamPlan(
+      for (const index of selection.indexes) {        const validation = validateDreamPlan(
           { summary: '', operations: [rawOperations[index]] },
           { config: this.config, existingFiles, truncatedFiles },
         );
@@ -2694,6 +2986,9 @@ export class DreamEngine {
       }
       const combinedValidation = validateDreamPlan({ operations: selected }, { config: this.config, existingFiles, truncatedFiles });
       if (!combinedValidation.ok) return fail(combinedValidation.error);
+      const evidenceChecked = await this.checkV2Evidence({ plan, operations: selected, store });
+      if (!evidenceChecked.ok) return fail(evidenceChecked.error);
+      selected = evidenceChecked.operations;
       // A selective apply must not remove facts awaiting an unselected merge write.
       for (const deletion of selected.filter(op => op.op === 'delete')) {
         let source;
@@ -2874,9 +3169,10 @@ export class DreamEngine {
    * @param {{store:object, paths:object, plan:object, config:object,
    *   changelog:object, operations?:object[], meta?:object|null}} options
    */
-  async executePlan({ store, paths, plan, config, changelog, operations = plan.operations, meta = null }) {
+  async executePlan({ store, paths, plan, config, changelog, operations = plan.operations, meta = null, skill = '' }) {
     const counts = { write: 0, delete: 0, index: 0 };
     const touched = new Set();
+    const skillText = typeof skill === 'string' ? skill.trim() : '';
     // v12 Bug 3: post-apply hash per touched file, used for selective rollback.
     const expectedHashes = new Map();
     const backupName = await uniqueChildName(paths.dreamsDir, timestampName(Date.now()));
@@ -2900,6 +3196,15 @@ export class DreamEngine {
           }
         }
       }
+      await recordDreamVerifications({ store, plan, operations });
+      let skillApplied = false;
+      if (skillText !== '') {
+        const skillPath = path.join(paths.memoryDir, 'SKILL.md');
+        await fs.writeFile(skillPath, `${skillText}\n`, 'utf8');
+        touched.add('SKILL.md');
+        skillApplied = true;
+        expectedHashes.set('SKILL.md', await hashFileIfExists(skillPath));
+      }
       const reconcile = await reconcileStoreIndex(store);
       await store.writeChangelog(formatChangelog({
         ...changelog,
@@ -2915,6 +3220,7 @@ export class DreamEngine {
           && typeof op.file === 'string'
           && op.file !== ''
           && (op.op === 'write' || op.op === 'delete'));
+        if (skillApplied) appliedFileOps.push({ op: 'write', file: 'SKILL.md' });
         const touchedFiles = [...new Set(appliedFileOps.map((op) => op.file))];
         const postHashes = new Map();
         for (const file of touchedFiles) {

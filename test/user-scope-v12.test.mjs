@@ -26,9 +26,9 @@ test('v12 user-scope: memory_save can write into the user scope', async (t) => {
     {
       scope: 'user',
       name: 'user scoped note',
-      type: 'user',
+      type: 'project',
       description: 'a user-level preference',
-      content: '用户偏好：回答简短。',
+      content: 'a plain note body kept across save and read',
     },
     exec,
   );
@@ -48,7 +48,7 @@ test('v12 user-scope: memory_search scope user finds it; memory_update scope use
   const env = await toolsEnv(t, { userMemoryEnabled: true });
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
   const saved = await env.definitions.get('memory_save').execute(
-    { scope: 'user', name: 'searchable user', type: 'user', description: 'd', content: 'user scope zebra marker' },
+    { scope: 'user', name: 'searchable user', type: 'project', description: 'd', content: 'user scope zebra marker' },
     exec,
   );
   assert.equal(saved.ok, true, JSON.stringify(saved));

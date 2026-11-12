@@ -27,7 +27,7 @@ test('v17 memory_update: failed rename+content leaves no half-applied state', as
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
   const seed = await env.pctx.store.saveEntry({
     name: 'atomic old name',
-    type: 'user',
+    type: 'project',
     description: 'old description',
     content: 'OLD BODY',
   });
@@ -51,7 +51,7 @@ test('v17 memory_update: case-only rename is not a conflict', async (t) => {
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
   const seed = await env.pctx.store.saveEntry({
     name: 'Case Sensitive Name',
-    type: 'user',
+    type: 'project',
     description: 'case description',
     content: 'case body',
   });

@@ -408,7 +408,7 @@ test('v8 metrics: memory tools record read/save/search events', async (t) => {
   // v9 policy: short bodies are queued for review; force the write so the
   // metrics wiring is what this test exercises.
   const saved = await definitions.get('memory_save').execute(
-    { name: 'metrics tool note', type: 'user', description: 'd', content: 'body', force: true },
+    { name: 'metrics tool note', type: 'project', description: 'd', content: 'body', force: true },
     exec,
   );
   assert.equal(saved.ok, true, JSON.stringify(saved));

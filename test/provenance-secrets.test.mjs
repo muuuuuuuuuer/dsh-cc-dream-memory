@@ -209,7 +209,7 @@ test('v7 provenance: memory_save/memory_update tools attribute via tool:memory_*
   // v9 write policy queues short/low-confidence bodies; force a real write so
   // the provenance attribution is what this test exercises.
   const saved = await save.execute(
-    { name: 'tool note', type: 'user', description: 'tool note', content: 'tool body', force: true },
+    { name: 'tool note', type: 'project', description: 'tool note', content: 'tool body', force: true },
     { agent: { id: 'agent-1' }, sessionId: 'sess-tool' },
   );
   assert.equal(saved.ok, true, JSON.stringify(saved));
@@ -401,7 +401,7 @@ test('v7 secrets: memory tools surface deny/warn results without leaking the sec
   );
   t.after(() => denyDispose?.());
   const denied = await denyDefs.get('memory_save').execute(
-    { name: 'secret tool note', type: 'user', description: 'd', content: `key ${AWS_KEY}` },
+    { name: 'secret tool note', type: 'project', description: 'd', content: `key ${AWS_KEY}` },
     { agent: { id: 'agent-1' }, sessionId: 'sess-1' },
   );
   assert.equal(denied.ok, false);
@@ -417,7 +417,7 @@ test('v7 secrets: memory tools surface deny/warn results without leaking the sec
   );
   t.after(() => warnDispose?.());
   const warned = await warnDefs.get('memory_save').execute(
-    { name: 'warn tool note', type: 'user', description: 'd', content: `config: ${WARN_SECRET}` },
+    { name: 'warn tool note', type: 'project', description: 'd', content: `config: ${WARN_SECRET}` },
     { agent: { id: 'agent-1' }, sessionId: 'sess-1' },
   );
   assert.equal(warned.ok, true, JSON.stringify(warned));
@@ -427,7 +427,7 @@ test('v7 secrets: memory tools surface deny/warn results without leaking the sec
 
   // A deny-level key is refused even in warn mode (v11 severity model).
   const refused = await warnDefs.get('memory_save').execute(
-    { name: 'warn deny tool note', type: 'user', description: 'd', content: `key ${AWS_KEY}` },
+    { name: 'warn deny tool note', type: 'project', description: 'd', content: `key ${AWS_KEY}` },
     { agent: { id: 'agent-1' }, sessionId: 'sess-1' },
   );
   assert.equal(refused.ok, false, JSON.stringify(refused));

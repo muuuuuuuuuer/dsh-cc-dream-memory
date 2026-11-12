@@ -11,7 +11,10 @@
  *   write-review to queue same-topic, opposite-polarity clauses for review;
  * - low-confidence is only an explicit `confidence:'low'` or
  *   `writeMode:'confirm'` (v11 removed the short-body / invalid-type heuristics
- *   so ordinary preference notes are never queued).
+ *   so ordinary preference notes are never queued);
+ * - attribution (`basis`, v21): only `user-explicit` authority may make a user
+ *   claim active; `forwarded`/`inference` claims are queued, and an omitted
+ *   basis keeps the legacy direct-write behavior with a narrow ambiguity guard.
  *
  * `evaluateWrite` never writes anything; callers (the tools) act on the action.
  *
@@ -307,6 +310,156 @@ function entityOverlap(left, right) {
   for (const token of smaller) if (larger.has(token)) shared += 1;
   if (shared === 0) return 0;
   return shared / Math.min(left.size, right.size);
+}
+
+// ---------------------------------------------------------------------------
+// v21: write attribution (`basis`)
+// ---------------------------------------------------------------------------
+
+/** Explicit authority for one model-originated memory write. */
+export const BASIS_VALUES = Object.freeze(['user-explicit', 'forwarded', 'inference']);
+
+/** Memory types that describe the user rather than the project. */
+export const PROFILE_TYPES = Object.freeze(['user', 'feedback']);
+
+/**
+ * Normalize a model-supplied `basis` value.
+ *
+ * An absent/unrecognized value normalizes to `''`: callers keep the legacy
+ * direct-write behavior for it (the pre-v21 model tool surface and `/remember`
+ * were direct user entry points, and the existing tool tests rely on that).
+ * @param {unknown} value
+ * @returns {'user-explicit'|'forwarded'|'inference'|''}
+ */
+export function normalizeBasis(value) {
+  if (typeof value !== 'string') return '';
+  const basis = value.trim().toLowerCase();
+  return BASIS_VALUES.includes(basis) ? basis : '';
+}
+
+/**
+ * Attribution wording that turns a write into a claim about the user. The check
+ * runs on the name, description and body, so a project page that says "用户要求"
+ * is recognized even though its file type is not a profile type.
+ */
+const USER_ATTRIBUTION_PATTERNS = Object.freeze([
+  /用户(?:本人)?\s*(?:明确)?\s*(?:要求|希望|偏好|喜欢|不喜欢|讨厌|不要|禁止|表示|说|想要|需要|确认|强调|认为|指出|采纳|认可|选择|决定)/u,
+  /(?:按|根据|依照)用户(?:的)?(?:要求|反馈|偏好|意思)/u,
+  /\b(?:the\s+)?user\s+(?:explicitly\s+)?(?:asked|asks|wants|wanted|requires|required|prefers|preferred|said|says|confirmed|likes|dislikes|hates|needs|needed|chose|decided)\b/iu,
+  /\baccording to the user\b/iu,
+  /\buser[- ](?:explicit|confirmed|stated|requested)\b/iu,
+]);
+
+/** Wording that marks material as relayed rather than directly observed. */
+const FORWARDED_PATTERNS = Object.freeze([
+  /转发|转述|转贴|转来/u,
+  /(?:报告|材料|文档|清单|同事|对方|子代理|注入)(?:中|里)?(?:称|说|显示|提到|要求)/u,
+  /注入(?:消息|内容|上下文)|子代理(?:简报|汇报|报告)|(?:工具|tool)(?:输出|结果)/u,
+  /\b(?:forwarded|relayed|reported|injected|subagent|tool output|the report says|per the report|according to the report)\b/iu,
+]);
+
+/** True when any pattern matches a non-empty text. */
+function patternMatches(patterns, text) {
+  const value = String(text ?? '');
+  return value !== '' && patterns.some((pattern) => pattern.test(value));
+}
+
+/**
+ * True when the text asserts a user requirement/preference (including wording
+ * inside a project page body or description).
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+export function assertsUserRequirement(text) {
+  return patternMatches(USER_ATTRIBUTION_PATTERNS, text);
+}
+
+/**
+ * True when the text is visibly relayed material (a forwarded report, a pasted
+ * document, a subagent/injection summary) rather than the user's own words.
+ * @param {unknown} text
+ * @returns {boolean}
+ */
+export function assertsForwardedMaterial(text) {
+  return patternMatches(FORWARDED_PATTERNS, text);
+}
+
+/** Name + description + body of one candidate, joined for attribution checks. */
+function attributionText(candidate) {
+  const value = normalizeCandidate(candidate);
+  return [value.name, value.description, value.content].join('\n');
+}
+
+/**
+ * True when the write is a claim about the user: a `user`/`feedback` memory, or
+ * any page whose name/description/body asserts a user requirement.
+ * @param {object} candidate
+ * @returns {boolean}
+ */
+export function isUserClaim(candidate) {
+  const value = normalizeCandidate(candidate);
+  if (PROFILE_TYPES.includes(value.type)) return true;
+  return assertsUserRequirement(attributionText(value));
+}
+
+/**
+ * Review reasons caused by the write's attribution (`basis`), independent of
+ * confidence and duplicate scoring. An empty list means the basis does not
+ * force review.
+ *
+ * - `user-explicit` is the only automatic authority for user claims, and only
+ *   with a host-verified verbatim user message (`verifiedEvidence`).
+ * - `forwarded`/`inference` queue claims (profile pages or user-attribution
+ *   wording, including a `project` page body that says "用户要求").
+ * - An omitted basis keeps the legacy direct-write behavior for ordinary project
+ *   notes, but a write that targets a profile page (user scope, or a user/
+ *   feedback memory) needs the same authority: a preference is only active
+ *   memory when the user asked for it, not because a model thought it up. Two
+ *   further ambiguous cases queue: externally relayed material, and a
+ *   non-profile page asserting a user requirement (the page type and the wording
+ *   disagree).
+ *
+ * @param {{basis?:string, candidate:object, verifiedEvidence?:string, profileTarget?:boolean}} input
+ *   `verifiedEvidence` is a user quote the host already matched against the
+ *   session transcript; the model cannot supply it. `profileTarget` marks a
+ *   write that lands on a user/feedback page, which needs explicit authority.
+ * @returns {string[]}
+ */
+export function basisReviewReasons({ basis = '', candidate, verifiedEvidence = '', profileTarget = false } = {}) {
+  if (basis === 'user-explicit') {
+    // An explicit basis only grants authority when the host verified the quoted
+    // user message; the model's label alone proves nothing.
+    if (verifiedEvidence !== '') return [];
+    if (!isUserClaim(normalizeCandidate(candidate))) return [];
+    return [
+      'basis is user-explicit but the host could not verify a verbatim user message in this session; the claim needs confirmation before it becomes active memory',
+    ];
+  }
+  const value = normalizeCandidate(candidate);
+  const claim = isUserClaim(value);
+  if (basis === 'forwarded' || basis === 'inference') {
+    if (!claim) return [];
+    return [
+      `basis is ${basis}: a user/feedback/preference claim needs user-explicit confirmation before it becomes active memory`,
+    ];
+  }
+  if (!claim) return [];
+  const text = attributionText(value);
+  if (assertsForwardedMaterial(text)) {
+    return ['relayed material needs an explicit basis before it becomes active memory'];
+  }
+  if (!PROFILE_TYPES.includes(value.type)) {
+    return ['a user-requirement claim on a non-user page needs an explicit basis before it becomes active memory'];
+  }
+  // A page that belongs to the user is the user's own record: without an
+  // explicit basis nothing writes it, even when the wording reads like a
+  // neutral preference. Ordinary project notes keep the legacy direct write.
+  if (profileTarget) {
+    return [
+      'no basis: a write to a user/feedback page needs an explicit basis and the quoted user message before it becomes active memory',
+    ];
+  }
+  return [];
 }
 
 /**

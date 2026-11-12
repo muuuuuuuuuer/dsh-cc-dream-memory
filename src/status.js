@@ -28,6 +28,15 @@ import {
 } from './secrets.js';
 import { approvePendingWrite, listPendingWrites, rejectPendingWrite } from './pending-writes.js';
 import { MEMORY_TYPES, slugify } from './store.js';
+import { buildHotIndex, memoryStatusIsCurrent } from './inject.js';
+import { entryFingerprint, readLedger } from './verification-ledger.js';
+
+/**
+ * Version of the data contract between this backend and client.js. The page
+ * compares it with its own and says so when the running backend is older
+ * (the host keeps imported modules until it restarts).
+ */
+export const UI_API = 1;
 
 /** Changelog tail length used by the UI. */
 export const DEFAULT_LOG_LINES = 40;
@@ -40,8 +49,19 @@ export const CONFIG_FIELDS = Object.freeze([
   'autoMemoryEnabled',
   'autoDreamEnabled',
   'dreamMode',
+  'dreamPipeline',
+  'dreamAnalyzerModel',
+  'dreamOrganizerModel',
+  'dreamAnalyzerConcurrency',
+  'wikiEnabled',
   'indexMaxLines',
   'indexMaxBytes',
+  'injectHotOnly',
+  'injectHotEntries',
+  'autoRecall',
+  'autoRecallBody',
+  'autoRecallMaxFiles',
+  'autoRecallMaxChars',
   'dreamAllowDelete',
   'userMemoryEnabled',
   'injectionMode',
@@ -244,6 +264,8 @@ export function pendingWritesView(records, options = {}) {
   const items = list.slice(0, limit).map((record) => ({
     id: record.id,
     createdAt: record.createdAt,
+    action: typeof record.action === 'string' ? record.action : 'save',
+    file: typeof record.file === 'string' ? record.file : '',
     reasons: Array.isArray(record.reasons) ? record.reasons : [],
     candidate: {
       name: record.candidate?.name ?? '',
@@ -260,6 +282,42 @@ export function pendingWritesView(records, options = {}) {
         : '',
   }));
   return { count: list.length, items };
+}
+
+/**
+ * Trust facts for the UI, per entry: the explicit `STATUS:` marker, whether the
+ * page is current, whether the host ledger verified exactly this content (or
+ * verified an older version), and whether it is in the injected hot set.
+ * Read-only; an unreadable page reports as unverified.
+ * @returns {Promise<object[]>}
+ */
+export async function annotateTrust(store, entries, { scope = 'project', hotFiles = [] } = {}) {
+  const list = Array.isArray(entries) ? entries : [];
+  const hot = new Set(hotFiles);
+  const ledger = await readLedger(store, scope);
+  const out = [];
+  for (const entry of list) {
+    let body = null;
+    try {
+      const read = await store.readEntry(entry.file, scope);
+      body = typeof read?.body === 'string' ? read.body : '';
+    } catch {
+      body = null;
+    }
+    const marker = /^\s*STATUS:\s*([a-z-]+)/imu.exec(body ?? '');
+    const record = ledger.entries[entry.file];
+    const matches = body !== null && record && typeof record.hash === 'string'
+      && record.hash === entryFingerprint({ name: entry.name, description: entry.description, body });
+    out.push({
+      ...entry,
+      status: marker ? marker[1].toLowerCase() : '',
+      current: body === null ? true : memoryStatusIsCurrent(body),
+      verified: matches ? { date: String(record.date ?? ''), source: String(record.source ?? '') } : null,
+      verifiedOutdated: Boolean(record) && !matches,
+      hot: hot.has(entry.file),
+    });
+  }
+  return out;
 }
 
 /**
@@ -1041,6 +1099,30 @@ export function createStatusService(runtime) {
     const snapshot =
       pctx?.state && typeof pctx.state.snapshot === 'function' ? pctx.state.snapshot() : {};
 
+    const stateView = pick(snapshot, STATE_FIELDS);
+    // A coverage-blocked preview is diagnostic history. The desktop treats
+    // every visible plan path as a pending action, so suppress only plans the
+    // host already knows cannot be applied. Explicit preview still works.
+    const planPath = typeof stateView.lastPlanPath === 'string' ? stateView.lastPlanPath : '';
+    const dreamsDir = pctx?.paths?.dreamsDir;
+    if (planPath !== '' && typeof dreamsDir === 'string' && dreamsDir !== '') {
+      const relative = path.relative(dreamsDir, planPath);
+      const parts = relative.split(path.sep);
+      if (parts.length === 2 && parts[0] !== '..' && !path.isAbsolute(relative) && parts[1] === 'plan.json') {
+        try {
+          const manifest = JSON.parse(await fs.readFile(path.join(path.dirname(planPath), 'manifest.json'), 'utf8'));
+          if (manifest?.mode === 'v2' && manifest.coverageComplete === false) {
+            stateView.lastPlanPath = '';
+            if (!stateView.lastError) {
+              stateView.lastError = `Dream analyzed ${manifest.processed ?? 0}/${manifest.expected ?? 0} sessions; the preview is blocked. Run Dream again for a new plan.`;
+            }
+          }
+        } catch {
+          // Older and hand-written plans can have no manifest.
+        }
+      }
+    }
+
     // v9: pending-write queue, dream readiness / memory health (defensive: the
     // readiness module may not be installed yet) and per-session live mode.
     let pendingWrites = { count: 0, items: [] };
@@ -1059,9 +1141,31 @@ export function createStatusService(runtime) {
     const metricsTrendValue = metricsTrend(await readMetrics(pctx?.paths), { days: DEFAULT_TREND_DAYS });
     const metricsView = { ...metricsValue, trend: metricsTrendValue };
 
+    // What a new session loads, and per-entry trust (hot set, ledger, STATUS).
+    const hotOnly = config.injectHotOnly === true;
+    const hotLimit = Math.max(1, Number(config.injectHotEntries) || 3);
+    let hotFiles = [];
+    if (hotOnly) {
+      try {
+        const hot = await buildHotIndex({ store, paths: pctx?.paths, config, limit: hotLimit });
+        hotFiles = Array.isArray(hot?.hotFiles) ? hot.hotFiles : [];
+      } catch {
+        hotFiles = [];
+      }
+    }
+    let trustedEntries = entries;
+    let trustedUserEntries = userEntries;
+    try {
+      trustedEntries = await annotateTrust(store, entries, { scope: 'project', hotFiles });
+      if (userEntries.length > 0) trustedUserEntries = await annotateTrust(store, userEntries, { scope: 'user' });
+    } catch {
+      /* trust facts are optional; the plain entries still describe the store */
+    }
+
     return {
       ok: true,
       version: VERSION,
+      uiApi: UI_API,
       project: {
         projectRoot: String(pctx?.paths?.projectRoot ?? ''),
         memoryDir: String(pctx?.paths?.memoryDir ?? ''),
@@ -1078,17 +1182,23 @@ export function createStatusService(runtime) {
         maxLines: index.maxLines,
         maxBytes: index.maxBytes,
       },
-      entries,
+      injection: {
+        hotOnly,
+        hotLimit,
+        hotFiles,
+        autoRecall: config.autoRecall !== false,
+      },
+      entries: trustedEntries,
       userScope: {
         enabled: config.userMemoryEnabled === true,
-        entries: userEntries,
+        entries: trustedUserEntries,
         budgets: {
           maxLines: Number(config.userIndexMaxLines) || 0,
           maxBytes: Number(config.userIndexMaxBytes) || 0,
         },
         usage: userUsage,
       },
-      state: pick(snapshot, STATE_FIELDS),
+      state: stateView,
       changelogTail,
       trashCount,
       rules: rulesValue,
@@ -1230,6 +1340,8 @@ export function createStatusService(runtime) {
         trigger: options.trigger || 'manual',
         reason: options.reason || '',
         focus: typeof options.focus === 'string' ? options.focus : '',
+        pipeline: options.pipeline === 'v2' || options.pipeline === 'classic' ? options.pipeline : '',
+        noSessions: options.noSessions === true,
       });
       return { ok: true, result: lossless(result) };
     }
@@ -1409,10 +1521,10 @@ export function createStatusService(runtime) {
   }
 
   /** Pending-write queue summary (v9 write-review flow). */
-  async function pendingWrites(pctx) {
+  async function pendingWrites(pctx, options = {}) {
     requireStore(pctx);
     const records = await listPendingWrites(pctx?.paths);
-    return pendingWritesView(records, { limit: 100 });
+    return pendingWritesView(records, { limit: 100, includeContent: options.includeContent === true });
   }
 
   /**
@@ -1456,6 +1568,43 @@ export function createStatusService(runtime) {
     return { rejected: true, id: result.id, path: result.path };
   }
 
+  async function wikiBuild(pctx, options = {}) {
+    if (typeof rt.wikiBuild !== 'function') {
+      return { ok: false, error: 'not-ready', message: 'knowledge wiki builder is unavailable' };
+    }
+    const result = await rt.wikiBuild(pctx, options);
+    invalidateAll('wiki-build');
+    return {
+      ok: result?.ok !== false,
+      ...(result?.ok === false ? { error: result.error || 'wiki-build-failed', message: result.failure?.code || result.error || 'wiki build failed' } : {}),
+      result: lossless(result),
+    };
+  }
+
+  async function wikiStatus(pctx) {
+    if (typeof rt.wikiStatus !== 'function') {
+      return { ok: false, error: 'not-ready', message: 'knowledge wiki is unavailable' };
+    }
+    return { ok: true, result: lossless(await rt.wikiStatus(pctx)) };
+  }
+
+  async function wikiPages(pctx) {
+    if (typeof rt.wikiPages !== 'function') {
+      return { ok: false, error: 'not-ready', message: 'knowledge wiki is unavailable' };
+    }
+    const result = await rt.wikiPages(pctx);
+    return result?.ok === false ? result : { ok: true, result: lossless(result) };
+  }
+
+  async function wikiPage(pctx, file) {
+    if (typeof file !== 'string' || file.trim() === '') throw coded('invalid-file', 'a wiki page file name is required');
+    if (typeof rt.wikiPage !== 'function') {
+      return { ok: false, error: 'not-ready', message: 'knowledge wiki is unavailable' };
+    }
+    const result = await rt.wikiPage(pctx, file.trim());
+    return result?.ok === false ? result : { ok: true, result: lossless(result) };
+  }
+
   return {
     status,
     file,
@@ -1480,5 +1629,9 @@ export function createStatusService(runtime) {
     pendingWrites,
     approveWrite,
     rejectWrite,
+    wikiBuild,
+    wikiStatus,
+    wikiPages,
+    wikiPage,
   };
 }

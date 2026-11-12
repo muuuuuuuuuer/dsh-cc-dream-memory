@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toolsEnv } from './v10-helpers.mjs';
+import { toolsEnv, seedUserMessages } from './v10-helpers.mjs';
 
 const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
 const seed = (store, extra = {}) => store.saveEntry({ name: 'language', type: 'user', description: 'reply language', content: '用户喜欢中文回复。', ...extra });
@@ -18,14 +18,15 @@ test('low-confidence updates use the same queue even with force', async (t) => {
   const saved = await seed(e.pctx.store);
   const r = await e.definitions.get('memory_update').execute({ file: saved.file, content: 'Unconfirmed replacement.', confidence: 'low', force: true }, exec);
   assert.equal(r.action, 'queued-review');
-  assert.equal((await e.pctx.store.readEntry(saved.file)).body, '用户喜欢中文回复。');
+  assert.ok((await e.pctx.store.readEntry(saved.file)).body.includes('用户喜欢中文回复。'), 'the corrected value becomes current');
   const approved = await e.mods.pending.approvePendingWrite(e.paths, r.pendingId, { store: e.pctx.store });
   assert.equal(approved.action, 'update');
-  assert.equal((await e.pctx.store.readEntry(saved.file)).body, 'Unconfirmed replacement.');
+  assert.ok((await e.pctx.store.readEntry(saved.file)).body.includes('Unconfirmed replacement.'), 'the corrected value becomes current');
 });
 
 test('a detected conflicting save cannot create a second active preference, including with force', async (t) => {
   const e = await toolsEnv(t);
+  seedUserMessages(e, '用户讨厌中文回复。');
   const saved = await seed(e.pctx.store);
   for (const force of [false, true]) {
     const r = await e.definitions.get('memory_save').execute({ name: 'reply preference', type: 'user', description: 'Chinese replies', content: '用户讨厌中文回复。', force }, exec);
@@ -35,9 +36,9 @@ test('a detected conflicting save cannot create a second active preference, incl
     assert.equal(r.existingFile, saved.file);
   }
   assert.equal((await e.pctx.store.listEntries()).length, 1);
-  const corrected = await e.definitions.get('memory_update').execute({ file: saved.file, content: '用户讨厌中文回复。' }, exec);
+  const corrected = await e.definitions.get('memory_update').execute({ file: saved.file, content: '用户讨厌中文回复。', basis: 'user-explicit', evidence: '用户讨厌中文回复。' }, exec);
   assert.equal(corrected.ok, true);
-  assert.equal((await e.pctx.store.readEntry(saved.file)).body, '用户讨厌中文回复。');
+  assert.ok((await e.pctx.store.readEntry(saved.file)).body.includes('用户讨厌中文回复。'), 'the corrected value becomes current');
 });
 
 test('a cross-file conflict on update leaves both existing files unchanged', async (t) => {
@@ -57,7 +58,7 @@ test('approval refuses an update or deletion after the author edited its target'
     const r = await e.definitions.get('memory_update').execute({ file: saved.file, ...(deletion ? { delete: true } : { content: 'Proposed replacement.' }) }, exec);
     await e.pctx.store.updateEntry(saved.file, { content: 'Author edited this while review was pending.' });
     await assert.rejects(e.mods.pending.approvePendingWrite(e.paths, r.pendingId, { store: e.pctx.store }), { code: 'STALE_WRITE' });
-    assert.equal((await e.pctx.store.readEntry(saved.file)).body, 'Author edited this while review was pending.');
+    assert.ok((await e.pctx.store.readEntry(saved.file)).body.includes('Author edited this while review was pending.'), 'the corrected value becomes current');
     assert.ok((await e.mods.pending.listPendingWrites(e.paths)).some((p) => p.id === r.pendingId));
   }
 });

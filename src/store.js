@@ -27,6 +27,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseFrontmatter, stringifyFrontmatter } from './frontmatter.js';
+import { currentBody } from './memory-body.js';
 import {
   SECRET_DETECTED,
   scanSecrets,
@@ -78,7 +79,7 @@ const INDEX_NAME = 'MEMORY.md';
 /** Dream changelog file name (beside the memory directory). */
 const CHANGELOG_NAME = '.dream-log.md';
 /** Files the store never treats as topic entries nor lets callers rewrite raw. */
-const RESERVED_FILES = new Set([INDEX_NAME, CHANGELOG_NAME]);
+const RESERVED_FILES = new Set([INDEX_NAME, CHANGELOG_NAME, 'SKILL.md']);
 /** Topic file names accepted from callers: any Unicode letters/digits plus `.`, `_`, `-`. */
 const MEMORY_FILE_RE = /^[\p{L}\p{N}._-]+\.md$/u;
 /** Supported memory types. */
@@ -1618,7 +1619,9 @@ export class MemoryStore {
    * and `offset` pagination and returns 1-2 matched snippets per file.
    *
    * @param {string} query
-   * @param {{scope?:'project'|'user',limit?:number,offset?:number,type?:string}} [options]
+   * @param {{scope?:'project'|'user',limit?:number,offset?:number,type?:string,currentOnly?:boolean}} [options]
+   *   `currentOnly` scores and snippets only the current content, leaving
+   *   superseded values out (automatic recall); explicit search keeps them.
    * @returns {Promise<Array<{file:string,name:string,description:string,type:string,
    *   modified:string,score:number,recency:number,snippets:string[],snippet:string,
    *   via:string,created:string}>>}
@@ -1633,6 +1636,7 @@ export class MemoryStore {
     const offsetValue = Number(options.offset);
     const offset = Number.isFinite(offsetValue) ? Math.max(0, Math.trunc(offsetValue)) : 0;
     const typeFilter = MEMORY_TYPES.includes(options.type) ? options.type : '';
+    const currentOnly = options.currentOnly === true;
     const tokens = this._searchTokens(text);
     const phrase = String(text).toLowerCase();
     const now = Date.now();
@@ -1649,7 +1653,7 @@ export class MemoryStore {
         continue;
       }
       const parsed = parseFrontmatter(raw);
-      const body = parsed.body;
+      const body = currentOnly ? currentBody(parsed.body) : parsed.body;
       const nameText = meta.name.toLowerCase();
       const descriptionText = meta.description.toLowerCase();
       const bodyText = body.toLowerCase();

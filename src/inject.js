@@ -15,11 +15,80 @@
  *
  * @module dsh-cc-dream-memory/inject
  */
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { verifiedPage } from './verification-ledger.js';
+import { resolveWikiIndexFile } from './wiki-store.js';
 import { readMetrics, recordInjection } from './metrics.js';
 import { CORE_RULES, DEFAULT_RULES } from './rules.js';
 import { attachRecall } from './recall.js';
 
-/** Prompt-context name; a scoped registration shadows another with this name. */
+/** Currentness marker used by Dream v2 pages (plain body lines). */
+function memoryStatusOf(body) {
+  const match = /^\s*STATUS:\s*([a-z-]+)/imu.exec(String(body ?? ''));
+  return match ? match[1].toLowerCase() : 'current';
+}
+
+/** True when a page should not enter default recall/injection. */
+export function memoryStatusIsCurrent(body) {
+  return !['stale', 'superseded', 'disputed', 'review-needed', 'retired'].includes(memoryStatusOf(body));
+}
+
+/**
+ * Hot-set eligibility: the page must say it is a current fact, and the host must
+ * hold a verification record for the exact name, description and body about to
+ * be injected (see `verification-ledger.js`). A hand-typed `VERIFIED: <date>` or
+ * `VERIFIED AGAINST: <hash>` proves nothing, because the caller can compute
+ * both; any edit drops the page out until it is verified anew. Old unmarked
+ * notes remain searchable but are not promoted into a new session.
+ */
+export function hotEligible(body) {
+  const value = String(body ?? '');
+  if (memoryStatusOf(value) !== 'current') return false;
+  if (!/^\s*STATUS:\s*current\s*$/imu.test(value)) return false;
+  return true;
+}
+
+/** Build the tiny first-turn hot set: most-read current notes, then recent. */
+export async function buildHotIndex({ store, paths, config, limit, scope = 'project' }) {
+  const entries = typeof store.listEntries === 'function' ? await store.listEntries(scope) : [];
+  if (!Array.isArray(entries) || entries.length === 0) return null;
+  const metrics = scope === 'project' ? await readMetrics(paths).catch(() => null) : null;
+  const reads = metrics && metrics.entries && typeof metrics.entries === 'object' ? metrics.entries : {};
+  const ranked = [...entries].sort((left, right) => {
+    const readDelta = (Number(reads[right.file]?.reads) || 0) - (Number(reads[left.file]?.reads) || 0);
+    if (readDelta !== 0) return readDelta;
+    return (Date.parse(right.modified) || 0) - (Date.parse(left.modified) || 0);
+  });
+  const hot = [];
+  for (const entry of ranked) {
+    if (hot.length >= limit) break;
+    let body = '';
+    try {
+      const read = await store.readEntry(entry.file, scope);
+      body = typeof read?.body === 'string' ? read.body : '';
+    } catch {
+      continue;
+    }
+    if (!hotEligible(body)) continue;
+    if (!(await verifiedPage({ store, scope, entry, body }))) continue;
+    hot.push(entry);
+  }
+  const lines = hot.map((entry) => {
+    const description = String(entry.description || '').trim();
+    return `- [${entry.name || entry.file}](${entry.file})${description ? ` — ${description}` : ''}`;
+  });
+  return {
+    text: lines.join('\n'),
+    lines: lines.length,
+    bytes: Buffer.byteLength(lines.join('\n'), 'utf8'),
+    hot: true,
+    hotFiles: hot.map((entry) => entry.file),
+    omitted: Math.max(0, entries.length - hot.length),
+  };
+}
+
+
 export const CONTEXT_NAME = 'cc-memory';
 const DEFAULT_ORDER = 850;
 const DEFAULT_REFRESH_MS = 30_000;
@@ -86,13 +155,38 @@ export function buildInjectionText(input = {}) {
   lines.push('- If a memory names a file, function or flag, check it still exists before recommending it.');
   lines.push('- When a note no longer holds, update it or remove it with memory_update (delete: true).');
   lines.push('- Questions about what happened in past sessions are answered from session history (session_search, if available) and the repository, not from memory.');
+  const skill = typeof input.skill === 'string' ? input.skill.trim() : '';
+  if (skill !== '') {
+    lines.push('');
+    lines.push('<skill>');
+    lines.push(skill);
+    lines.push('</skill>');
+  }
+  if (input.wikiAvailable === true) {
+    lines.push('');
+    lines.push('A read-only knowledge wiki is available through wiki_search, wiki_read and wiki_links. Answer corpus questions from it and cite the page you used; do not edit the wiki.');
+  }
 
   if (config.injectIndex !== false) {
     lines.push('');
     lines.push('<index>');
     const head = typeof index.text === 'string' ? index.text : '';
-    lines.push(head === '' ? '(empty — no memories saved yet)' : head.replace(/\n$/, ''));
+    if (head === '' && index.hot === true) {
+      lines.push('(no verified current notes; use memory_search or memory_read for the catalog)');
+    } else {
+      lines.push(head === '' ? '(empty — no memories saved yet)' : head.replace(/\n$/, ''));
+    }
     lines.push('</index>');
+    if (index.hot === true) {
+      const hotCount = Number(index.lines) || 0;
+      const omitted = Number(index.omitted) || 0;
+      lines.push(
+        hotCount === 0
+          ? `<hot-set>no note has an explicit current status plus verification yet; ${omitted} topic(s) remain available via memory_search or memory_read.</hot-set>`
+          : `<hot-set>only the ${hotCount} most-used verified current notes are loaded; ` +
+            `${omitted} more topic(s) are available via memory_search or memory_read.</hot-set>`,
+      );
+    }
     const actualLines = Number(index.totalLines ?? index.lines ?? 0);
     const actualBytes = Number(index.totalBytes ?? index.bytes ?? 0);
     if (index.overflow === true) {
@@ -103,6 +197,7 @@ export function buildInjectionText(input = {}) {
           'The human can consolidate from the Memory page (Dry run) or /dream run.</budget-notice>',
       );
     } else if (
+      index.hot !== true &&
       Number(index.maxLines) > 0 &&
       Number(index.maxBytes) > 0 &&
       (actualLines / Number(index.maxLines) >= 0.8 || actualBytes / Number(index.maxBytes) >= 0.8)
@@ -258,14 +353,55 @@ export function registerInjection(ctx, runtime, configOverride) {
     const paths = projectContext.paths;
     if (!store || !paths || typeof store.injectedIndex !== 'function') return '';
     const index = await store.injectedIndex('project');
+    let injectedIndex = index;
+    if (effective.injectHotOnly === true) {
+      try {
+        const hot = await buildHotIndex({
+          store,
+          paths,
+          config: effective,
+          limit: Math.max(1, Number(effective.injectHotEntries) || 3),
+        });
+        if (hot) {
+          injectedIndex = {
+            ...index,
+            ...hot,
+            totalLines: Number(index.totalLines ?? index.lines ?? 0),
+            totalBytes: Number(index.totalBytes ?? index.bytes ?? 0),
+            overflow: false,
+            maxLines: Number(index.maxLines) || 200,
+            maxBytes: Number(index.maxBytes) || 25 * 1024,
+          };
+        }
+      } catch (error) {
+        warn('hot index', error);
+      }
+    }
     let user = null;
     if (effective.userMemoryEnabled === true) {
       try {
-        const userIndex = await store.injectedIndex('user', {
-          maxLines: Number(effective.userIndexMaxLines) || undefined,
-          maxBytes: Number(effective.userIndexMaxBytes) || undefined,
-        });
-        if (userIndex && typeof userIndex.text === 'string' && userIndex.text !== '') user = userIndex;
+        if (effective.injectHotOnly === true) {
+          const userHot = await buildHotIndex({
+            store,
+            paths,
+            config: effective,
+            limit: Math.max(1, Number(effective.userIndexMaxLines) || 30),
+            scope: 'user',
+          });
+          if (userHot) {
+            user = {
+              ...userHot,
+              maxLines: Number(effective.userIndexMaxLines) || 30,
+              maxBytes: Number(effective.userIndexMaxBytes) || 4096,
+            };
+          }
+        } else {
+          const userIndex = await store.injectedIndex('user', {
+            maxLines: Number(effective.userIndexMaxLines) || undefined,
+            maxBytes: Number(effective.userIndexMaxBytes) || undefined,
+          });
+          if (userIndex && typeof userIndex.text === 'string' && userIndex.text !== '') user = userIndex;
+        }
       } catch (error) {
         warn('user index', error);
       }
@@ -274,13 +410,24 @@ export function registerInjection(ctx, runtime, configOverride) {
     if (reason === 'compaction' && effective.compactionDigest !== false) {
       try {
         const entries = typeof store.listEntries === 'function' ? await store.listEntries('project') : [];
-        const recent = [...entries]
+        const eligible = [];
+        for (const entry of Array.isArray(entries) ? entries : []) {
+          try {
+            const read = await store.readEntry(entry.file, 'project');
+            if (hotEligible(read?.body)
+              && await verifiedPage({ store, scope: 'project', entry, body: read?.body })) eligible.push(entry);
+          } catch {
+            /* unreadable notes are not eligible */
+          }
+        }
+        const recent = [...eligible]
           .sort((left, right) => (Date.parse(right.modified) || 0) - (Date.parse(left.modified) || 0))
           .slice(0, 5);
         const metrics = await readMetrics(paths).catch(() => null);
+        const eligibleFiles = new Set(eligible.map((entry) => entry.file));
         const topRead = metrics && metrics.entries && typeof metrics.entries === 'object'
           ? Object.entries(metrics.entries)
-              .filter(([, value]) => value && value.reads > 0)
+              .filter(([file, value]) => eligibleFiles.has(file) && value && value.reads > 0)
               .sort((left, right) => right[1].reads - left[1].reads)
               .slice(0, 3)
               .map(([file]) => file)
@@ -290,7 +437,7 @@ export function registerInjection(ctx, runtime, configOverride) {
           lines.push('- recently updated: [' + entry.name + '](' + entry.file + ') — ' + String(entry.description || '').slice(0, 120));
         }
         for (const file of topRead) {
-          const entry = entries.find((candidate) => candidate.file === file);
+          const entry = eligible.find((candidate) => candidate.file === file);
           if (entry) lines.push('- most read: [' + entry.name + '](' + entry.file + ') — ' + String(entry.description || '').slice(0, 120));
         }
         digest = lines.join('\n').slice(0, 400);
@@ -310,15 +457,40 @@ export function registerInjection(ctx, runtime, configOverride) {
       rules = undefined;
       rulesSource = undefined;
     }
+    let skill = '';
+    if (effective.injectSkill !== false) {
+      try {
+        const raw = await fs.readFile(paths.memorySkillFile, 'utf8');
+        skill = raw.split('\n').slice(0, 24).join('\n').slice(0, 1600).trim();
+      } catch (error) {
+        if (error?.code !== 'ENOENT') warn('memory skill', error);
+      }
+    }
+    let wikiAvailable = false;
+    if (effective.wikiEnabled !== false) {
+      try {
+        // Pages live in the generation the pointer names; the root only holds
+        // the pointer, so a root-level `_index.md` would never be found.
+        const wikiRoot = typeof paths.wikiDir === 'string' && paths.wikiDir !== ''
+          ? paths.wikiDir
+          : path.dirname(paths.wikiIndexFile);
+        await fs.access(resolveWikiIndexFile(wikiRoot));
+        wikiAvailable = true;
+      } catch (error) {
+        if (error?.code !== 'ENOENT') warn('wiki index', error);
+      }
+    }
     const text = buildInjectionText({
       memoryDir: paths.memoryDir,
       userMemoryDir: paths.userMemoryDir,
       config: effective,
-      index,
+      index: injectedIndex,
       user,
       rules,
       rulesSource,
       digest,
+      skill,
+      wikiAvailable,
     });
     // Effect metrics: count each successful non-empty injection. Fire-and-forget
     // through the runtime so unload/drain and tests can await it; a metrics

@@ -24,6 +24,7 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 |---|---|
 | `/memory dream run --dry-run` | Make a plan without changing anything |
 | `/memory dream run --dry-run --focus "<topic>"` | Prefer one topic in this round |
+| `/memory dream run --pipeline v2 --dry-run` | Use the per-session analyzer pipeline instead of the classic one |
 | `/memory dream preview` | Show the plan's operations and the quotes behind new statements |
 | `/memory dream apply` | Apply the whole plan |
 | `/memory dream apply-ops 0,2` | Apply only the numbered operations |
@@ -34,6 +35,15 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 | `/memory dream estimate [--focus "<topic>"]` | Estimate input tokens without calling the model or changing memory; actual total can be higher |
 | `/memory dream on` | Turn on automatic Dreams. They are off by default |
 | `/memory dream off` | Turn automatic Dreams off |
+
+## Knowledge wiki
+
+| Command | What it does |
+|---|---|
+| `/memory wiki build <docs-dir>` | Build or update the read-only knowledge wiki from `.txt`/`.md` documents |
+| `/memory wiki build <docs-dir> --dry-run` | Extract and count claims without writing pages |
+| `/memory wiki build <docs-dir> --focus "<topic>"` | Prefer a topic during extraction and analysis |
+| `/memory wiki status` | Show page count, dangling links and the last build |
 
 ## Moving memories
 

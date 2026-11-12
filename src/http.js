@@ -212,6 +212,8 @@ export function createHttpHandler({ runtime, token }) {
         action,
         indexes: body.indexes,
         focus: body.focus,
+        pipeline: body.pipeline === 'v2' || body.pipeline === 'classic' ? body.pipeline : '',
+        noSessions: body.noSessions === true,
         trigger: 'manual',
         reason: 'web ui',
       });
@@ -461,7 +463,10 @@ export function createHttpHandler({ runtime, token }) {
       if (route === '/pending-writes' && method === 'GET') {
         const projectContext = await resolveProject(url.searchParams.get('sessionId') ?? undefined);
         if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
-        return sendJson(res, 200, { ok: true, ...(await service.pendingWrites(projectContext)) });
+        return sendJson(res, 200, {
+          ok: true,
+          ...(await service.pendingWrites(projectContext, { includeContent: url.searchParams.get('content') === '1' })),
+        });
       }
       if (route === '/pending-writes' && method === 'POST') {
         const body = await readBody(req);
@@ -523,6 +528,47 @@ export function createHttpHandler({ runtime, token }) {
           });
         } catch (error) {
           return sendCoded(res, error, 'restore-failed');
+        }
+      }
+      if (route === '/wiki' && method === 'POST') {
+        const body = await readBody(req);
+        const projectContext = await resolveProject(body?.sessionId);
+        if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
+        if (!runtime.effectiveEnabled()) {
+          return sendJson(res, 200, { ok: false, error: 'plugin-disabled', message: 'memory is disabled; enable it first' });
+        }
+        const action = String(body.action ?? 'status').toLowerCase();
+        try {
+          if (action === 'build') {
+            if (typeof runtime.wikiBuild !== 'function') {
+              return sendJson(res, 200, { ok: false, error: 'not-ready', message: 'knowledge wiki builder is unavailable' });
+            }
+            const result = await runtime.wikiBuild(projectContext, {
+              docsDir: body.docsDir,
+              dryRun: body.dryRun === true,
+              focus: typeof body.focus === 'string' ? body.focus : '',
+            });
+            return sendJson(res, 200, {
+              ok: result?.ok !== false,
+              ...(result?.ok === false ? { error: result.error || 'wiki-build-failed' } : {}),
+              result,
+            });
+          }
+          if (action === 'status') {
+            if (typeof runtime.wikiStatus !== 'function') {
+              return sendJson(res, 200, { ok: false, error: 'not-ready' });
+            }
+            return sendJson(res, 200, { ok: true, result: await runtime.wikiStatus(projectContext) });
+          }
+          if (action === 'pages') return sendJson(res, 200, await service.wikiPages(projectContext));
+          if (action === 'read') return sendJson(res, 200, await service.wikiPage(projectContext, body.file));
+          return sendJson(res, 400, {
+            ok: false,
+            error: 'unknown-action',
+            message: 'action must be "build", "status", "pages" or "read"',
+          });
+        } catch (error) {
+          return sendCoded(res, error, 'wiki-failed');
         }
       }
       if (route === '/dream' && method === 'POST') {

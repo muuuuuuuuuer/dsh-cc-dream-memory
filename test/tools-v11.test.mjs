@@ -97,7 +97,7 @@ test('v11 tools: save/read/update semantics still work after the trim', async (t
   t.after(() => dispose?.());
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
   const saved = await definitions.get('memory_save').execute(
-    { name: 'trim note', type: 'user', description: 'trim description', content: '用户要求回答简短。' },
+    { name: 'trim note', type: 'project', description: 'trim description', content: 'a plain note body kept across save and read' },
     exec,
   );
   assert.equal(saved.ok, true, JSON.stringify(saved));

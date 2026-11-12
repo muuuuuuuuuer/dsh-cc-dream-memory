@@ -163,6 +163,7 @@ export function buildPaths({ memoryRoot = '', homeDir = '', workspaceDir = '.', 
   const projectDirName = explicitId !== '' ? explicitId : projectSlug(projectRoot);
   const projectDir = path.join(root, 'projects', projectDirName);
   const memoryDir = path.join(projectDir, 'memory');
+  const wikiDir = path.join(projectDir, 'wiki');
   return {
     root,
     homes: { home, memoryRoot: root },
@@ -174,6 +175,16 @@ export function buildPaths({ memoryRoot = '', homeDir = '', workspaceDir = '.', 
     projectDir,
     memoryDir,
     indexFile: path.join(memoryDir, 'MEMORY.md'),
+    // Dream v2 run artifacts: one folder per pass, with analysis JSON and manifests.
+    runsDir: path.join(projectDir, 'runs'),
+    // Knowledge wiki: a separate read-only-for-model store, written only by the host builder.
+    wikiDir,
+    wikiIndexFile: path.join(wikiDir, '_index.md'),
+    wikiSkillFile: path.join(wikiDir, 'SKILL.md'),
+    wikiSourcesDir: path.join(wikiDir, '.sources'),
+    wikiBuildsDir: path.join(wikiDir, '.builds'),
+    wikiLockFile: path.join(projectDir, '.wiki-lock'),
+    memorySkillFile: path.join(memoryDir, 'SKILL.md'),
     // Plugin metadata lives beside the memory files so the memory directory
     // keeps only human-readable memory, exactly like Claude Code's layout.
     stateFile: path.join(projectDir, '.state.json'),

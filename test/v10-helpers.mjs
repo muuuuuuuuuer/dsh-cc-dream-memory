@@ -116,6 +116,24 @@ export function fakeHost({ workspaceDir, plan = null, usage = null } = {}) {
   };
 }
 
+/**
+ * Give the fake host a transcript with these user messages, so a write can carry
+ * `basis: 'user-explicit'` and a verbatim `evidence` quote the host can verify.
+ */
+export function seedUserMessages(env, ...texts) {
+  const events = texts.map((text, index) => ({
+    type: 'user/message',
+    seq: index + 1,
+    time: Date.parse('2026-11-11T09:00:00Z') + index,
+    data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] },
+  }));
+  env.host.services.sessionQuery = {
+    filterSessions: async () => [],
+    readSession: async (id) => ({ session: { id }, events }),
+  };
+  return env;
+}
+
 export async function exists(file) {
   try {
     const { access } = await import('node:fs/promises');

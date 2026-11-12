@@ -10,6 +10,7 @@ import { Readable } from 'node:stream';
 import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { loadModule, makeTempDir } from './helpers.mjs';
+import { seedUserMessages } from './v10-helpers.mjs';
 
 // ---------------------------------------------------------------------------
 // Modules / fixtures
@@ -397,18 +398,21 @@ test('v9 pending writes: queue, list, approve (writes file + index), reject', as
 
 test('v9 tools: memory_save duplicate/conflict/low-confidence/confirm outcomes', async (t) => {
   const env = await toolsEnv(t);
+  seedUserMessages(env, '用户喜欢用中文回复所有问题。', '用户讨厌中文回复。', 'a clean durable note body');
   await env.pctx.store.saveEntry({
     name: '回复语言',
     type: 'user',
     description: '用户喜欢中文回复',
     content: '用户喜欢用中文回复所有问题。',
+    basis: 'user-explicit',
+    evidence: '用户喜欢用中文回复所有问题。',
   });
   const save = env.definitions.get('memory_save');
   assert.ok(save);
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
 
   const duplicate = await save.execute(
-    { name: '回复语言', type: 'user', description: '用户喜欢中文回复', content: '用户喜欢用中文回复所有问题。' },
+    { name: '回复语言', type: 'user', description: '用户喜欢中文回复', content: '用户喜欢用中文回复所有问题。', basis: 'user-explicit', evidence: '用户喜欢用中文回复所有问题。' },
     exec,
   );
   assert.equal(duplicate.ok, true, JSON.stringify(duplicate));
@@ -419,7 +423,7 @@ test('v9 tools: memory_save duplicate/conflict/low-confidence/confirm outcomes',
   assert.equal(typeof duplicate.hint, 'string');
 
   const conflict = await save.execute(
-    { name: 'reply preference', type: 'user', description: 'Chinese replies', content: '用户讨厌中文回复。' },
+    { name: 'reply preference', type: 'user', description: 'Chinese replies', content: '用户讨厌中文回复。', basis: 'user-explicit', evidence: '用户讨厌中文回复。' },
     exec,
   );
   assert.equal(conflict.ok, true, JSON.stringify(conflict));
@@ -445,7 +449,7 @@ test('v9 tools: memory_save duplicate/conflict/low-confidence/confirm outcomes',
   const confirmEnv = await toolsEnv(t, { writeMode: 'confirm' });
   const confirmSave = confirmEnv.definitions.get('memory_save');
   const queued = await confirmSave.execute(
-    { name: 'confirm note', type: 'user', description: 'clean description', content: 'a clean durable note body' },
+    { name: 'confirm note', type: 'user', description: 'clean description', content: 'a clean durable note body', basis: 'user-explicit', evidence: 'a clean durable note body' },
     exec,
   );
   assert.equal(queued.ok, true, JSON.stringify(queued));
@@ -456,11 +460,14 @@ test('v9 tools: memory_save duplicate/conflict/low-confidence/confirm outcomes',
 
 test('v9 tools: possible-duplicate is advisory and force still writes', async (t) => {
   const env = await toolsEnv(t, { policyDuplicateThreshold: 0.99, policySuggestThreshold: 0.01 });
+  seedUserMessages(env, 'The project prefers tabs for indentation everywhere.', 'The project prefers tabs for indentation in all source files.');
   await env.pctx.store.saveEntry({
     name: 'indent style',
     type: 'feedback',
     description: 'prefer tabs for indentation',
     content: 'The project prefers tabs for indentation everywhere.',
+    basis: 'user-explicit',
+    evidence: 'The project prefers tabs for indentation everywhere.',
   });
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
@@ -469,6 +476,8 @@ test('v9 tools: possible-duplicate is advisory and force still writes', async (t
     type: 'feedback',
     description: 'prefer tabs for indentation in code',
     content: 'The project prefers tabs for indentation in all source files.',
+    basis: 'user-explicit',
+    evidence: 'The project prefers tabs for indentation in all source files.',
   };
   const suspected = await save.execute(candidate, exec);
   assert.equal(suspected.ok, true, JSON.stringify(suspected));

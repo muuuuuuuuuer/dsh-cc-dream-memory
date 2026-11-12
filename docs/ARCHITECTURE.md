@@ -1,6 +1,6 @@
 # dsh-cc-dream-memory 架构与 DSH 集成手册
 
-- 版本：**0.11.1**（2026-11-08）
+- 版本：**0.12.0**（2026-11-11）
 - 定位：DSH 插件，**实验性、可审计**的 **auto memory（自写记忆）** 与 **Dream（后台整理）**；受 Claude Code 启发，不是复刻，也不声称达到或超过官方能力。
 - 数据目录：`~/.dsh/cc-memory`（独立于插件安装位置，升级/卸载不丢数据）。
 
@@ -627,3 +627,11 @@ DreamEngine.run({force, dryRun, trigger, noSessions, focus})
 模型 save/update 的执行边界统一到 write-review.js；底层 policy 提供按语句的词面评估，工具边界将冲突放入待审队列，不将 advisory 当成写入授权。更新与待审批准使用存储写锁内的 SHA-256 比较保护并发编辑。
 
 Dream 的 evidence 使用操作级引用；兼容旧 `{statement,quote}`，来源位置由宿主输入确定，包含短会话和长会话笔记的 sessionId/seq。检查证明引用存在，不证明语义蕴含。自动 Dream 的语义修改先进入提案；纯机械修改才直接应用。既有用户类原句可以搬运，改写转审阅；每次预览列出正文删行，已有提案阻止后续生成覆盖。`POST /dream {action:'estimate'}` 和 `/memory dream estimate` 只读估算输入、不调用模型；界面在付费 dry-run 前展示估算并要求确认。
+
+## 0.12.0 Dream v2 与 Knowledge Wiki
+
+- **Dream v2**（`dreamPipeline: v2`）：`dream-pipeline.js` 导出 transcript → 每 session 一个 analyzer（`dream-analyzer.js`）→ host 校验（`dream-verifier.js`）→ 一次 organizer（`dream-organizer.js`）→ 复用 `DreamEngine.executePlan` 的备份/回滚/undo。覆盖度写在 `manifest.json`（expected/processed/failed/partial），不完整批次不移动水位线。新配置：`dreamAnalyzerConcurrency`、分阶段模型、analyzer/organizer 输入上限。
+- **共享 wiki 格式**：`wiki-core.js` 提供 `[[slug]]`、citation、index、SKILL、validation；`wiki-store.js` 提供独立 `wiki/` 根、原子写、search、link audit、build manifest。`memory/` 继续由 `MemoryStore` 管理，新增 `SKILL.md`（保留名）。
+- **Knowledge Wiki build**：`wiki-build.js` 支持 `.txt/.md` 文档 → source manifest → extractor → analyzer → organizer → `_index.md`/`SKILL.md`；入口 `/memory wiki build <dir>` 与 `POST /api/cc-memory/wiki`。PDF/Office 需先转文本。
+- **Read-only query**：`wiki-query.js` + `wiki-tools.js` 注册 `wiki_search`、`wiki_read`、`wiki_links`、`wiki_answer`；没有任何 wiki 写工具，`wiki_answer` 由 host 校验 page/quote。
+- **注入**：存在 `memory/SKILL.md` 时注入前 24 行；存在 `wiki/_index.md` 时注入一行只读 wiki 提示。UI 仍冻结。

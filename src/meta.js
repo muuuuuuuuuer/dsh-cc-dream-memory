@@ -114,3 +114,4 @@ export async function buildHealth({ runtime, projectContext, rules } = {}) {
 // v0.10.13: chronological paired tool evidence, corpus watermark persistence + seq reload, recent-user tail guard, docs/eval path cleanup.
 // v0.10.14: all-scenario frozen manifest, open-tool temp git workspaces + objective checks, memory-convention and dream-session scenarios, git identity/budget notice fixes.
 // v0.11.0: Dream reads whole sessions (chunked analysis, verified quotes, watermarks moved only on apply) with an evidence gate; lexical auto recall, memory_update delete, staleness hints.
+// v0.12.0: Dream v2 pipeline (per-session analyzer, host verifier, organizer, coverage), wiki-lite memory pages, knowledge-wiki corpus build and read-only wiki query tools.

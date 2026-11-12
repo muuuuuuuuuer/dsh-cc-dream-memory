@@ -43,7 +43,7 @@ test('v10 subagent: shared mode lets a subagent write with its own session prove
   const saved = await env.definitions.get('memory_save').execute(
     {
       name: 'child memory',
-      type: 'user',
+      type: 'project',
       description: 'child description',
       content: 'a child session memory body that is long enough',
       force: true,

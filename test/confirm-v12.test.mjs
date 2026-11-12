@@ -101,7 +101,7 @@ test('v12 confirm: queued update+rename is applied atomically after approval', a
 test('v12 confirm: without confirm, force writes immediately (unchanged)', async (t) => {
   const env = await toolsEnv(t);
   const saved = await env.definitions.get('memory_save').execute(
-    { name: 'plain force', type: 'user', description: 'd', content: 'plain force body that is long enough', force: true },
+    { name: 'plain force', type: 'project', description: 'd', content: 'plain force body that is long enough', force: true },
     { agent: { id: 'agent-1' }, sessionId: 'sess-1' },
   );
   assert.equal(saved.ok, true, JSON.stringify(saved));

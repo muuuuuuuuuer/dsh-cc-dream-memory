@@ -8,6 +8,8 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { modules, fakeHost, memoryFile, indexFor, exists, sleep, waitFor } from './v10-helpers.mjs';
+import { stampVerification } from '../src/memory-body.js';
+import { recordVerification } from '../src/verification-ledger.js';
 
 const sleepLocal = sleep;
 
@@ -69,14 +71,26 @@ async function digestEnv(t, configOverrides = {}) {
 async function seedFiles(env, items) {
   const names = items.map((item, index) => ({ ...item, file: `user_topic_${index}.md` }));
   for (const item of names) {
+    const body = item.eligible === false ? item.body : stampVerification(`${item.body}\nSTATUS: current`, '2026-11-11');
     await writeFile(
       path.join(env.pctx.paths.memoryDir, item.file),
       memoryFile(
         { name: item.name, type: 'user', description: item.description, modified: item.modified },
-        item.body,
+        body,
       ),
       'utf8',
     );
+    // The digest only promotes what the host verified for this exact content.
+    if (item.eligible !== false) {
+      await recordVerification({
+        store: env.pctx.store,
+        scope: 'project',
+        file: item.file,
+        name: item.name,
+        description: item.description,
+        body,
+      });
+    }
   }
   await env.pctx.store.writeIndex(indexFor(names));
   return names;
@@ -99,6 +113,7 @@ test('v10 digest: compaction refresh appends a recent-memory digest; config off 
       { name: 'old note', description: 'an old note', modified: old, body: 'old body' },
       { name: 'recent note', description: 'a recent note', modified: recent, body: 'recent body' },
       { name: 'newest note', description: 'the newest note', modified: newest, body: 'newest body' },
+      { name: 'unmarked note', description: 'never verified', modified: '2026-11-08T12:00:00.000Z', body: 'unmarked body', eligible: false },
     ]);
     // Top-read entries for the digest.
     await env.mods.metrics.recordRead(env.pctx.paths, files[0].file);
@@ -111,6 +126,7 @@ test('v10 digest: compaction refresh appends a recent-memory digest; config off 
     assert.match(text, /<\/memory-digest>/);
     const digest = text.slice(text.indexOf('<memory-digest>') + '<memory-digest>'.length, text.indexOf('</memory-digest>'));
     assert.match(digest, /newest note/, 'the most recently modified memory is first');
+    assert.doesNotMatch(digest, /unmarked note/, 'unverified notes never enter the compaction digest');
     assert.ok(
       digest.indexOf('newest note') < digest.indexOf('recent note') ||
         !digest.includes('recent note'),

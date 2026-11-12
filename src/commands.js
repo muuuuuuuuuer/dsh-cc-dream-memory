@@ -25,7 +25,7 @@ const MEMORY_TYPES = Object.freeze(['user', 'feedback', 'project', 'reference'])
 const TYPE_SET = new Set(MEMORY_TYPES);
 
 const MEMORY_HINT =
-  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|writes|approve <id>|reject <id>|refresh|live on|off|user on|off|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|dream on|off|dream status|dream estimate|dream history|dream undo|dream run [--dry-run] [--focus <text>]|dream apply|dream reject|dream preview|dream apply-ops <indexes>]';
+  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|writes|approve <id>|reject <id>|refresh|live on|off|user on|off|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|dream on|off|dream status|dream estimate|dream history|dream undo|dream run [--dry-run] [--pipeline v2] [--focus <text>]|dream apply|dream reject|dream preview|dream apply-ops <indexes>|wiki build <dir>|wiki status]';
 const REMEMBER_HINT = '[--type=user|feedback|project|reference] [--scope=project|user] <text>';
 
 function warn(scope, error) {
@@ -971,6 +971,69 @@ export function registerCommands(ctx, runtime) {
     }
   }
 
+  async function memoryWiki(invocation, args) {
+    const status = await collectStatus(invocation);
+    if (!status.ok) return fail(`cc-memory: ${status.error}`);
+    const positional = Array.isArray(args) ? args : [];
+    const sub = String(positional[0] ?? 'status').toLowerCase();
+    const { flags } = splitFlags(positional.slice(1));
+    if (sub === 'build') {
+      const docsDir =
+        (typeof flags.dir === 'string' ? flags.dir : '') ||
+        rawArgumentAfter(invocation?.rawInput, 'build') ||
+        positional.slice(1).find((item) => !item.startsWith('--')) ||
+        '';
+      if (docsDir.trim() === '') {
+        return fail('usage: /memory wiki build <docs-dir> [--dry-run] [--focus <text>]');
+      }
+      let response;
+      try {
+        response = await service.wikiBuild(status.pctx, {
+          docsDir: docsDir.trim(),
+          dryRun: flags['dry-run'] === true || flags.dryrun === true,
+          focus: typeof flags.focus === 'string' ? flags.focus : '',
+        });
+      } catch (error) {
+        return fail(`wiki build: ${errorText(error)}`);
+      }
+      if (!response.ok) return fail(`wiki build: ${response.message || response.error}`);
+      invalidate(invocation);
+      const result = response.result ?? {};
+      const manifest = result.manifest ?? {};
+      const lines = [
+        `wiki build${result.dryRun === true ? ' (dry-run)' : ''}`,
+        `docs: ${Number(manifest.documents?.processed) || 0}/${Number(manifest.documents?.expected) || 0} processed, ${Number(manifest.documents?.failed?.length) || 0} failed`,
+        `pages: ${Number(manifest.pages?.created) || 0} created, ${Number(manifest.pages?.updated) || 0} updated, ${Number(manifest.pages?.total) || 0} total`,
+        `links: ${Number(manifest.links?.added) || 0} added, ${Number(manifest.links?.dangling) || 0} dangling`,
+        `conflicts: ${Number(manifest.conflicts) || 0}`,
+      ];
+      if (Array.isArray(manifest.errors) && manifest.errors.length > 0) lines.push(`errors: ${manifest.errors.slice(0, 3).join('; ')}`);
+      if (result.manifestPath) lines.push(`manifest: ${result.manifestPath}`);
+      return ok(lines.join('\n'));
+    }
+    if (sub === 'status') {
+      let response;
+      try {
+        response = await service.wikiStatus(status.pctx);
+      } catch (error) {
+        return fail(`wiki status: ${errorText(error)}`);
+      }
+      if (!response.ok) return fail(`wiki status: ${response.message || response.error}`);
+      const result = response.result ?? {};
+      const lines = [
+        `knowledge wiki: ${result.pages || 0} page(s) at ${result.dir || '(unknown)'}`,
+        `dangling links: ${result.audit?.dangling?.length || 0}   missing index entries: ${result.audit?.indexMissing?.length || 0}   oversized: ${result.audit?.oversized?.length || 0}`,
+      ];
+      if (result.manifest) {
+        lines.push(`last build: ${result.manifest.runId || '?'} at ${formatTime(result.manifest.finishedAt || result.manifest.startedAt)}`);
+        lines.push(`last build docs: ${result.manifest.documents?.processed || 0}/${result.manifest.documents?.expected || 0}`);
+      }
+      lines.push('Build or refresh: /memory wiki build <docs-dir> [--dry-run]');
+      return ok(lines.join('\n'));
+    }
+    return fail('usage: /memory wiki build <docs-dir> [--dry-run] [--focus <text>] | /memory wiki status');
+  }
+
   async function memoryDream(invocation, args) {
     const { flags, positional } = splitFlags(args);
     const sub = (positional[0] ?? 'status').toLowerCase();
@@ -1096,6 +1159,7 @@ export function registerCommands(ctx, runtime) {
           action: dryRun ? 'dry-run' : 'run',
           trigger: 'manual',
           focus: typeof flags.focus === 'string' ? flags.focus : '',
+          pipeline: flags.pipeline === 'v2' || flags.pipeline === 'classic' ? flags.pipeline : '',
         });
       } catch (error) {
         return fail(`dream run: ${errorText(error)}`);
@@ -1644,7 +1708,8 @@ export function registerCommands(ctx, runtime) {
             [
               `usage: /memory ${MEMORY_HINT}`,
               '       /dream run [--dry-run] [--focus <text>]|status|apply|history|undo   (short alias for /memory dream …)',
-              '       /memory dream on|off|status|history|undo|run [--dry-run]|apply|reject|preview|apply-ops <indexes>',
+              '       /memory dream on|off|status|history|undo|run [--dry-run] [--pipeline v2]|apply|reject|preview|apply-ops <indexes>',
+              '       /memory wiki build <docs-dir> [--dry-run] [--focus <text>] | /memory wiki status',
               '       /memory backups | trash | restore <backup|trash> <id> [file]',
               '       /memory metrics   (injections, reads, writes, searches, dream acceptance, 7-day trend, quality, last cost)',
               '       /memory search <query> | show <file> | history <file> | edit <file> | merge <file1> <file2> [...]',
@@ -1708,6 +1773,8 @@ export function registerCommands(ctx, runtime) {
           return await memoryRules(invocation, args);
         case 'dream':
           return await memoryDream(invocation, args);
+        case 'wiki':
+          return await memoryWiki(invocation, args);
         default:
           return fail(`unknown /memory subcommand "${verb}".\nusage: /memory ${MEMORY_HINT}`);
       }

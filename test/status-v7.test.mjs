@@ -667,3 +667,25 @@ test('v7 commands: dream preview and dream apply-ops execute plan subsets', asyn
   const badIndex = await env.invoke('dream apply-ops 99');
   assert.match(badIndex.text, /invalid-indexes|not applied/i, 'an out-of-range operation index must be reported');
 });
+
+test('status keeps a blocked Dream preview out of the pending queue and shows the latest error', async (t) => {
+  const env = await makeEnv(t);
+  const run = path.join(env.pctx.paths.dreamsDir, 'blocked-run');
+  await mkdir(run, { recursive: true });
+  const plan = path.join(run, 'plan.json');
+  const manifest = path.join(run, 'manifest.json');
+  await writeFile(plan, '{}');
+  await writeFile(manifest, JSON.stringify({ mode: 'v2', coverageComplete: false, processed: 3, expected: 8 }));
+  await env.pctx.state.setLastPlan(plan, 'dry-run');
+  const blocked = await env.service.status(env.pctx);
+  assert.equal(blocked.state.lastPlanPath, '');
+  assert.match(blocked.state.lastError, /3\/8 sessions/);
+  await env.pctx.state.markDreamFailed('Dream organizer: output limit');
+  const latest = await env.service.status(env.pctx);
+  assert.equal(latest.state.lastPlanPath, '');
+  assert.equal(latest.state.lastError, 'Dream organizer: output limit');
+  assert.equal(env.pctx.state.snapshot().lastPlanPath, plan);
+  assert.equal(await exists(plan), true);
+  await writeFile(manifest, JSON.stringify({ mode: 'v2', coverageComplete: true }));
+  assert.equal((await env.service.status(env.pctx)).state.lastPlanPath, plan);
+});

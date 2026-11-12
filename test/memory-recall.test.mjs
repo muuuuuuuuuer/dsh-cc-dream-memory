@@ -5,7 +5,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { selectRecall, buildRecallText, attachRecall, RECALL_SOURCE_KIND } from '../src/recall.js';
+import { selectRecall, buildRecallText, attachRecall, recallKey, RECALL_SOURCE_KIND } from '../src/recall.js';
 import { runtimeEnv } from './v10-helpers.mjs';
 import { buildSessionTranscript } from '../src/dream-session-text.js';
 
@@ -120,7 +120,8 @@ test('profile memories keep three independent matches even for a strong name or 
 });
 
 test('a memory already shown in this session is not attached again', () => {
-  const shown = new Set(['project_deploy.md']);
+  const deploy = ENTRIES.find((item) => item.file === 'project_deploy.md');
+  const shown = new Set([recallKey(deploy)]);
   assert.deepEqual(selectRecall({ query: '把服务部署到 cloud run', entries: ENTRIES, shown }), []);
 });
 
@@ -133,7 +134,7 @@ test('at most the requested number of memories, best match first', () => {
 
 test('recall text is bounded and marks the content as background', () => {
   const text = buildRecallText([{ file: 'a.md', modified: '2026-11-08T10:00:00.000Z', body: '甲'.repeat(5000) }, { file: 'b.md', modified: '', body: '乙'.repeat(5000) }], { maxChars: 2000 });
-  assert.ok(text.length <= 2500, `bodies are capped at 2000 plus framing, got ${text.length}`);
+  assert.ok(text.length <= 2000, `the whole attachment is capped at 2000, got ${text.length}`);
   assert.match(text, /background/i);
   assert.match(text, /a\.md/);
   assert.match(text, /2026-11-08/);
@@ -253,4 +254,38 @@ test('disposing removes the hook', async (t) => {
   assert.equal(agentCtx.count(), 1);
   dispose();
   assert.equal(agentCtx.count(), 0);
+});
+
+test('auto recall renders the current value, not the superseded history', () => {
+  const body = 'STATUS: current\n默认 shared 路由上限 25KB。\n\n- Superseded: 默认 shared 路由上限 8KB。 (until 2026-11-01)';
+  const attached = [];
+  const text = buildRecallText([{ file: 'project_shared.md', modified: '2026-11-08T10:00:00.000Z', body }], { maxChars: 4000, attached });
+  assert.match(text, /25KB/);
+  assert.doesNotMatch(text, /8KB/, 'the replaced value is history, not context');
+  assert.doesNotMatch(text, /Superseded:/);
+  assert.equal(attached.length, 1);
+});
+
+test('auto recall drops the in-page `## History` section too', () => {
+  const body = 'STATUS: current\nIndent with spaces.\n\n## History\n- Tabs were used until 2026-11-01.';
+  const text = buildRecallText([{ file: 'project_style.md', modified: '', body }], { maxChars: 2000 });
+  assert.match(text, /Indent with spaces/);
+  assert.doesNotMatch(text, /Tabs were used/);
+});
+
+test('a request about a superseded value does not recall the page', async (t) => {
+  const { env, agentCtx } = await recallEnv(t);
+  await env.pctx.store.saveEntry({
+    name: 'shared_route_limits',
+    type: 'project',
+    description: 'shared route size limits',
+    content: 'STATUS: current\n默认 shared 路由上限 25KB。\n\n- Superseded: 默认 shared 路由上限 8KB。 (until 2026-11-01)',
+  });
+  const old = await agentCtx.preStep([userMessage('8KB')]);
+  assert.equal(old.messages.length, 1, 'the superseded value must not pull the page in');
+  const current = await agentCtx.preStep([userMessage('25KB')]);
+  assert.equal(current.messages.length, 2, 'the current value still recalls the page');
+  const text = current.messages[1].content[0].text;
+  assert.match(text, /25KB/);
+  assert.doesNotMatch(text, /8KB|Superseded:/);
 });
