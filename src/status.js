@@ -1122,6 +1122,19 @@ export function createStatusService(runtime) {
         }
       }
     }
+    // A plan with nothing in it is not a pending action either. The desktop
+    // renders lastPlanPath as a reviewable plan, so hide an empty one.
+    if (stateView.lastPlanPath !== '') {
+      try {
+        const plan = JSON.parse(await fs.readFile(stateView.lastPlanPath, 'utf8'));
+        if (Array.isArray(plan?.operations) && plan.operations.length === 0) {
+          stateView.lastPlanPath = '';
+          if (!stateView.lastError) stateView.lastError = 'Dream found nothing to change; there is no plan to review.';
+        }
+      } catch {
+        // An unreadable plan is reported by the preview itself.
+      }
+    }
 
     // v9: pending-write queue, dream readiness / memory health (defensive: the
     // readiness module may not be installed yet) and per-session live mode.

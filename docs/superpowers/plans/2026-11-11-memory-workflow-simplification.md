@@ -123,7 +123,8 @@
 
 ## 5. 桌面集成、迁移和最终验收
 
-- [ ] [status.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/status.js:1055>) 与 [http.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/http.js:603>) 已返回 `uiApi` 和 `version`，后端是旧代码时记忆页有提示；再补实际挂载能力和构建标识，把同一包的客户端、Host 与安装源码核对起来。老客户端可继续走原命令和接口。旧失败卡片只显示于历史，不计入待处理。待处理只统计真正可审核的写入，以及至少有一项未被预览拒绝的方案。
+- [x] [status.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/status.js:1055>) 与 [http.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/http.js:603>) 已返回 `uiApi` 和 `version`，后端是旧代码时记忆页有提示；再补实际挂载能力和构建标识，把同一包的客户端、Host 与安装源码核对起来。老客户端可继续走原命令和接口。旧失败卡片只显示于历史，不计入待处理。待处理只统计真正可审核的写入，以及至少有一项未被预览拒绝的方案。
+  - 实施说明（0.12.2）：`uiApi`/`version` 已在 `/status` 上，客户端对比 `UI_API` 并在旧后端时提示；**空方案不再列为待审**——`operations` 为空的 `lastPlanPath` 从状态视图隐藏并给出「没有要审阅的方案」说明（`state.snapshot()` 本身不变），有内容的方案照旧保留。**未做**：独立构建 id / 挂载能力清单（需和安装来源、打包文件哈希一并设计）。
 - [ ] 核对前几个阶段随接口交付的界面改动。记忆页首屏显示保存、可搜索与当前可用信息；Dream 显示本轮已读、失败范围、继续、取消和可审阅结果；Wiki 保留选择来源、发布和查询。无需等待面板即可从现有命令完成新流程。
 - [ ] 对真实包做一次干净安装、一次已有数据升级、一次在运行中关闭重启。安装或升级前保留现有 Markdown、.state.json、历史、待处理与 Wiki 世代的备份。确认旧记录、回滚、手动记忆可用。先通过隔离 profile 验收，再切换用户正在使用的桌面安装。
 - [ ] 从相同产物跑 node scripts/verify.mjs、node scripts/ui-freeze.mjs 和 node eval/validate.mjs。真实模型走四条：新会话保存与召回、转发加明确采纳、Dream 新旧值对照与中途续跑、Wiki 双来源和无记录。每条记录用户看到的实际答案、工具调用、状态变化、落盘差异、tokens 和耗时。

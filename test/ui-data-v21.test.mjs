@@ -200,3 +200,39 @@ test('dream preview carries v2 session coverage', async (t) => {
   assert.deepEqual(preview.verifiedFiles, ['user_lang.md']);
   assert.deepEqual(preview.evidenceWarnings, ['one quote was not found']);
 });
+
+test('an empty dream plan is not offered as a pending review', async (t) => {
+  const env = await httpEnv(t);
+  await writePlan(env, {
+    summary: 'nothing to change',
+    kind: 'dream-v2',
+    coverageComplete: true,
+    expectedSessions: 0,
+    processedSessions: 0,
+    failedSessions: [],
+    partialSessions: [],
+    operations: [],
+    truncatedFiles: [],
+  });
+  const status = (await callHttp(env, { path: '/status?sessionId=s1' })).json();
+  assert.equal(status.ok, true);
+  assert.equal(status.state.lastPlanPath, '');
+  assert.match(status.state.lastError, /nothing to change/u);
+});
+
+test('a plan with work stays reviewable', async (t) => {
+  const env = await httpEnv(t);
+  const planPath = await writePlan(env, {
+    summary: 'one note',
+    kind: 'dream-v2',
+    coverageComplete: true,
+    expectedSessions: 0,
+    processedSessions: 0,
+    failedSessions: [],
+    partialSessions: [],
+    operations: [{ op: 'index', content: '- [Eval](project_eval.md) — eval harness\n' }],
+    truncatedFiles: [],
+  });
+  const status = (await callHttp(env, { path: '/status?sessionId=s1' })).json();
+  assert.equal(status.state.lastPlanPath, planPath);
+});
