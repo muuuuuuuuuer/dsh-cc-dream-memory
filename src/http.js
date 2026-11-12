@@ -562,6 +562,15 @@ export function createHttpHandler({ runtime, token }) {
               dryRun: body.dryRun === true,
               focus: typeof body.focus === 'string' ? body.focus : '',
             });
+            // The page's Build button posts here. A published build makes the
+            // injected wiki hint stale; a dry run does not.
+            if (result?.ok !== false && body.dryRun !== true) {
+              try {
+                runtime.invalidateAllInjections?.('wiki-build');
+              } catch {
+                // best effort
+              }
+            }
             return sendJson(res, 200, {
               ok: result?.ok !== false,
               ...(result?.ok === false ? { error: result.error || 'wiki-build-failed' } : {}),

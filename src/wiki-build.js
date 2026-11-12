@@ -249,6 +249,36 @@ export function normalizeExtraction(raw, { sourceId = '', date = '', maxClaims =
   return claims;
 }
 
+/** Split an oversized page body at headings or blank lines, keeping every line. */
+export function splitPageBody(body, maxChars = 100_000) {
+  const source = text(body).replace(/\r\n?/g, '\n');
+  if (source.length <= maxChars) return [source];
+  const parts = [];
+  let current = [];
+  let size = 0;
+  const flush = () => {
+    if (current.length === 0) return;
+    parts.push(current.join('\n').replace(/\n+$/u, ''));
+    current = [];
+    size = 0;
+  };
+  for (const line of source.split('\n')) {
+    const heading = /^#{1,3}\s+/u.test(line);
+    if (size + line.length + 1 > maxChars && current.length > 0) {
+      // Prefer a heading boundary; a paragraph boundary is still lossless.
+      flush();
+      if (heading) current.push(line);
+      else current.push(line);
+      size += line.length + 1;
+      continue;
+    }
+    current.push(line);
+    size += line.length + 1;
+  }
+  flush();
+  return parts.length > 0 ? parts : [source];
+}
+
 /** Normalize a wiki analyzer/organizer write set. */
 export function normalizeWikiWrites(raw, { maxWrites = 40, maxPageChars = 100_000 } = {}) {
   const writes = [];
@@ -259,13 +289,20 @@ export function normalizeWikiWrites(raw, { maxWrites = 40, maxPageChars = 100_00
     if (!/^[\p{L}\p{N}._-]+\.md$/u.test(file) || ['_index.md', 'SKILL.md'].includes(file)) continue;
     const body = text(item?.body).replace(/\r\n?/g, '\n').replace(/\n+$/, '');
     if (body.trim() === '') continue;
-    writes.push({
-      file,
-      name: oneLine(item?.name, 200) || file.replace(/\.md$/, ''),
-      description: oneLine(item?.description, 160),
-      domain: oneLine(item?.domain, 80) || 'General',
-      type: 'reference',
-      body: body.slice(0, maxPageChars),
+    const base = file.replace(/\.md$/u, '');
+    const parts = splitPageBody(body, maxPageChars);
+    parts.forEach((part, index) => {
+      if (writes.length >= maxWrites) return;
+      const partFile = index === 0 ? file : `${base}-${index + 1}.md`;
+      const label = oneLine(item?.name, 200) || base;
+      writes.push({
+        file: partFile,
+        name: index === 0 ? label : `${label} (part ${index + 1})`,
+        description: oneLine(item?.description, 160),
+        domain: oneLine(item?.domain, 80) || 'General',
+        type: 'reference',
+        body: part,
+      });
     });
   }
   return writes;
@@ -303,17 +340,24 @@ export function buildWikiAnalyzerPrompt({ page, claims, currentBody = '', focus 
 }
 
 /** Build one organizer prompt for the whole build. */
-export function buildWikiOrganizerPrompt({ pages = [], writes = [], focus = '', maxChars = 80_000 }) {
+export function buildWikiOrganizerPrompt({ pages = [], writes = [], focus = '', maxChars = 80_000, stats = null }) {
   const parts = ['# Knowledge wiki organizer', focus ? `Human focus: ${focus}` : '', '', '## Current pages'];
   let used = 0;
+  const omitted = [];
   for (const page of pages) {
     const block = `### ${page.file}\n(${page.domain || 'General'})\n${page.body || ''}`;
     if (used + block.length > maxChars) {
-      parts.push('(remaining pages omitted for budget)');
-      break;
+      omitted.push(page.file);
+      continue;
     }
     used += block.length;
     parts.push(block);
+  }
+  if (omitted.length > 0) {
+    // A dropped page is reported, never silently summarized: the caller records
+    // this as a build warning and the pages themselves stay untouched.
+    parts.push(`(omitted for budget: ${omitted.join(', ')})`);
+    if (stats && typeof stats === 'object') stats.omitted = omitted.slice();
   }
   if (pages.length === 0) parts.push('(empty)');
   parts.push('', '## Analyzer writes');
@@ -655,6 +699,9 @@ export class WikiBuilder {
             const parsed = extractJsonObject(reply.text);
             if (!parsed) throw new Error(`extractor reply for ${doc.sourceId} part ${index + 1} was not JSON`);
             const claims = normalizeExtraction(parsed, { sourceId: doc.sourceId, date: doc.modified });
+            if (Array.isArray(parsed?.claims) && parsed.claims.length > claims.length) {
+              manifest.warnings.push(`extractor reply for ${doc.sourceId} carried ${parsed.claims.length} claims; ${parsed.claims.length - claims.length} were not usable (empty text/quote or over the per-part cap)`);
+            }
             const normalizedChunk = String(chunks[index] ?? '').toLowerCase().replace(/\s+/g, ' ');
             for (const claim of claims) {
               const normalizedQuote = claim.quote.toLowerCase().replace(/\s+/g, ' ');
@@ -757,6 +804,7 @@ export class WikiBuilder {
       const organizeStarted = Date.now();
       let organized;
       try {
+        const organizerStats = {};
         const reply = await complete(
           WIKI_ORGANIZER_PROMPT,
           buildWikiOrganizerPrompt({
@@ -764,10 +812,14 @@ export class WikiBuilder {
             writes: analyzerWrites,
             focus,
             maxChars: Number(config.wikiOrganizerMaxChars) || 80_000,
+            stats: organizerStats,
           }),
           'organize',
           16_384,
         );
+        if (Array.isArray(organizerStats.omitted) && organizerStats.omitted.length > 0) {
+          manifest.warnings.push(`organizer prompt omitted ${organizerStats.omitted.length} page(s) over the character budget; they were left unchanged: ${organizerStats.omitted.slice(0, 8).join(', ')}`);
+        }
         const parsed = parseOrganizerReply(reply.text, { maxPageChars: Number(config.wikiMaxPageChars) || 100_000, maxWrites: 80 });
         if (!parsed) throw new Error('organizer reply was not JSON');
         organized = parsed;
