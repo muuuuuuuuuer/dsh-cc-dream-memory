@@ -5,7 +5,7 @@
  * links, but no tool writes the wiki. `wiki_answer` gives the host a structured
  * place to validate citations before accepting an answer.
  */
-import { WikiStore, claimsForCitations, extractFactClaims } from './wiki-store.js';
+import { WikiStore, claimsForCitations, extractFactClaims, supersededClaims } from './wiki-store.js';
 import { normalizeForMatch } from './dream-evidence.js';
 import { extractCitations, extractLinks, fileSlug } from './wiki-core.js';
 
@@ -101,6 +101,17 @@ export async function validateWikiAnswer(store, { answer = '', citations = [] } 
         continue;
       }
     }
+    // A conflicting fact stays on the page with a marker naming the newer value.
+    // An answer may not cite the replaced line as if it were current.
+    const replaced = supersededClaims(page.body, { file: page.file }).find((item) => item.claimId === claim.claimId);
+    if (replaced && replaced.newerValues.length > 0) {
+      const plain = normalizeForMatch(answer);
+      const missing = replaced.newerValues.filter((value) => !plain.includes(normalizeForMatch(value)));
+      if (missing.length > 0) {
+        errors.push(`claim ${claim.claimId} on ${file} was replaced by a newer source (${replaced.date}); the answer must also state ${replaced.newerValues.join(', ')}`);
+        continue;
+      }
+    }
     checked.push({ page: file, claimId: claim.claimId, claim, ...(quote ? { quote } : {}) });
   }
   return { ok: errors.length === 0, errors, citations: checked, noRecord };
@@ -112,6 +123,7 @@ export function wikiQueryPrompt({ wikiDir = '', required = true } = {}) {
     'A read-only knowledge wiki is available through the wiki tools.',
     'Start with wiki_search, then wiki_read or wiki_links. Do not answer from the raw documents.',
     'Every factual statement must cite a page and one of the fact claims returned by wiki_search/wiki_read.',
+    'When a page marks a value as replaced by a newer source, state both values and say which one is newer; never present the replaced value alone.',
     'Use wiki_answer with {page, claimId} per fact (quote optional); claimId is the stable id of the supporting fact line.',
     required ? 'If the wiki does not contain the answer, say that the wiki has no record instead of guessing.' : '',
     wikiDir ? `Wiki root: ${wikiDir}` : '',

@@ -210,6 +210,44 @@ test('wiki answer validation accepts claim ids and rejects unrelated claims', as
   assert.match(missing.errors.join(';'), /does not exist/);
 });
 
+test('an answer citing a replaced value must state the newer one', async (t) => {
+  const { tmp } = await seed(t);
+  const store = new WikiStore({ rootDir: path.join(tmp, 'wiki') });
+  await store.writePage('release.md', {
+    name: 'Release',
+    description: 'Release facts',
+    domain: 'release',
+    body: [
+      '- Release takes 12 seconds. ^[doc-1#p1, 2026-01-01]',
+      '> 上一条数值已被较新的来源取代（2026-02-01：9）',
+      '- Release takes 9 seconds. ^[doc-2#p2, 2026-02-01]',
+    ].join('\n'),
+  });
+  const page = await readWikiPage(store, 'release.md');
+  const older = page.claims.find((claim) => claim.text.includes('12 seconds'));
+  const newer = page.claims.find((claim) => claim.text.includes('9 seconds'));
+
+  const silent = await validateWikiAnswer(store, {
+    answer: 'Release takes 12 seconds',
+    citations: [{ page: 'release.md', claimId: older.claimId }],
+  });
+  assert.equal(silent.ok, false);
+  assert.match(silent.errors.join('; '), /replaced by a newer source \(2026-02-01\)/);
+  assert.match(silent.errors.join('; '), /must also state 9/);
+
+  const stated = await validateWikiAnswer(store, {
+    answer: 'Release took 12 seconds, then 9 seconds after the newer build',
+    citations: [{ page: 'release.md', claimId: older.claimId }],
+  });
+  assert.equal(stated.ok, true);
+
+  const current = await validateWikiAnswer(store, {
+    answer: 'Release takes 9 seconds',
+    citations: [{ page: 'release.md', claimId: newer.claimId }],
+  });
+  assert.equal(current.ok, true);
+});
+
 test('wiki tools expose claims and validate claim citations', async (t) => {
   const { store } = await seed(t);
   const { defs, dispose } = fakeToolsCtx(store);

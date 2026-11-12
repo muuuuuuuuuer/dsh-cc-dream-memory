@@ -638,6 +638,7 @@ Dream 的 evidence 使用操作级引用；兼容旧 `{statement,quote}`，来�
 - **默认由宿主合并逐条结论（0.12.2）**：默认路径（`dreamOrganizerMode: 'claims'`）不再调用终场 organizer。`dream-merge.js` 用 analyzer 已核验的 claims/verify 直接构造页面：新事实追加一行带 `^[source#seq, date]` 的引用行；`contradicts` 命中唯一一行时替换它、写入 `STATUS: current` 并把旧值记入 `## History`；定位不唯一、行已消失或来源为低置信时进入 `plan.review`，不写盘；同一事实跨会话去重成一行多引用；没有 claim 命中的页面完全不动。索引与 `Related:` 行由宿主生成。整库重写、页面合并与 SKILL 仍可用维护模式：`/memory dream run --maintenance`（或 `dreamOrganizerMode: 'maintenance'`）。
 - **应用前比对基线哈希**：claim 合并产出的 write 操作带 `baseHash`；`DreamEngine.executePlan` 在备份前重读每个目标文件，哈希不一致直接返回 `conflict`，运行记为失败（可 `resume`），不会覆盖审阅期间的用户编辑。
 - **Wiki 构建不再静默截断（0.12.2）**：`splitPageBody` 按行/标题边界把超过 `wikiMaxPageChars` 的页面拆成 `x.md`/`x-2.md`…（`normalizeWikiWrites` 不再 `slice`）；organizer 超出 `wikiOrganizerMaxChars` 时在提示词中列出被略过的页面并写入 `manifest.warnings`，这些页面保持不变；extractor 丢弃的 claim 数也进警告。`POST /wiki {action:'build'}` 在正式发布成功后调用 `invalidateAllInjections('wiki-build')`，与命令路径一致；dry-run 与失败不刷新。
+- **宿主收口 Wiki 的主题、链接与冲突（0.12.3）**：发布前 `mergeWikiTopics` 把名字归一后相同的页面合成一页（逐行去重，保留每一行的引用与较全的描述），`repairWikiLinks` 把只能指向一页的悬空 `[[链接]]` 改到该页，无法唯一确定时保留并写入警告。同一句话在不同来源里出现不同数字时两条都保留，较旧的一条之后插入 `> 上一条数值已被较新的来源取代（<新日期>：<新值>）`（`markSupersededFacts`）；标记行不带引用、不参与证据校验。`manifest.pages.merged`、`manifest.links.repaired`、`manifest.superseded` 与 `manifest.conflicts` 记录本轮结果。查询侧 `validateWikiAnswer` 拒绝只引用被取代行的答案（要求同时说出新值与日期），`wikiQueryPrompt` 要求回答冲突时说明两条来源及哪条更新。
 
 ## 0.12.0 Dream v2 与 Knowledge Wiki
 

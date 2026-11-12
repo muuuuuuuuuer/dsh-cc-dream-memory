@@ -16,7 +16,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { WikiStore, extractFactClaims, isGenerationOpen } from './wiki-store.js';
+import { WikiStore, extractFactClaims, isGenerationOpen, SUPERSEDED_MARK } from './wiki-store.js';
 import {
   WIKI_GENERATIONS_DIR,
   WIKI_GENERATION_NAME,
@@ -482,8 +482,145 @@ async function copyWikiTree(fromDir, toDir, skip = WIKI_COPY_SKIP) {
   return copied;
 }
 
-/** Keep the live generation plus the newest two, drop the rest. */
-async function pruneWikiGenerations(liveStore, currentRunId, keep = 3) {
+/**
+ * Merge pages that carry the same topic name. The host does this after the
+ * organizer so two spellings of one topic cannot publish as two pages; every
+ * cited line is kept once and the surviving page keeps the richest body.
+ * @returns {number} how many pages were folded away
+ */
+export function mergeWikiTopics(pages, { warnings = [] } = {}) {
+  const groups = new Map();
+  for (const page of pages.values()) {
+    const key = slugify(page.name || String(page.file).replace(/\.md$/u, ''));
+    if (key === '') continue;
+    const list = groups.get(key) ?? [];
+    list.push(page);
+    groups.set(key, list);
+  }
+  let merged = 0;
+  for (const list of groups.values()) {
+    if (list.length < 2) continue;
+    const [keeper, ...rest] = list.slice().sort((a, b) => (
+      String(b.body ?? '').length - String(a.body ?? '').length || String(a.file).localeCompare(String(b.file))
+    ));
+    const seen = new Set(String(keeper.body ?? '').split('\n').map((line) => line.trim()).filter((line) => line !== ''));
+    for (const page of rest) {
+      const extra = [];
+      for (const line of String(page.body ?? '').split('\n')) {
+        const trimmed = line.trim();
+        if (trimmed === '' || seen.has(trimmed)) continue;
+        seen.add(trimmed);
+        extra.push(line);
+      }
+      if (extra.length > 0) keeper.body = `${String(keeper.body ?? '').trimEnd()}\n\n${extra.join('\n')}\n`;
+      if (!keeper.description && page.description) keeper.description = page.description;
+      if (!keeper.domain && page.domain) keeper.domain = page.domain;
+      pages.delete(page.file);
+      merged += 1;
+      warnings.push(`merged ${page.file} into ${keeper.file}: both carry the topic \"${keeper.name || keeper.file}\"`);
+    }
+  }
+  return merged;
+}
+
+/**
+ * Point a dangling `[[slug]]` at the one page it can only mean. A link with no
+ * unique target is left alone — the audit reports it as an explicit gap.
+ * @returns {number} how many links were rewritten
+ */
+export function repairWikiLinks(pages, { warnings = [] } = {}) {
+  const bySlug = new Map();
+  for (const page of pages.values()) {
+    const keys = new Set([
+      slugify(String(page.file).replace(/\.md$/u, '')),
+      slugify(page.name || ''),
+    ]);
+    for (const key of keys) {
+      if (key === '') continue;
+      const list = bySlug.get(key) ?? [];
+      list.push(String(page.file).replace(/\.md$/u, ''));
+      bySlug.set(key, list);
+    }
+  }
+  const exists = new Set([...pages.keys()].map((file) => String(file).replace(/\.md$/u, '')));
+  let repaired = 0;
+  for (const page of pages.values()) {
+    const body = String(page.body ?? '');
+    page.body = body.replace(/\[\[([^\]]+)\]\]/gu, (whole, raw) => {
+      const target = String(raw).trim();
+      if (target === '' || exists.has(target)) return whole;
+      const candidates = [...new Set(bySlug.get(slugify(target)) ?? [])];
+      if (candidates.length !== 1) {
+        if (candidates.length > 1) warnings.push(`link [[${target}]] in ${page.file} stays unresolved: ${candidates.length} pages could be meant`);
+        return whole;
+      }
+      repaired += 1;
+      return `[[${candidates[0]}]]`;
+    });
+  }
+  return repaired;
+}
+
+export { SUPERSEDED_MARK };
+
+/**
+ * Two sources stating different values for the same sentence keep both lines;
+ * the older one gets a marker so a reader and an answer cannot quietly take it
+ * as current. Markers carry no citation and assert no value.
+ * @returns {{superseded:number, conflicts:number}}
+ */
+export function markSupersededFacts(pages, { warnings = [] } = {}) {
+  let superseded = 0;
+  let conflicts = 0;
+  for (const page of pages.values()) {
+    const lines = String(page.body ?? '').replace(/\r\n?/g, '\n').split('\n');
+    const facts = [];
+    lines.forEach((line, index) => {
+      const citations = extractCitations(line);
+      if (citations.length !== 1) return;
+      const plain = line.replace(/\^\[[^\]]*\]/gu, ' ').replace(/^\s*[-*]\s+/u, '').replace(/\s+/gu, ' ').trim();
+      if (plain === '') return;
+      const numbers = plain.match(/\d[\d.,]*%?/gu) ?? [];
+      if (numbers.length === 0) return;
+      facts.push({
+        index,
+        key: plain.replace(/\d[\d.,]*%?/gu, '#').toLowerCase(),
+        numbers: numbers.join('|'),
+        date: String(citations[0].date ?? ''),
+        line: plain,
+      });
+    });
+    const groups = new Map();
+    for (const fact of facts) {
+      const list = groups.get(fact.key) ?? [];
+      list.push(fact);
+      groups.set(fact.key, list);
+    }
+    const inserts = [];
+    for (const list of groups.values()) {
+      const values = new Set(list.map((fact) => fact.numbers));
+      if (list.length < 2 || values.size < 2) continue;
+      conflicts += 1;
+      const newest = list.slice().sort((a, b) => b.date.localeCompare(a.date))[0];
+      for (const fact of list) {
+        if (fact === newest || fact.numbers === newest.numbers) continue;
+        inserts.push({ index: fact.index, date: newest.date, values: newest.numbers.replace(/\|/gu, ', ') });
+        superseded += 1;
+      }
+      warnings.push(`conflicting values for \"${oneLine(list[0].key, 60)}\" on ${page.file}: kept every sourced line, marked the older one`);
+    }
+    for (const insert of inserts.sort((a, b) => b.index - a.index)) {
+      const marker = insert.date === ''
+        ? SUPERSEDED_MARK
+        : `${SUPERSEDED_MARK}（${insert.date}${insert.values === '' ? '' : `：${insert.values}`}）`;
+      lines.splice(insert.index + 1, 0, marker);
+    }
+    if (inserts.length > 0) page.body = lines.join('\n');
+  }
+  return { superseded, conflicts };
+}
+
+/** Keep the live generation plus the newest two, drop the rest. */async function pruneWikiGenerations(liveStore, currentRunId, keep = 3) {
   const dir = path.join(liveStore.rootDir, WIKI_GENERATIONS_DIR);
   let names = [];
   try {
@@ -624,10 +761,11 @@ export class WikiBuilder {
       applied: false,
       published: false,
       documents: { expected: 0, processed: 0, failed: [], skipped: 0, reused: 0 },
-      pages: { created: 0, updated: 0, total: 0 },
+      pages: { created: 0, updated: 0, total: 0, merged: 0 },
       files: { created: [], updated: [], deleted: [] },
-      links: { added: 0, dangling: 0 },
+      links: { added: 0, dangling: 0, repaired: 0 },
       conflicts: 0,
+      superseded: 0,
       claims: { total: 0, pages: 0 },
       stages: [],
       usage: null,
@@ -909,6 +1047,14 @@ export class WikiBuilder {
         if (!page) continue;
         if (!page.body.includes(conflict.content)) page.body = `${page.body.trimEnd()}\n\n${conflict.content}\n`;
       }
+      // Host-owned tidy-up: one page per topic, links that resolve to the one
+      // page they can only mean, and an explicit marker on a value a newer
+      // source replaced. The model proposed; the host decides.
+      manifest.pages.merged = mergeWikiTopics(final, { warnings: manifest.warnings });
+      manifest.links.repaired = repairWikiLinks(final, { warnings: manifest.warnings });
+      const supersedeResult = markSupersededFacts(final, { warnings: manifest.warnings });
+      manifest.superseded = supersedeResult.superseded;
+      manifest.conflicts += supersedeResult.conflicts;
       const sourceIds = new Set(collected.documents.map((doc) => doc.sourceId));
       // Every published fact must trace to a source this build read and to a
       // claim the extractor verified against that source text. Without this the
@@ -1007,7 +1153,7 @@ export class WikiBuilder {
       manifest.files.deleted = deleted;
       manifest.links.added = organized.links.length + stagedPages.reduce((sum, page) => sum + page.links.length, 0);
       manifest.links.dangling = stagedAudit.dangling.length;
-      manifest.conflicts = organized.conflicts.length;
+      manifest.conflicts += organized.conflicts.length;
       manifest.claims = { total: claimsTotal, pages: claimsPages };
       manifest.audit = stagedAudit;
       manifest.applied = true;

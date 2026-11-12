@@ -178,6 +178,42 @@ export function extractFactClaims(body, { file = '' } = {}) {
 }
 
 /**
+ * Marker the host inserts under a fact line whose value a newer source replaced.
+ * It carries no citation and asserts no value of its own.
+ */
+export const SUPERSEDED_MARK = '> 上一条数值已被较新的来源取代';
+
+const SUPERSEDED_NOTE_RE = /^>\s*上一条数值已被较新的来源取代（(\d{4}-\d{2}-\d{2})(?:：(.*)）|）)/u;
+
+/**
+ * Fact claims on this page whose value a newer source replaced.
+ * A marker line follows the older fact line; the newer value is repeated in the
+ * marker so an answer can state it without re-reading the other page.
+ *
+ * @param {string} body page body
+ * @param {{file?:string}} [options]
+ * @returns {Array<{claimId:string,text:string,date:string,newerValues:string[]}>}
+ */
+export function supersededClaims(body, { file = '' } = {}) {
+  const text = stripCode(String(body ?? '')).replace(/\r\n?/g, '\n');
+  const lines = text.split('\n');
+  const claims = extractFactClaims(text, { file });
+  const superseded = [];
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const marker = SUPERSEDED_NOTE_RE.exec(lines[index + 1].trim());
+    if (!marker) continue;
+    const statement = oneLine(lines[index].replace(FACT_CITATION_RE, ' ').replace(LIST_MARKER_RE, ''));
+    if (statement === '') continue;
+    const values = String(marker[2] ?? '').split(',').map((value) => value.trim()).filter((value) => value !== '');
+    for (const claim of claims) {
+      if (claim.text !== statement) continue;
+      superseded.push({ claimId: claim.claimId, text: statement, date: marker[1], newerValues: values });
+    }
+  }
+  return superseded;
+}
+
+/**
  * Attach the matching fact claim id to page-level citations.
  * @param {Array<object>} citations citations from `pageMeta()`
  * @param {Array<object>} claims claims from `extractFactClaims()`
