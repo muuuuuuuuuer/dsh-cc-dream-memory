@@ -1578,6 +1578,26 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
                 explicitSaveLedger: record.capabilities.explicitSaveLedger === true,
               }
             : null,
+        // Resumable Dream runs (newest first). The panel needs the run id, the
+        // part counts and the failure text to offer stop/continue.
+        dreamRuns: Array.isArray(record.dreamRuns)
+          ? record.dreamRuns
+              .filter((run) => run && typeof run === 'object')
+              .map((run) => ({
+                runId: typeof run.runId === 'string' ? run.runId : '',
+                status: typeof run.status === 'string' ? run.status : '',
+                stage: typeof run.stage === 'string' ? run.stage : '',
+                error: typeof run.error === 'string' ? run.error : '',
+                blockedReason: typeof run.blockedReason === 'string' ? run.blockedReason : '',
+                planPath: typeof run.planPath === 'string' ? run.planPath : '',
+                counts: {
+                  done: asNumber(run.counts?.done, 0),
+                  failed: asNumber(run.counts?.failed, 0),
+                  pending: asNumber(run.counts?.pending, 0),
+                },
+                input: { expectedUnits: asNumber(run.input?.expectedUnits, 0) },
+              }))
+          : [],
         injection: (() => {
           const injection = record.injection && typeof record.injection === 'object' ? record.injection : {};
           return {

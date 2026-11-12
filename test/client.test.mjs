@@ -271,11 +271,12 @@ function componentRenderer(react, component, props, initialStates = []) {
 }
 
 /** Reach the real Dream tab through its registered view and injected backend. */
-async function dreamTabHarness({ estimate, localeActive = 'en', estimateError = false, waiting = false, previewPlan } = {}) {
+async function dreamTabHarness({ estimate, localeActive = 'en', estimateError = false, waiting = false, previewPlan, dreamRuns } = {}) {
   const actions = [];
   const payload = makeStatusPayload({
     config: { enabled: true, autoMemoryEnabled: true },
     state: { lastPlanPath: waiting ? '/tmp/plan.json' : '', lastDreamMode: 'dry-run' },
+    dreamRuns: dreamRuns ?? [],
   });
   const client = await loadClient({
     apiBridge: { base: '/api/cc-memory', token: 'cost-preview-token' },
@@ -406,6 +407,38 @@ test('client: Dream cost preview localizes unlimited usage and also guards regen
       assert.match(collectText(ui.render().tree), /4[,.]?321/);
     });
   }
+});
+
+test('client: a running dream shows its progress and can be stopped or continued', async () => {
+  const running = await dreamTabHarness({
+    waiting: true,
+    dreamRuns: [{ runId: '2026-11-12T09-00-00-abcdef', status: 'running', counts: { done: 1, failed: 0, pending: 1 }, input: { expectedUnits: 2 } }],
+  });
+  const runningText = collectText(running.render().tree);
+  assert.match(runningText, /1 of 2 parts analyzed/u);
+  assert.match(runningText, /Running/u);
+  const stop = findNode(running.render().tree, (node) => node.type === 'button' && collectText(node) === 'Stop');
+  assert.ok(stop, 'a running dream offers a stop button');
+  await stop.props.onClick();
+  assert.deepEqual(running.actions, ['cancel']);
+
+  const failed = await dreamTabHarness({
+    waiting: true,
+    dreamRuns: [{
+      runId: '2026-11-12T09-00-00-abcdef',
+      status: 'failed',
+      counts: { done: 1, failed: 1, pending: 0 },
+      input: { expectedUnits: 2 },
+      error: '1 unit(s) failed',
+    }],
+  });
+  const failedText = collectText(failed.render().tree);
+  assert.match(failedText, /1 parts failed and can be retried/u);
+  assert.match(failedText, /1 unit\(s\) failed/u);
+  const resume = findNode(failed.render().tree, (node) => node.type === 'button' && collectText(node) === 'Continue');
+  assert.ok(resume, 'a failed dream offers a continue button');
+  await resume.props.onClick();
+  assert.deepEqual(failed.actions, ['resume']);
 });
 
 test('client: a claim the host left for review is shown with its reason', async () => {
