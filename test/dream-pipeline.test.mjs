@@ -37,7 +37,10 @@ async function env(t, overrides = {}) {
   const memoryRoot = path.join(tmp, 'data');
   const workspaceDir = path.join(tmp, 'workspace');
   const paths = buildPaths({ memoryRoot, workspaceDir });
-  const config = resolveConfig({ memoryRoot, dreamPipeline: 'v2', dreamMode: 'apply', dreamMaxOps: 10, ...overrides });
+  // These cases exercise the maintenance organizer path (a whole-library
+  // rewrite requested explicitly). The default claim-level path lives in
+  // test/dream-merge.test.mjs and test/dream-merge-pipeline.test.mjs.
+  const config = resolveConfig({ memoryRoot, dreamPipeline: 'v2', dreamMode: 'apply', dreamMaxOps: 10, dreamOrganizerMode: 'maintenance', ...overrides });
   const store = new MemoryStore({ paths, config });
   await store.ensure();
   const state = new ProjectState(paths);

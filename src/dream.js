@@ -3173,6 +3173,18 @@ export class DreamEngine {
     const counts = { write: 0, delete: 0, index: 0 };
     const touched = new Set();
     const skillText = typeof skill === 'string' ? skill.trim() : '';
+    // Claim-level plans carry the page body they were built from. A page edited
+    // after the plan was built must not be silently overwritten: the merge saw
+    // an older body and its `Superseded` history would describe the wrong value.
+    const stale = [];
+    for (const op of Array.isArray(operations) ? operations : []) {
+      if (!op || op.op !== 'write' || typeof op.baseHash !== 'string' || op.baseHash === '') continue;
+      const actual = await hashFileIfExists(path.join(paths.memoryDir, op.file));
+      if (actual !== op.baseHash) {
+        stale.push({ file: op.file, expected: op.baseHash, actual, reason: 'changed since the plan was built' });
+      }
+    }
+    if (stale.length > 0) return { ok: false, error: 'conflict', conflicts: stale };
     // v12 Bug 3: post-apply hash per touched file, used for selective rollback.
     const expectedHashes = new Map();
     const backupName = await uniqueChildName(paths.dreamsDir, timestampName(Date.now()));

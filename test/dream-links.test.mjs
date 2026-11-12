@@ -99,7 +99,8 @@ test('Dream v2: an organizer that writes a 相关 line still produces an applica
   const memoryRoot = path.join(tmp, 'data');
   const workspaceDir = path.join(tmp, 'workspace');
   const paths = buildPaths({ memoryRoot, workspaceDir });
-  const config = resolveConfig({ memoryRoot, dreamPipeline: 'v2', dreamMode: 'apply', dreamMaxOps: 10 });
+  // Explicit organizer output: this exercises the maintenance mode.
+  const config = resolveConfig({ memoryRoot, dreamPipeline: 'v2', dreamMode: 'apply', dreamMaxOps: 10, dreamOrganizerMode: 'maintenance' });
   const store = new MemoryStore({ paths, config });
   await store.ensure();
   const state = new ProjectState(paths);

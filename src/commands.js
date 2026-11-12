@@ -27,7 +27,7 @@ const MEMORY_TYPES = Object.freeze(['user', 'feedback', 'project', 'reference'])
 const TYPE_SET = new Set(MEMORY_TYPES);
 
 const MEMORY_HINT =
-  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|writes|approve <id>|reject <id>|refresh|live on|off|user on|off|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|dream on|off|dream status|dream estimate|dream history|dream undo|dream run [--dry-run] [--pipeline v2] [--focus <text>]|dream apply|dream reject|dream preview|dream apply-ops <indexes>|wiki build <dir>|wiki status]';
+  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|writes|approve <id>|reject <id>|refresh|live on|off|user on|off|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|dream on|off|dream status|dream estimate|dream history|dream undo|dream run [--dry-run] [--pipeline v2] [--focus <text>] [--maintenance]|dream apply|dream reject|dream preview|dream apply-ops <indexes>|wiki build <dir>|wiki status]';
 const REMEMBER_HINT = '[--type=user|feedback|project|reference] [--scope=project|user] <text>';
 
 function warn(scope, error) {
@@ -1203,6 +1203,7 @@ export function registerCommands(ctx, runtime) {
           action: dryRun ? 'dry-run' : 'run',
           trigger: 'manual',
           focus: typeof flags.focus === 'string' ? flags.focus : '',
+          maintenance: flags.maintenance === true || flags.maintenance === 'true',
           pipeline: flags.pipeline === 'v2' || flags.pipeline === 'classic' ? flags.pipeline : '',
         });
       } catch (error) {
@@ -1792,7 +1793,7 @@ export function registerCommands(ctx, runtime) {
             [
               `usage: /memory ${MEMORY_HINT}`,
               '       /dream run [--dry-run] [--focus <text>]|status|apply|history|undo   (short alias for /memory dream …)',
-              '       /memory dream on|off|status|history|undo|run [--dry-run] [--pipeline v2]|apply|reject|preview|apply-ops <indexes>',
+              '       /memory dream on|off|status|history|undo|run [--dry-run] [--pipeline v2] [--maintenance]|apply|reject|preview|apply-ops <indexes>',
               '       /memory wiki build <docs-dir> [--dry-run] [--focus <text>] | /memory wiki status',
               '       /memory backups | trash | restore <backup|trash> <id> [file]',
               '       /memory metrics   (injections, reads, writes, searches, dream acceptance, 7-day trend, quality, last cost)',
@@ -1992,6 +1993,12 @@ function formatDreamRun(result, dryRun) {
   if (result.proposalPath) lines.push(`proposal: ${result.proposalPath}`);
   if (result.backupDir) lines.push(`backup: ${result.backupDir}`);
   if (result.error) lines.push(`error: ${errorText(result.error)}`);
+  if (Array.isArray(result.review) && result.review.length > 0) {
+    lines.push(`review items (not written): ${result.review.length}`);
+    for (const item of result.review.slice(0, 10)) {
+      lines.push(`  - ${item.file || 'note'}: ${truncate(String(item.claim ?? ''), 120)} (${truncate(String(item.reason ?? ''), 120)})`);
+    }
+  }
   if (Array.isArray(result.warnings)) for (const warning of result.warnings) lines.push(`warning: ${truncate(warning, 500)}`);
   if (Array.isArray(result.dropped) && result.dropped.length > 0) lines.push(`dropped operations (review required): ${result.dropped.join('; ')}`);
   if (dryRun) lines.push('dry-run: no memory file was changed; review with /memory dream preview, then /memory dream apply.');

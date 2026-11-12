@@ -23,6 +23,7 @@ import { normalizeForMatch } from './dream-evidence.js';
 import { supportsStatement } from './support.js';
 import { bodyHasStatement, verifyAnalysis } from './dream-verifier.js';
 import { buildEvidence, checkWriteOperations } from './dream-write-evidence.js';
+import { mergeClaims } from './dream-merge.js';
 import { ORGANIZER_SYSTEM_PROMPT, buildOrganizerPrompt, parseOrganizerReply, renderRelatedLinks } from './dream-organizer.js';
 import { buildIndex, buildSkill, citationToken } from './wiki-core.js';
 import { scanSecrets, secretScanDecision, secretWarnings } from './secrets.js';
@@ -523,6 +524,7 @@ export class DreamPipeline {
       dryRun: manifest.dryRun === true,
       trigger: manifest.trigger || 'resume',
       reason: manifest.reason || 'resumed',
+      maintenance: options.maintenance === true || manifest.organizer?.merge === 'model',
     });
   }
 
@@ -544,6 +546,7 @@ export class DreamPipeline {
     focus = '',
     runId: requestedRunId = '',
     resume = false,
+    maintenance = false,
   } = {}) {
     const startedAt = Date.now();
     const config = this.config;
@@ -672,11 +675,16 @@ export class DreamPipeline {
     }
     await saveManifest();
 
+    // Claim-level merge is the default: the host places every verified claim
+    // itself. The terminal organizer survives only for the explicit maintenance
+    // command, where a whole-library rewrite is the point.
+    const claimMerge = maintenance !== true && config.dreamOrganizerMode !== 'maintenance';
+
     try {
       if (typeof state.markDreamStart === 'function') await state.markDreamStart();
       modelAnalyzer = this._stageModel('analyzer');
-      modelOrganizer = this._stageModel('organizer');
-      if (!modelAnalyzer || !modelOrganizer) {
+      modelOrganizer = claimMerge ? null : this._stageModel('organizer');
+      if (!modelAnalyzer || (!claimMerge && !modelOrganizer)) {
         failure = false;
         return finish({ skipped: true, skipReason: 'llm-unavailable' });
       }
@@ -763,7 +771,7 @@ export class DreamPipeline {
         },
         models: {
           analyzer: `${modelAnalyzer.provider}/${modelAnalyzer.model}`,
-          organizer: `${modelOrganizer.provider}/${modelOrganizer.model}`,
+          organizer: modelOrganizer === null ? '' : `${modelOrganizer.provider}/${modelOrganizer.model}`,
         },
         counts: { done: tasks.length - pendingCount, failed: 0, pending: pendingCount },
       });
@@ -955,6 +963,42 @@ export class DreamPipeline {
         partial: partialSessions,
         stages: [analyzerStage],
       };
+      const secretWarningsList = [];
+      // The host build is claim-level; the organizer path is maintenance only.
+      let operations = [];
+      let reviewItems = [];
+      let organizerStage = null;
+      let skillText = '';
+      let summaryText = '';
+      const organizerCounts = { writes: 0, deletes: 0, conflicts: 0, indexEntries: 0 };
+      if (claimMerge) {
+        stage = 'merge';
+        await saveManifest({ stage: 'merge', counts: countUnits() });
+        const mergedResult = mergeClaims({
+          analyses: merged,
+          memoryPages,
+          indexText: '',
+          title: '',
+        });
+        operations = mergedResult.operations;
+        reviewItems = mergedResult.review;
+        for (const warning of mergedResult.warnings) {
+          if (!failureManifest.stages[0].warnings) failureManifest.stages[0].warnings = [];
+          failureManifest.stages[0].warnings.push(warning);
+        }
+        for (const op of operations) {
+          if (op.op !== 'write') continue;
+          const decision = secretScanDecision(scanSecrets(op.body), config);
+          if (decision.block) {
+            throw new Error(`secret scan refused ${op.file}: a credential-like value would be persisted`);
+          }
+        }
+        organizerCounts.writes = operations.filter((op) => op.op === 'write').length;
+        organizerCounts.indexEntries = operations.filter((op) => op.op === 'index').length;
+        summaryText = operations.length > 0
+          ? `${merged.length} session(s) placed ${organizerCounts.writes} page change(s); ${reviewItems.length} item(s) need review`
+          : 'nothing new to remember';
+      } else {
       stage = 'organize';
       await saveManifest({ stage: 'organize' });
       const organizerInput = {
@@ -1005,7 +1049,7 @@ export class DreamPipeline {
         maxConflicts: 40,
       });
       if (!organized) throw new Error('organizer reply was not JSON');
-      const organizerStage = {
+      organizerStage = {
         name: 'organize',
         model: `${modelOrganizer.provider}/${modelOrganizer.model}`,
         calls: 1,
@@ -1017,7 +1061,6 @@ export class DreamPipeline {
       };
 
       failureManifest.stages.push(organizerStage);
-      stage = 'validate';
       // Compose final pages from analyzer patches and organizer writes.
       const finalPages = new Map();
       for (const page of memoryPages) finalPages.set(page.file, { ...page });
@@ -1062,7 +1105,6 @@ export class DreamPipeline {
       applyVerificationCorrections({ finalPages, originalPages, analyses: merged });
 
       const finalList = [...finalPages.values()].sort((a, b) => a.file.localeCompare(b.file));
-      const secretWarningsList = [];
       for (const page of finalList) {
         const decision = secretScanDecision(scanSecrets(page.body), config);
         if (decision.block) {
@@ -1075,16 +1117,23 @@ export class DreamPipeline {
         style: 'memory',
         groupBy: 'type',
       });
-      const skillText = (organizerRetries === 0 && organized.skill) || buildSkill({
+      const skillValue = (organizerRetries === 0 && organized.skill) || buildSkill({
         title: 'Project memory',
         description: 'Topic files from dreaming, with links and provenance.',
         domains: [...new Set(finalList.map((page) => page.type))].filter(Boolean),
         style: 'memory',
       });
 
+      skillText = skillValue;
+      organizerCounts.writes = organized.writes.length;
+      organizerCounts.deletes = organized.deletes.length;
+      organizerCounts.conflicts = organized.conflicts.length;
+      organizerCounts.indexEntries = finalList.length;
+      summaryText = organized.summary;
+
       // Convert to the existing plan shape so apply/backup/undo stay unchanged.
       const currentByFile = new Map(memoryPages.map((page) => [page.file, page]));
-      let operations = [];
+      operations = [];
       for (const page of finalList) {
         const current = currentByFile.get(page.file);
         const changed = !current
@@ -1108,6 +1157,7 @@ export class DreamPipeline {
         operations.push({ op: 'delete', scope: 'project', file, reason: 'absorbed by the organizer' });
       }
       operations.push({ op: 'index', scope: 'project', content: indexText });
+      }
 
       // Final write gate: organizer-added lines must be backed by claims the
       // analyzer actually verified. Pure consolidation (no transcripts read)
@@ -1159,7 +1209,7 @@ export class DreamPipeline {
       }
 
       const validation = validateDreamPlan(
-        { summary: organized.summary || `dream: ${operations.length} operation(s)`, operations },
+        { summary: summaryText || `dream: ${operations.length} operation(s)`, operations },
         {
           config,
           existingFiles: memoryEntries.map((entry) => ({ file: entry.file, name: entry.name, scope: 'project' })),
@@ -1184,8 +1234,8 @@ export class DreamPipeline {
         // layer re-checks the stored page against it before recording a
         // verification, because the page also carries facts no verdict covered.
         verifiedClaims: verifiedClaims.filter((item) => verifiedFiles.includes(item.file)),
-        provider: modelOrganizer.provider,
-        model: modelOrganizer.model,
+        provider: claimMerge ? modelAnalyzer.provider : modelOrganizer.provider,
+        model: claimMerge ? modelAnalyzer.model : modelOrganizer.model,
         sessions: [...sessionIds, ...(input.deferredSessions ?? [])],
         reads: reads.filter((read) => read.complete === true),
         droppedSessions: input.droppedSessions || [],
@@ -1198,6 +1248,7 @@ export class DreamPipeline {
         evidenceWarnings,
         evidenceRequired: merged.length > 0,
         skill: skillText,
+        review: reviewItems,
         warnings: [...(input.errors || []), ...analyzerStage.failures.map((failure) => `${failure.sessionId}: ${failure.error}`), ...secretWarningsList],
         dropped: validation.dropped,
       };
@@ -1215,13 +1266,14 @@ export class DreamPipeline {
         failed: failedSessions,
         partial: partialSessions,
         organizer: {
-          calls: 1,
-          writes: organized.writes.length,
-          deletes: organized.deletes.length,
-          conflicts: organized.conflicts.length,
-          indexEntries: finalList.length,
+          calls: organizerStage === null ? 0 : 1,
+          writes: organizerCounts.writes,
+          deletes: organizerCounts.deletes,
+          conflicts: organizerCounts.conflicts,
+          indexEntries: organizerCounts.indexEntries,
+          merge: claimMerge ? 'host' : 'model',
         },
-        stages: [analyzerStage, organizerStage],
+        stages: [analyzerStage, ...(organizerStage === null ? [] : [organizerStage])],
         operations: plan.operations.length,
         dropped: validation.dropped,
         applied: false,
@@ -1276,8 +1328,9 @@ export class DreamPipeline {
           usage,
           inputChars,
           outputChars,
-          provider: modelOrganizer.provider,
-          model: modelOrganizer.model,
+          review: plan.review ?? [],
+          provider: claimMerge ? modelAnalyzer.provider : modelOrganizer.provider,
+          model: claimMerge ? modelAnalyzer.model : modelOrganizer.model,
           warnings: plan.warnings,
         });
       }
@@ -1343,6 +1396,15 @@ export class DreamPipeline {
         },
       });
 
+      // A page edited after the plan was built is a conflict the user must
+      // resolve, not a write to force: report it and keep the run resumable.
+      if (execution && execution.ok === false && execution.error === 'conflict') {
+        const error = new Error('a memory page changed since this plan was built; run a fresh dream');
+        error.code = 'CONFLICT';
+        error.conflicts = execution.conflicts;
+        throw error;
+      }
+
       // SKILL.md is applied inside executePlan so it shares the batch backup and
       // undo metadata with the notes and index.
       await state.clearSessions([...sessionIds, ...(input.droppedSessions || [])], { reads });
@@ -1395,8 +1457,8 @@ export class DreamPipeline {
         usage,
         inputChars,
         outputChars,
-        provider: modelOrganizer.provider,
-        model: modelOrganizer.model,
+        provider: claimMerge ? modelAnalyzer.provider : modelOrganizer.provider,
+        model: claimMerge ? modelAnalyzer.model : modelOrganizer.model,
         warnings: plan.warnings,
       });
     } catch (error) {

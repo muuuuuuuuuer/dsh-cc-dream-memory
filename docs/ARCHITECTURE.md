@@ -635,6 +635,8 @@ Dream 的 evidence 使用操作级引用；兼容旧 `{statement,quote}`，来�
 - **首轮索引只藏简介**：`injectHotOnly: false` 时首轮注入完整索引，但只有「当前指纹 + 合格 STATUS」的笔记显示一行简介，其余只显示名称（`buildNavigationIndex`）。旧笔记可按需 `memory_read`；热点集合仍可用 `injectHotOnly: true` 开启。
 - **Dream 运行可观测、可续跑**：每次运行在 `.dreams/<runId>/` 先落 `manifest.json`（runId、项目、模型、输入会话与单元范围、计数、用量、错误、状态），每个单元通过解析与证据校验后写 `analysis/<session>/<unitId>.json`。同一项目同时只有一个 worker，锁由 runId 持有并在每个单元后续期；`/memory dream status|cancel|resume` 与 `POST /dream {action:'status'|'cancel'|'resume', runId}` 操作同一个运行。重启、取消或失败后 `resume` 只补齐缺失单元，已完成单元不再调用模型。
 - **输入按单元切分，不再静默截断**：v2 路径按 `unitChars`（24k）切分会话，分析调用次数、单会话字符上限与 claim/patch 上限不再截断输入；一次输出被 max-tokens 截断时把该单元对半拆开重试，拆不开才记为失败并保留范围与原因。
+- **默认由宿主合并逐条结论（0.12.2）**：默认路径（`dreamOrganizerMode: 'claims'`）不再调用终场 organizer。`dream-merge.js` 用 analyzer 已核验的 claims/verify 直接构造页面：新事实追加一行带 `^[source#seq, date]` 的引用行；`contradicts` 命中唯一一行时替换它、写入 `STATUS: current` 并把旧值记入 `## History`；定位不唯一、行已消失或来源为低置信时进入 `plan.review`，不写盘；同一事实跨会话去重成一行多引用；没有 claim 命中的页面完全不动。索引与 `Related:` 行由宿主生成。整库重写、页面合并与 SKILL 仍可用维护模式：`/memory dream run --maintenance`（或 `dreamOrganizerMode: 'maintenance'`）。
+- **应用前比对基线哈希**：claim 合并产出的 write 操作带 `baseHash`；`DreamEngine.executePlan` 在备份前重读每个目标文件，哈希不一致直接返回 `conflict`，运行记为失败（可 `resume`），不会覆盖审阅期间的用户编辑。
 
 ## 0.12.0 Dream v2 与 Knowledge Wiki
 

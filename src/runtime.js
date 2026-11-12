@@ -663,7 +663,7 @@ export class MemoryRuntime {
    * Run one dream pass. `force` bypasses the time/session gates (manual runs).
    * @returns {Promise<object>} DreamRunResult as defined in INTERFACES.md.
    */
-  async dream({ agent, pctx, sessionId, force = false, dryRun = false, trigger = 'auto', reason, signal, noSessions = false, focus = '', pipeline = '' } = {}) {
+  async dream({ agent, pctx, sessionId, force = false, dryRun = false, trigger = 'auto', reason, signal, noSessions = false, focus = '', pipeline = '', maintenance = false } = {}) {
     let projectContext = pctx;
     if (!projectContext) {
       projectContext = agent ? await this.forAgent(agent) : await this.forSessionId(sessionId);
@@ -684,6 +684,7 @@ export class MemoryRuntime {
         signal,
         noSessions: noSessions === true,
         focus,
+        maintenance: maintenance === true,
       });
       return withDreamSummary(result);
     }

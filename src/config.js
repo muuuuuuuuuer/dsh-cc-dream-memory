@@ -37,6 +37,7 @@ export const DEFAULTS = Object.freeze({
   // 'classic' keeps the single consolidation call; 'v2' is the
   // per-transcript analyzer + organizer pipeline.
   dreamPipeline: 'classic',
+  dreamOrganizerMode: 'claims',
   dreamProvider: '',
   dreamModel: '',
   dreamAnalyzerProvider: '',
@@ -166,6 +167,9 @@ export function resolveConfig(raw) {
     lockTtlMs: integer(input.lockTtlMs, DEFAULTS.lockTtlMs, { min: 60_000, max: 7 * 24 * 60 * 60 * 1000 }),
     dreamMode,
     dreamPipeline: choice(input.dreamPipeline, DEFAULTS.dreamPipeline, ['classic', 'v2']),
+    // `maintenance` keeps the terminal whole-library organizer as an explicit
+    // mode; the default host merge never rewrites pages wholesale.
+    dreamOrganizerMode: choice(input.dreamOrganizerMode, DEFAULTS.dreamOrganizerMode, ['claims', 'maintenance']),
     dreamProvider: pair ? dreamProvider : '',
     dreamModel: pair ? dreamModel : '',
     dreamAnalyzerProvider: text(input.dreamAnalyzerProvider, DEFAULTS.dreamAnalyzerProvider).trim(),

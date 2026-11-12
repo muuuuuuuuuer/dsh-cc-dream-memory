@@ -1352,6 +1352,7 @@ export function createStatusService(runtime) {
         trigger: options.trigger || 'manual',
         reason: options.reason || '',
         focus: typeof options.focus === 'string' ? options.focus : '',
+        maintenance: options.maintenance === true,
         noSessions: options.noSessions === true,
         signal: options.signal,
       });
@@ -1391,6 +1392,7 @@ export function createStatusService(runtime) {
         reason: options.reason || '',
         focus: typeof options.focus === 'string' ? options.focus : '',
         pipeline: options.pipeline === 'v2' || options.pipeline === 'classic' ? options.pipeline : '',
+        maintenance: options.maintenance === true,
         noSessions: options.noSessions === true,
       });
       return { ok: true, result: lossless(result) };
