@@ -7,33 +7,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { runtimeEnv, writePlanOf, exists } from './v10-helpers.mjs';
+import { runtimeEnv, scriptDream, claimOf } from './v10-helpers.mjs';
 
 const A = 'user_rollback_a.md';
 const B = 'user_rollback_b.md';
-const PLAN = writePlanOf(
-  [
-    {
-      op: 'write',
-      scope: 'project',
-      type: 'user',
-      name: 'rollback a',
-      description: 'first op',
-      body: 'DREAM BODY A',
-      file: A,
-    },
-    {
-      op: 'write',
-      scope: 'project',
-      type: 'user',
-      name: 'rollback b',
-      description: 'second op fails',
-      body: 'DREAM BODY B',
-      file: B,
-    },
-  ],
-  { summary: 'rollback safety plan' },
-);
+/** Two existing notes; the Dream adds one cited line to each, A first. */
+async function seedDream(env) {
+  await env.pctx.store.saveEntry({ name: 'rollback a', type: 'user', description: 'first op', content: 'ORIGINAL A' });
+  await env.pctx.store.saveEntry({ name: 'rollback b', type: 'user', description: 'second op fails', content: 'ORIGINAL B' });
+  await scriptDream(env, {
+    sessions: { s1: ['Alpha deploys from main.', 'Beta deploys from release.'] },
+    claims: [claimOf('Alpha deploys from main.', { target: A }), claimOf('Beta deploys from release.', { target: B })],
+  });
+}
 
 /** Store wrapper whose second write simulates concurrent user writes and fails. */
 function failingStore(store, { onSecondWrite }) {
@@ -52,7 +38,8 @@ function failingStore(store, { onSecondWrite }) {
 }
 
 test('v12 rollback: concurrent writes survive; a concurrently-edited touched file is skipped with a conflict', async (t) => {
-  const env = await runtimeEnv(t, {}, { plan: PLAN });
+  const env = await runtimeEnv(t);
+  await seedDream(env);
   const concurrentName = 'concurrent note';
   const store = failingStore(env.pctx.store, {
     onSecondWrite: async () => {
@@ -84,7 +71,7 @@ test('v12 rollback: concurrent writes survive; a concurrently-edited touched fil
   assert.ok(conflict, `the rollback reports the skipped touched file: ${JSON.stringify(result.conflicts)}`);
   assert.equal(typeof conflict.reason, 'string');
   // The failed second op never landed.
-  assert.equal(await exists(path.join(env.pctx.paths.memoryDir, B)), false);
+  assert.doesNotMatch((await env.pctx.store.readEntry(B)).body, /Beta deploys from release/);
 
   // The pre-rollback snapshot exists for forensics.
   const batchNames = await readdir(env.pctx.paths.dreamsDir).catch(() => []);

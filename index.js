@@ -16,7 +16,6 @@ import { resolveConfig } from './src/config.js';
 import { MemoryRuntime } from './src/runtime.js';
 import { registerInjection } from './src/inject.js';
 import { registerTools } from './src/tools.js';
-import { registerWikiTools } from './src/wiki-tools.js';
 import { registerCommands } from './src/commands.js';
 import { registerScheduler } from './src/scheduler.js';
 import { registerHttpApi } from './src/http.js';
@@ -55,7 +54,6 @@ export function createMemoryPlugin(ctx, rawConfig) {
 
     mount('prompt injection', () => registerInjection(ctx, runtime));
     if (config.tools) mount('memory tools', () => registerTools(ctx, runtime));
-    if (config.tools && config.wikiEnabled !== false) mount('wiki tools', () => registerWikiTools(ctx, runtime));
     mount('slash commands', () => registerCommands(ctx, runtime));
     mount('dream scheduler', () => registerScheduler(ctx, runtime));
     mount('web api', () => registerHttpApi(ctx, runtime));

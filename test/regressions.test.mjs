@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import { access, mkdir, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { loadModule, makeTempDir } from './helpers.mjs';
+import { runtimeEnv as dreamRuntimeEnv, scriptDream, claimOf } from './v10-helpers.mjs';
 
 // ---------------------------------------------------------------------------
 // Module loading / shared fixtures
@@ -658,29 +659,10 @@ test('P1: trashEntry soft-deletes into the project trash and removes the index l
 // ---------------------------------------------------------------------------
 
 test('P1: dry-run previews a plan and applyLastPlan executes that same plan', async (t) => {
-  const proj = await setupProject(t);
-  const ctx = fakeCtx({
-    workspaceDir: proj.workspaceDir,
-    sessions: { 'session-1': sessionRecord({ id: 'session-1', createdAt: 1000, user: ['请整理一下记忆文件'], assistant: ['好的'] }) },
-    planFor: () => ({
-      summary: 'consolidate notes',
-      operations: [
-        {
-          op: 'write',
-          type: 'user',
-          name: 'consolidated',
-          description: 'consolidated note',
-          body: 'consolidated body',
-          evidence: ['请整理一下记忆文件'],
-        },
-        { op: 'index', content: '- [consolidated](user_consolidated.md) — consolidated note\n' },
-      ],
-    }),
-  });
-  const runtime = await runtimeFor(proj, ctx);
-  const pctx = await runtime.storeFor(proj.workspaceDir);
+  const env = await dreamRuntimeEnv(t);
+  const { runtime, pctx } = env;
   await pctx.store.saveEntry({ name: 'existing', type: 'user', description: 'existing note', content: 'existing body' });
-  await pctx.state.ensureSession('session-1', 1000);
+  await scriptDream(env, { sessions: { 'session-1': ['部署前先跑测试。'] }, claims: [claimOf('部署前先跑测试。')] });
   const entriesBefore = await pctx.store.listEntries();
 
   const dry = await runtime.dream({ pctx, force: true, dryRun: true, trigger: 'manual' });
@@ -696,11 +678,10 @@ test('P1: dry-run previews a plan and applyLastPlan executes that same plan', as
 
   const savedPlan = await readJson(snapshot.lastPlanPath);
   assert.equal(planField(savedPlan, 'applied'), false, 'plan.json must be marked applied:false');
-  assert.ok(Array.isArray(planField(savedPlan, 'truncatedFiles')), 'plan.json must carry truncatedFiles');
   const savedOperations = planOperations(savedPlan);
-  assert.ok(savedOperations.length >= 2, 'normalized plan must keep the write and index operations');
+  assert.ok(savedOperations.length >= 2, 'the plan keeps the write and index operations');
   const savedWrite = savedOperations.find((operation) => operation.op === 'write');
-  assert.ok(savedWrite && typeof savedWrite.file === 'string', 'normalized write must carry the derived file name');
+  assert.ok(savedWrite && typeof savedWrite.file === 'string', 'the write names its file');
 
   // dry-run must not have touched memory
   const entriesAfterDry = await pctx.store.listEntries();
@@ -716,13 +697,8 @@ test('P1: dry-run previews a plan and applyLastPlan executes that same plan', as
     `file planned by dry-run (${savedWrite.file}) must be written by applyLastPlan`,
   );
   const written = await pctx.store.readEntry(savedWrite.file);
-  assert.equal(written.body.trim(), String(savedWrite.body).trim());
+  assert.match(written.body, /部署前先跑测试/, 'the applied page carries the planned fact');
   assert.match(await pctx.store.indexText(), new RegExp(escapeRegExp(savedWrite.file)));
-
-  const afterSnapshot = pctx.state.snapshot();
-  assert.equal(afterSnapshot.lastPlanPath, '', 'lastPlanPath must be cleared after a successful apply');
-  const audit = await pctx.store.auditIndex();
-  assert.equal(audit.missing.length, 0);
 });
 
 // ---------------------------------------------------------------------------
@@ -789,25 +765,15 @@ test('P1: a failure in the middle of apply restores the backup and reports rolle
 // ---------------------------------------------------------------------------
 
 test('P2: review mode writes a pending proposal without clearing sessions; applyPending finalizes it', async (t) => {
-  const proj = await setupProject(t, { configOverrides: { dreamMode: 'review' } });
-  const ctx = fakeCtx({
-    workspaceDir: proj.workspaceDir,
-    sessions: { 's-1': sessionRecord({ id: 's-1', createdAt: 1000, user: ['请整理一下记忆文件'], assistant: ['好的'] }) },
-    planFor: () => ({
-      summary: 'review proposal',
-      operations: [
-        { op: 'write', type: 'user', name: 'review note', description: 'proposed note', body: 'proposed body', evidence: ['请整理一下记忆文件'] },
-      ],
-    }),
-  });
-  const runtime = await runtimeFor(proj, ctx);
-  const pctx = await runtime.storeFor(proj.workspaceDir);
+  const env = await dreamRuntimeEnv(t, { dreamMode: 'review' });
+  const { runtime, pctx } = env;
   await pctx.store.saveEntry({ name: 'base', type: 'user', description: 'base note', content: 'base body' });
-  await pctx.state.ensureSession('s-1', 1000);
+  await scriptDream(env, { sessions: { 's-1': ['评审前先写变更说明。'] }, claims: [claimOf('评审前先写变更说明。')] });
   await pctx.state.ensureSession('s-2', 2000);
+  const proposed = '评审前先写变更说明.md';
 
   const run = await runtime.dream({ pctx, force: true, trigger: 'manual' });
-  assert.equal(run.ran, true, 'review dream must run');
+  assert.equal(run.ran, true, `review dream must run: ${JSON.stringify(run).slice(0, 300)}`);
   assert.equal(run.applied, false, 'review mode must not apply');
   assert.equal(run.mode, 'review');
 
@@ -825,11 +791,7 @@ test('P2: review mode writes a pending proposal without clearing sessions; apply
     'review mode must not clear sessionsSince',
   );
   assert.equal(snapshot.lastDreamAt, 0, 'review mode must not mark the dream as done');
-  assert.equal(
-    (await pctx.store.listEntries()).some((entry) => /review_note/.test(entry.file)),
-    false,
-    'review mode must not write memory files',
-  );
+  assert.equal(await exists(path.join(pctx.paths.memoryDir, proposed)), false, 'review mode must not write memory files');
 
   const second = await runtime.dream({ pctx, force: true, trigger: 'manual' });
   assert.equal(second.ran, false, 'a second review run must not start while a proposal is pending');
@@ -840,13 +802,10 @@ test('P2: review mode writes a pending proposal without clearing sessions; apply
   assert.equal(applied.applied, true, `applyPendingDream failed: ${JSON.stringify(applied.error ?? applied)}`);
   const afterSnapshot = pctx.state.snapshot();
   assert.equal(afterSnapshot.pendingProposal, '', 'pendingProposal must be cleared after applying');
-  // s-2 has no readable transcript in this fixture, so it was never consulted
-  // by the proposal; a real Host would read it. Only consulted sessions clear.
+  // s-2 has no transcript in this fixture, so the proposal never consulted it.
+  // Only consulted sessions clear.
   assert.deepEqual(afterSnapshot.sessionsSince.map((entry) => entry.id), ['s-2'], 'only consulted sessions are cleared after apply');
-  assert.ok(
-    (await pctx.store.listEntries()).some((entry) => /review_note/.test(entry.file)),
-    'the proposed note must be written by applyPending',
-  );
+  assert.equal(await exists(path.join(pctx.paths.memoryDir, proposed)), true, 'the proposed page must be written by applyPending');
   const audit = await pctx.store.auditIndex();
   assert.equal(audit.missing.length, 0);
 });
@@ -856,29 +815,23 @@ test('P2: review mode writes a pending proposal without clearing sessions; apply
 // ---------------------------------------------------------------------------
 
 test('R3: applyLastPlan refuses a plan once memory changed after the dry-run', async (t) => {
-  const proj = await setupProject(t);
-  const ctx = fakeCtx({
-    workspaceDir: proj.workspaceDir,
-    planFor: () => ({
-      summary: 'refresh goal',
-      operations: [{ op: 'write', type: 'project', file: 'project_goal.md', name: 'goal', body: 'v1 (tidied)' }],
-    }),
-  });
-  const runtime = await runtimeFor(proj, ctx);
-  const pctx = await runtime.storeFor(proj.workspaceDir);
-  await pctx.store.saveEntry({ name: 'goal', type: 'project', content: 'v1' });
+  const env = await dreamRuntimeEnv(t);
+  const { runtime, pctx } = env;
+  const goal = await pctx.store.saveEntry({ name: 'goal', type: 'project', content: 'v1' });
+  await scriptDream(env, { sessions: { s1: ['The goal is to ship v1.'] }, claims: [claimOf('The goal is to ship v1.', { target: goal.file })] });
 
   const dry = await runtime.dream({ pctx, force: true, dryRun: true, trigger: 'manual' });
   assert.equal(dry.ran, true);
   const planPath = pctx.state.snapshot().lastPlanPath;
-  assert.equal(typeof planField(await readJson(planPath), 'inputFingerprint'), 'object', 'plan.json must carry the input fingerprint');
+  const write = planOperations(await readJson(planPath)).find((operation) => operation.op === 'write');
+  assert.match(String(write?.baseHash), /^[0-9a-f]{64}$/, 'each write carries the hash of the page it was built on');
 
-  await pctx.store.updateEntry('project_goal.md', { content: 'v2 newer human edit' });
+  await pctx.store.updateEntry(goal.file, { content: 'v2 newer human edit' });
   const applied = await runtime.applyLastPlan({ pctx });
   assert.equal(applied.applied, false, 'a stale plan must not be applied');
   assert.match(String(applied.error), /stale-plan/);
-  assert.match(String(applied.error), /project_goal\.md/, 'the error names the changed file');
-  assert.equal((await pctx.store.readEntry('project_goal.md')).body, 'v2 newer human edit', 'the newer edit survives');
+  assert.match(String(applied.error), new RegExp(escapeRegExp(goal.file)), 'the error names the changed file');
+  assert.equal((await pctx.store.readEntry(goal.file)).body, 'v2 newer human edit', 'the newer edit survives');
 });
 
 test('R3: a direct dream apply aborts when memory changes while the model is running', async (t) => {

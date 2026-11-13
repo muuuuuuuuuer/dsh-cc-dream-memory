@@ -649,3 +649,9 @@ Dream 的 evidence 使用操作级引用；兼容旧 `{statement,quote}`，来�
 - **Knowledge Wiki build**：`wiki-build.js` 支持 `.txt/.md` 文档 → source manifest → extractor → analyzer → organizer → `_index.md`/`SKILL.md`；入口 `/memory wiki build <dir>` 与 `POST /api/cc-memory/wiki`。PDF/Office 需先转文本。
 - **Read-only query**：`wiki-query.js` + `wiki-tools.js` 注册 `wiki_search`、`wiki_read`、`wiki_links`、`wiki_answer`；没有任何 wiki 写工具，`wiki_answer` 由 host 校验 page/quote。
 - **注入**：存在 `memory/SKILL.md` 时注入前 24 行；存在 `wiki/_index.md` 时注入一行只读 wiki 提示。UI 仍冻结。
+
+## 未发布：移除 Knowledge Wiki
+
+- 删除 `wiki-build.js`、`wiki-query.js`、`wiki-store.js`、`wiki-tools.js`，以及四个只读 wiki 工具、`/memory wiki` 命令、`POST /wiki` 接口、首轮的 wiki 提示和记忆页的 Wiki 标签（UI-FREEZE 变更）。所有 `wiki*` 配置项一并移除；`paths` 不再给出 `wikiDir` 等路径。
+- `wiki-core.js` 保留：它定义 Dream 写入的页面格式（`[[slug]]`、`^[source#locator, date]` 引用、索引与 SKILL 生成），由 dream-merge、dream-pipeline、dream-organizer、dream-write-evidence 共用。
+- 下文 0.12.x 小节里关于 Wiki 的条目只是历史记录，不再描述当前行为。

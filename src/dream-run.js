@@ -167,9 +167,13 @@ export function shapeManifest(base = {}) {
 
 export function summarizeRun(manifest, { running = false } = {}) {
   if (!manifest) return null;
+  // A manifest still marked running with no worker behind it was left by a
+  // process that stopped mid-run. It can only be resumed, so it reads as failed.
+  const interrupted = manifest.status === 'running' && !running;
   return {
     runId: manifest.runId,
-    status: running && manifest.status === 'running' ? 'running' : manifest.status,
+    status: interrupted ? 'failed' : manifest.status,
+    interrupted,
     stage: manifest.stage,
     trigger: manifest.trigger,
     reason: manifest.reason,
@@ -186,7 +190,7 @@ export function summarizeRun(manifest, { running = false } = {}) {
     coverageComplete: manifest.coverageComplete,
     planPath: manifest.planPath,
     applied: manifest.applied,
-    error: manifest.error,
+    error: interrupted && !manifest.error ? 'stopped before finishing (the host process ended); resume to continue' : manifest.error,
     blockedReason: manifest.blockedReason,
     skipReason: manifest.skipReason,
     usage: manifest.usage,

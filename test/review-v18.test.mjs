@@ -12,7 +12,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { extractSessionText } from '../src/dream-session-text.js';
 import * as dreamInput from '../src/dream-input.js';
-import { runtimeEnv } from './v10-helpers.mjs';
+import { runtimeEnv, scriptDream, claimOf } from './v10-helpers.mjs';
 
 function ev(type, data, seq) {
   return { type, data, ...(Number.isFinite(seq) ? { seq } : {}) };
@@ -113,8 +113,9 @@ test('v18: five probe sessions do not wake the automatic dream gate', async (t) 
 });
 
 test('v18: isolated dry-run produces a plan and never applies it', async (t) => {
-  const env = await runtimeEnv(t, {}, { plan: { summary: 'dry-run check', operations: [] } });
-  await env.pctx.store.saveEntry({ name: 'dry run target', type: 'user', description: 'target', content: 'ORIGINAL' });
+  const env = await runtimeEnv(t);
+  const target = await env.pctx.store.saveEntry({ name: 'dry run target', type: 'user', description: 'target', content: 'ORIGINAL' });
+  await scriptDream(env, { sessions: { s1: ['The dry run target keeps its value.'] }, claims: [claimOf('The dry run target keeps its value.', { target: target.file })] });
   const before = await env.pctx.store.indexText();
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, dryRun: true, trigger: 'manual' });
   assert.equal(result.dryRun, true, JSON.stringify(result).slice(0, 300));
@@ -122,4 +123,5 @@ test('v18: isolated dry-run produces a plan and never applies it', async (t) => 
   assert.ok(typeof result.planPath === 'string' && result.planPath !== '');
   assert.equal(await env.pctx.store.indexText(), before, 'dry-run must not change memory');
   assert.equal(env.host.llmCalls.length, 1, 'dry-run still asks the model for a plan');
+  assert.equal((await env.pctx.store.readEntry(target.file)).body.trim(), 'ORIGINAL', 'dry-run must not change the note');
 });

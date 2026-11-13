@@ -5,23 +5,12 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { runtimeEnv, writePlanOf } from './v10-helpers.mjs';
+import { runtimeEnv, scriptDream, claimOf } from './v10-helpers.mjs';
 import { loadModule } from './helpers.mjs';
 
-const PLAN = writePlanOf([
-  {
-    op: 'write',
-    scope: 'project',
-    type: 'user',
-    name: 'live config note',
-    description: 'written under a live toggle',
-    body: 'live config body',
-    file: 'user_live_config.md',
-  },
-]);
-
 test('v12 config-live: autoMemoryEnabled toggles reach the existing dream engine', async (t) => {
-  const env = await runtimeEnv(t, {}, { plan: PLAN });
+  const env = await runtimeEnv(t);
+  await scriptDream(env, { sessions: { s1: ['Live config is read on every run.'] }, claims: [claimOf('Live config is read on every run.')] });
   const first = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual' });
   assert.equal(first.applied, true, JSON.stringify(first).slice(0, 300));
 
@@ -32,6 +21,8 @@ test('v12 config-live: autoMemoryEnabled toggles reach the existing dream engine
   assert.match(JSON.stringify(blocked), /auto-memory-disabled/i, 'the old engine sees the new toggle');
 
   await env.runtime.setOverrides({ autoMemoryEnabled: true });
+  // A new conversation, so the retry has something to read.
+  await scriptDream(env, { sessions: { s2: ['Toggles apply without a restart.'] }, claims: [claimOf('Toggles apply without a restart.')] });
   const retried = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual' });
   assert.equal(retried.applied, true, JSON.stringify(retried).slice(0, 300));
 });

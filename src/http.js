@@ -544,56 +544,6 @@ export function createHttpHandler({ runtime, token }) {
           return sendCoded(res, error, 'restore-failed');
         }
       }
-      if (route === '/wiki' && method === 'POST') {
-        const body = await readBody(req);
-        const projectContext = await resolveProject(body?.sessionId);
-        if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
-        if (!runtime.effectiveEnabled()) {
-          return sendJson(res, 200, { ok: false, error: 'plugin-disabled', message: 'memory is disabled; enable it first' });
-        }
-        const action = String(body.action ?? 'status').toLowerCase();
-        try {
-          if (action === 'build') {
-            if (typeof runtime.wikiBuild !== 'function') {
-              return sendJson(res, 200, { ok: false, error: 'not-ready', message: 'knowledge wiki builder is unavailable' });
-            }
-            const result = await runtime.wikiBuild(projectContext, {
-              docsDir: body.docsDir,
-              dryRun: body.dryRun === true,
-              focus: typeof body.focus === 'string' ? body.focus : '',
-            });
-            // The page's Build button posts here. A published build makes the
-            // injected wiki hint stale; a dry run does not.
-            if (result?.ok !== false && body.dryRun !== true) {
-              try {
-                runtime.invalidateAllInjections?.('wiki-build');
-              } catch {
-                // best effort
-              }
-            }
-            return sendJson(res, 200, {
-              ok: result?.ok !== false,
-              ...(result?.ok === false ? { error: result.error || 'wiki-build-failed' } : {}),
-              result,
-            });
-          }
-          if (action === 'status') {
-            if (typeof runtime.wikiStatus !== 'function') {
-              return sendJson(res, 200, { ok: false, error: 'not-ready' });
-            }
-            return sendJson(res, 200, { ok: true, result: await runtime.wikiStatus(projectContext) });
-          }
-          if (action === 'pages') return sendJson(res, 200, await service.wikiPages(projectContext));
-          if (action === 'read') return sendJson(res, 200, await service.wikiPage(projectContext, body.file));
-          return sendJson(res, 400, {
-            ok: false,
-            error: 'unknown-action',
-            message: 'action must be "build", "status", "pages" or "read"',
-          });
-        } catch (error) {
-          return sendCoded(res, error, 'wiki-failed');
-        }
-      }
       if (route === '/dream' && method === 'POST') {
         const body = await readBody(req);
         return handleAction(res, body.action, body);

@@ -15,8 +15,16 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { gatherDreamInput } from './dream-input.js';
-import { dreamV2CoverageError, validateDreamPlan } from './dream.js';
+import { gatherDreamInput, pruneProbeSessions } from './dream-input.js';
+import {
+  costLimitStatus,
+  dreamCostModeOf,
+  dreamV2CoverageError,
+  estimateInputTokens,
+  maxTotalTokensLimit,
+  recordDreamEvent,
+  validateDreamPlan,
+} from './dream.js';
 import { ANALYZER_SYSTEM_PROMPT, buildAnalyzerPrompt, parseAnalyzerReply } from './dream-analyzer.js';
 import { stampVerification, SUPERSEDED_LINE_RE } from './memory-body.js';
 import { normalizeForMatch } from './dream-evidence.js';
@@ -323,6 +331,54 @@ async function releaseLock(file) {
   }
 }
 
+/** Current project pages in the shape the analyzer prompt shows them. */
+async function memoryPagesOf(store) {
+  const pages = [];
+  for (const entry of await store.listEntries('project')) {
+    const read = await store.readEntry(entry.file, 'project').catch(() => undefined);
+    if (!read) continue;
+    pages.push({
+      file: entry.file,
+      name: entry.name,
+      description: entry.description,
+      type: pageType(entry.type),
+      body: read.body,
+    });
+  }
+  return pages;
+}
+
+/** The transport units of one gathered session, in reading order. */
+function unitsOf(session) {
+  const units = Array.isArray(session?.chunks) && session.chunks.length > 0
+    ? session.chunks.map((chunk) => ({
+      text: chunk.text,
+      firstSeq: chunk.firstSeq,
+      lastSeq: chunk.lastSeq,
+      evidenceBlocks: chunk.evidenceBlocks,
+    }))
+    : [{ text: text(session?.excerpt), firstSeq: session?.baseSeq ?? null, lastSeq: null, evidenceBlocks: session?.evidenceBlocks }];
+  return units.filter((unit) => text(unit.text) !== '');
+}
+
+/** The analyzer prompt input for one unit; the estimate counts the same prompt. */
+function analyzerPromptInput(task, memoryPages, focus, config) {
+  return {
+    sessionId: task.sessionId,
+    when: task.session?.at ? new Date(Number(task.session.at)).toISOString().slice(0, 10) : '',
+    transcript: text(task.unit.text),
+    memoryPages,
+    focus,
+    maxMemoryChars: Number(config.dreamAnalyzerMemoryChars) || 48_000,
+    maxTranscriptChars: Number.MAX_SAFE_INTEGER,
+  };
+}
+
+/** Characters one analyzer call sends, system prompt included. */
+function promptCharsOf(task, memoryPages, focus, config) {
+  return ANALYZER_SYSTEM_PROMPT.length + buildAnalyzerPrompt(analyzerPromptInput(task, memoryPages, focus, config)).length;
+}
+
 async function writeJson(file, value) {
   await fs.mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
@@ -340,6 +396,14 @@ export class DreamPipeline {
     this._config = config && typeof config === 'object' ? config : {};
     this._getConfig = typeof getConfig === 'function' ? getConfig : null;
     this._engine = engine || null;
+    // Run ids executing in this process, whichever entry point started them
+    // (background start, a synchronous run or the scheduler).
+    this._liveRuns = new Set();
+  }
+
+  /** @returns {string[]} run ids a worker in this process is executing now. */
+  liveRunIds() {
+    return [...this._liveRuns];
   }
 
   get config() {
@@ -378,15 +442,7 @@ export class DreamPipeline {
    * injected memory; it never shortens the transcript.
    */
   async _analyzeUnit({ task, model, memoryPages, focus, config, signal, stats, stage, onUsage }) {
-    const promptInput = {
-      sessionId: task.sessionId,
-      when: task.session?.at ? new Date(Number(task.session.at)).toISOString().slice(0, 10) : '',
-      transcript: text(task.unit.text),
-      memoryPages,
-      focus,
-      maxMemoryChars: Number(config.dreamAnalyzerMemoryChars) || 48_000,
-      maxTranscriptChars: Number.MAX_SAFE_INTEGER,
-    };
+    const promptInput = analyzerPromptInput(task, memoryPages, focus, config);
     const prompt = buildAnalyzerPrompt(promptInput);
     stats.input += prompt.length;
     stage.calls += 1;
@@ -456,6 +512,46 @@ export class DreamPipeline {
     return { ok: true, started: true, runId, status: 'running' };
   }
 
+  /**
+   * Read-only preflight: what the next run would send to the analyzer. No model
+   * call, lock, metrics or session-watermark write.
+   */
+  async estimate({ pctx, noSessions = false, focus = '' } = {}) {
+    if (!pctx?.store || !pctx?.state) throw new Error('no-project');
+    const config = this.config;
+    const input = await gatherDreamInput({
+      ctx: this.ctx,
+      store: pctx.store,
+      config,
+      workspaceDir: pctx.workspaceDir,
+      state: pctx.state,
+      noSessions: noSessions === true,
+      unboundedSessions: true,
+      unitChars: UNIT_CHARS,
+    });
+    const memoryPages = await memoryPagesOf(pctx.store);
+    const focusText = String(focus ?? '');
+    let inputChars = 0;
+    let sessions = 0;
+    for (const session of input.sessions) {
+      const units = unitsOf(session);
+      if (text(session?.id) === '' || units.length === 0) continue;
+      sessions += 1;
+      for (const unit of units) {
+        inputChars += promptCharsOf({ sessionId: session.id, session, unit }, memoryPages, focusText, config);
+      }
+    }
+    return {
+      estimatedTokens: estimateInputTokens(inputChars),
+      inputChars,
+      limit: maxTotalTokensLimit(config),
+      costMode: dreamCostModeOf(config),
+      rough: true,
+      sessions,
+      warnings: input.errors ?? [],
+    };
+  }
+
   /** Wait for an active run to finish; resolves immediately when it is not running. */
   async settled(pctx, runId = '') {
     const paths = pctx?.paths;
@@ -478,13 +574,15 @@ export class DreamPipeline {
     const wanted = runId !== '' ? runId : active?.runId || '';
     if (wanted !== '') {
       const manifest = await readRunManifest(runDirOf(paths, wanted));
-      if (manifest) return { ok: true, running: active?.runId === wanted, ...summarizeRun(manifest, { running: active?.runId === wanted }) };
+      const running = active?.runId === wanted || this._liveRuns.has(wanted);
+      if (manifest) return { ok: true, running, ...summarizeRun(manifest, { running }) };
       if (active?.runId === wanted) return { ok: true, running: true, runId: wanted, status: 'starting', stage: 'prepare' };
       return { ok: false, error: 'unknown-run', runId: wanted };
     }
     const [newest] = await listRunManifests(paths, 1);
     if (!newest) return { ok: true, runId: '', status: 'none' };
-    return { ok: true, running: false, ...summarizeRun(newest.manifest) };
+    const running = this._liveRuns.has(newest.manifest?.runId);
+    return { ok: true, running, ...summarizeRun(newest.manifest, { running }) };
   }
 
   /** Stop an active run. Finished units stay on disk for a later resume. */
@@ -572,26 +670,42 @@ export class DreamPipeline {
     // (start/resume). Record the skip so `dream status` can explain it.
     const skip = async (extra) => {
       if (requestedRunId !== '') {
-        await writeRunManifest(runDirOf(paths, requestedRunId), shapeManifest({
-          runId: requestedRunId,
-          projectId: paths.projectDirName || paths.projectId || '',
-          status: 'skipped',
-          stage: 'prepare',
-          trigger,
-          reason,
-          dryRun: dryRun === true,
-          startedAt,
-          updatedAt: Date.now(),
-          finishedAt: Date.now(),
-          skipReason: extra.skipReason,
-          error: text(extra.error),
-        })).catch((error) => warn('write run manifest', error));
+        const dir = runDirOf(paths, requestedRunId);
+        // A resume that cannot start keeps the stopped run's record (status,
+        // units, counts) so it can still be resumed once the blocker clears.
+        const existing = resume === true ? await readRunManifest(dir) : null;
+        const manifest = existing
+          ? { ...existing, skipReason: extra.skipReason, updatedAt: Date.now() }
+          : {
+            runId: requestedRunId,
+            projectId: paths.projectDirName || paths.projectId || '',
+            status: 'skipped',
+            stage: 'prepare',
+            trigger,
+            reason,
+            dryRun: dryRun === true,
+            startedAt,
+            updatedAt: Date.now(),
+            finishedAt: Date.now(),
+            skipReason: extra.skipReason,
+            error: text(extra.error),
+          };
+        await writeRunManifest(dir, shapeManifest(manifest)).catch((error) => warn('write run manifest', error));
       }
       return finish({ ...extra, skipped: true, runId: requestedRunId });
     };
     if (signal?.aborted) return skip({ skipReason: 'aborted' });
     if (config.enabled === false) return skip({ skipReason: 'disabled' });
     if (config.autoMemoryEnabled === false) return skip({ skipReason: 'auto-memory-disabled' });
+    if (!force) {
+      // Probe-only sessions are not conversations; drop them before the
+      // minSessions gate so a few health checks cannot wake Dream.
+      try {
+        await pruneProbeSessions({ ctx: this.ctx, state });
+      } catch (error) {
+        warn('prune probe sessions', error);
+      }
+    }
 
     const snapshot = typeof state.snapshot === 'function' ? state.snapshot() : {};
     if (typeof snapshot.pendingProposal === 'string' && snapshot.pendingProposal !== '') {
@@ -617,6 +731,7 @@ export class DreamPipeline {
       takeOverRunId: resume === true ? runRunId : '',
     });
     if (!lock.ok) return skip({ skipReason: 'lock', lockAgeMs: lock.age, runId: lock.runId || '' });
+    this._liveRuns.add(runRunId);
 
     let failure = true;
     const runDir = runDirOf(paths, runRunId);
@@ -630,6 +745,9 @@ export class DreamPipeline {
     let modelAnalyzer = null;
     let modelOrganizer = null;
     let countUnits = () => ({ done: 0, failed: 0, pending: 0 });
+    let costMode = 'warn';
+    let tokenLimit = 0;
+    let estimatedTokens = 0;
     let runManifest = shapeManifest({
       runId: runRunId,
       projectId: paths.projectDirName || paths.projectId || '',
@@ -686,7 +804,8 @@ export class DreamPipeline {
       modelOrganizer = claimMerge ? null : this._stageModel('organizer');
       if (!modelAnalyzer || (!claimMerge && !modelOrganizer)) {
         failure = false;
-        return finish({ skipped: true, skipReason: 'llm-unavailable' });
+        await saveManifest({ status: 'skipped', skipReason: 'llm-unavailable', finishedAt: Date.now() });
+        return finish({ skipped: true, skipReason: 'llm-unavailable', runId: runRunId });
       }
 
       stage = 'analyze';
@@ -701,19 +820,7 @@ export class DreamPipeline {
         unboundedSessions: true,
         unitChars: UNIT_CHARS,
       });
-      const memoryEntries = await store.listEntries('project');
-      const memoryPages = [];
-      for (const entry of memoryEntries) {
-        const read = await store.readEntry(entry.file, 'project').catch(() => undefined);
-        if (!read) continue;
-        memoryPages.push({
-          file: entry.file,
-          name: entry.name,
-          description: entry.description,
-          type: pageType(entry.type),
-          body: read.body,
-        });
-      }
+      const memoryPages = await memoryPagesOf(store);
       const memoryChars = memoryPages.reduce((sum, page) => sum + page.body.length, 0);
       inputChars += memoryChars;
 
@@ -731,15 +838,7 @@ export class DreamPipeline {
       for (const session of input.sessions) {
         const id = text(session?.id);
         if (id === '') continue;
-        const units = Array.isArray(session.chunks) && session.chunks.length > 0
-          ? session.chunks.map((chunk) => ({
-            text: chunk.text,
-            firstSeq: chunk.firstSeq,
-            lastSeq: chunk.lastSeq,
-            evidenceBlocks: chunk.evidenceBlocks,
-          }))
-          : [{ text: text(session.excerpt), firstSeq: session.baseSeq ?? null, lastSeq: null, evidenceBlocks: session.evidenceBlocks }];
-        const usable = units.filter((unit) => text(unit.text) !== '');
+        const usable = unitsOf(session);
         if (usable.length === 0) continue;
         sessionIds.push(id);
         expectedUnits.set(id, usable.length);
@@ -775,6 +874,28 @@ export class DreamPipeline {
         },
         counts: { done: tasks.length - pendingCount, failed: 0, pending: pendingCount },
       });
+
+      // Preflight cost guard: block mode never pays for a model call.
+      costMode = dreamCostModeOf(config);
+      tokenLimit = maxTotalTokensLimit(config);
+      estimatedTokens = estimateInputTokens(tasks
+        .filter((task) => unitState.get(task.unitId)?.status !== 'done')
+        .reduce((sum, task) => sum + promptCharsOf(task, memoryPages, focus, config), 0));
+      if (costMode === 'block' && tokenLimit > 0 && estimatedTokens > tokenLimit) {
+        failure = false;
+        const message = `estimated ${estimatedTokens} tokens > limit ${tokenLimit} (dreamCostMode=block); no model was called`;
+        await saveManifest({ status: 'skipped', skipReason: 'cost-limit', error: message, finishedAt: Date.now() });
+        return finish({
+          ok: false,
+          skipped: true,
+          skipReason: 'cost-limit',
+          error: 'cost-limit',
+          costMode,
+          estimatedTokens,
+          limit: tokenLimit,
+          runId: runRunId,
+        });
+      }
 
       const analyzerStage = {
         name: 'analyze',
@@ -907,7 +1028,10 @@ export class DreamPipeline {
         throw aborted;
       }
       if (analyzerStage.calls === 0 && sessionIds.length === 0 && !input.deferredSessions?.length && !noSessions) {
-        return skip({ skipped: true, skipReason: 'nothing-new', sessionsReviewed: 0 });
+        // This run already owns its manifest (a sync run has no requested id),
+        // so close it here or it would read as interrupted forever.
+        await saveManifest({ status: 'skipped', skipReason: 'nothing-new', finishedAt: Date.now(), counts: countUnits() });
+        return finish({ skipped: true, skipReason: 'nothing-new', sessionsReviewed: 0, runId: runRunId });
       }
       await saveManifest({ stage: 'analyze', counts: countUnits() });
 
@@ -1212,7 +1336,7 @@ export class DreamPipeline {
         { summary: summaryText || `dream: ${operations.length} operation(s)`, operations },
         {
           config,
-          existingFiles: memoryEntries.map((entry) => ({ file: entry.file, name: entry.name, scope: 'project' })),
+          existingFiles: memoryPages.map((page) => ({ file: page.file, name: page.name, scope: 'project' })),
           truncatedFiles: input.truncatedFiles,
         },
       );
@@ -1279,6 +1403,63 @@ export class DreamPipeline {
         applied: false,
       };
 
+      // Usage and cost travel with the plan so preview and a later apply report them.
+      const cost = costLimitStatus(config, usage);
+      const costExceeded = cost.exceeded === true;
+      Object.assign(plan, {
+        durationMs: Date.now() - startedAt,
+        inputChars,
+        outputChars,
+        usage,
+        costMode,
+        estimatedTokens,
+        limit: tokenLimit,
+        ...(costExceeded ? { costExceeded: true } : {}),
+      });
+      if (cost.warning !== '') plan.warnings.push(cost.warning);
+      const dreamMetrics = { durationMs: plan.durationMs, inputChars, outputChars, usage };
+      await recordDreamEvent(paths, { event: 'proposed', ops: plan.operations.length, planOps: plan.operations.length });
+      if (costExceeded) await state.noteCostExceeded?.(true);
+
+      // `block` refuses a plan whose real usage went over the limit: nothing is
+      // applied and the plan stays in the run folder for inspection only.
+      if (costExceeded && costMode === 'block' && !dryRun) {
+        const message = `cost-limit: totalTokens ${cost.totalTokens} > limit ${cost.limit} (dreamCostMode=block); nothing was applied`;
+        const planPath = path.join(runDir, 'plan.json');
+        const manifest = await saveManifest({
+          ...manifestBase,
+          stage: 'blocked',
+          status: 'blocked',
+          finishedAt: Date.now(),
+          planPath,
+          coverageComplete,
+          counts: countUnits(),
+          blockedReason: message,
+          error: message,
+        });
+        await writeJson(planPath, { ...plan, applied: false, manifest, blocked: true, blockedReason: message });
+        await state.markDreamFailed(message);
+        await recordDreamEvent(paths, { event: 'failed', ...dreamMetrics, planOps: plan.operations.length, dropped: validation.dropped.length, rollback: false });
+        failure = false;
+        return finish({
+          ok: false,
+          ran: true,
+          applied: false,
+          error: 'cost-limit',
+          costExceeded: true,
+          costMode,
+          estimatedTokens,
+          limit: cost.limit,
+          totalTokens: cost.totalTokens,
+          blockedPlanPath: planPath,
+          summary: plan.summary,
+          sessionsReviewed: merged.length,
+          runId: runRunId,
+          manifest,
+          warnings: plan.warnings,
+        });
+      }
+
       const coverageError = dreamV2CoverageError(plan);
       if (dryRun || coverageError) {
         const planPath = path.join(runDir, 'plan.json');
@@ -1336,7 +1517,7 @@ export class DreamPipeline {
       }
 
       // Review mode can also be requested by config; dry-run is checked first.
-      if (wantsReview(config)) {
+      if (wantsReview(config) || (costExceeded && costMode === 'review')) {
         const proposalPath = path.join(paths.pendingDir, `${timestampName(Date.now())}.json`);
         const manifest = await saveManifest({
           ...manifestBase,
@@ -1348,10 +1529,22 @@ export class DreamPipeline {
           counts: countUnits(),
           error: '',
         });
-        await writeJson(proposalPath, { ...plan, review: true, manifest });
+        // Keep plan.review (the claims left for a person) instead of the
+        // classic engine's `review: true` flag, which nothing reads.
+        await writeJson(proposalPath, { ...plan, manifest });
         await state.setPendingProposal(proposalPath);
         failure = false;
-        return finish({ ran: true, applied: false, mode: 'review', summary: plan.summary, proposalPath, runId: runRunId, manifest });
+        return finish({
+          ran: true,
+          applied: false,
+          mode: 'review',
+          summary: plan.summary,
+          proposalPath,
+          runId: runRunId,
+          manifest,
+          ...(costExceeded ? { costExceeded: true, reviewReason: 'cost-limit' } : {}),
+          warnings: plan.warnings,
+        });
       }
 
       const engine = await this.engine();
@@ -1360,6 +1553,7 @@ export class DreamPipeline {
         aborted.name = 'AbortError';
         throw aborted;
       }
+      stage = 'apply';
       const execution = await engine.executePlan({
         store,
         paths,
@@ -1378,19 +1572,20 @@ export class DreamPipeline {
           inputChars,
           outputChars,
           usage,
-          costExceeded: false,
+          costExceeded,
           costMode: config.dreamCostMode || 'warn',
         },
         meta: {
           kind: 'dream-v2',
           planOps: plan.operations.length,
           summary: plan.summary,
-          sessions: sessionIds.length,
+          // Session ids, not a count: undo reopens exactly these sessions.
+          sessions: [...sessionIds],
           durationMs: Date.now() - startedAt,
           inputChars,
           outputChars,
           usage,
-          costExceeded: false,
+          costExceeded,
           costMode: config.dreamCostMode || 'warn',
           trigger,
         },
@@ -1407,7 +1602,16 @@ export class DreamPipeline {
 
       // SKILL.md is applied inside executePlan so it shares the batch backup and
       // undo metadata with the notes and index.
-      await state.clearSessions([...sessionIds, ...(input.droppedSessions || [])], { reads });
+      // Only sessions this run actually read may move their watermark; a session
+    // dropped from the input stays in `sessionsSince` so its turns are not lost.
+    await state.clearSessions(sessionIds, { reads });
+      await recordDreamEvent(paths, {
+        event: 'applied',
+        ops: execution.counts.write + execution.counts.delete + execution.counts.index,
+        ...dreamMetrics,
+        planOps: plan.operations.length,
+        dropped: validation.dropped.length,
+      });
       await state.markDreamDone({
         sessions: merged.length,
         ops: plan.operations.length,
@@ -1418,7 +1622,7 @@ export class DreamPipeline {
         inputChars,
         outputChars,
         usage,
-        costExceeded: false,
+        costExceeded,
       });
       await state.clearPendingProposal({ silent: true }).catch(() => {});
       await state.clearLastPlan().catch(() => {});
@@ -1454,6 +1658,7 @@ export class DreamPipeline {
         backupDir: execution.backupDir,
         changelogPath: paths.changelogFile,
         manifest,
+        ...(costExceeded ? { costExceeded: true } : {}),
         usage,
         inputChars,
         outputChars,
@@ -1470,6 +1675,33 @@ export class DreamPipeline {
       } catch (stateError) {
         warn('state.markDreamFailed', stateError);
       }
+      // A write that failed mid-apply rolled the batch back: record what was
+      // restored or skipped, as every other apply path does.
+      if (stage === 'apply' && error?.backupDir) {
+        try {
+          await (await this.engine()).handleApplyFailure(state, store, error, {
+            trigger,
+            sessions: Array.isArray(plan?.sessions) ? plan.sessions.length : 0,
+            summary: plan?.summary ?? '',
+            notes: '',
+            dropped: Array.isArray(plan?.dropped) ? plan.dropped : [],
+          });
+        } catch (failureError) {
+          warn('record apply failure', failureError);
+        }
+      }
+      if (!cancelled) {
+        await recordDreamEvent(paths, {
+          event: 'failed',
+          durationMs: Date.now() - startedAt,
+          inputChars,
+          outputChars,
+          usage,
+          planOps: plan?.operations?.length ?? 0,
+          dropped: 0,
+          rollback: error?.rolledBack === true,
+        });
+      }
       const manifest = await saveManifest({
         ...(failureManifest || {}),
         stage,
@@ -1482,8 +1714,24 @@ export class DreamPipeline {
         inputChars,
         outputChars,
       });
-      return finish({ ran: true, error: message, applied: false, summary: '', operations: 0, sessionsReviewed: 0, runId: runRunId, manifest });
+      return finish({
+        ran: true,
+        error: message,
+        applied: false,
+        summary: '',
+        operations: 0,
+        sessionsReviewed: 0,
+        runId: runRunId,
+        manifest,
+        ...(stage === 'apply' && error?.backupDir ? {
+          rolledBack: error?.rolledBack === true,
+          conflicts: Array.isArray(error?.rollbackConflicts) ? error.rollbackConflicts : [],
+          rollbackError: error?.rollbackError,
+          backupDir: error.backupDir,
+        } : {}),
+      });
     } finally {
+      this._liveRuns.delete(runRunId);
       await releaseLock(paths.lockFile);
     }
   }

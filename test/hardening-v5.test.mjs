@@ -211,11 +211,6 @@ test('v5: apply() mounts with only the hard services and degrades the rest', asy
     [...TOOL_NAMES].sort(),
     'the four memory tools must register while the tools service is available',
   );
-  assert.deepEqual(
-    names.filter((name) => name.startsWith('wiki_')),
-    ['wiki_answer', 'wiki_links', 'wiki_read', 'wiki_search'].sort(),
-    'the four read-only wiki tools must register too',
-  );
   assert.equal(records.commands.length, 0, 'no commands service => /memory commands are not registered (no throw)');
   assert.ok(pendingListenerCount(records) > 0, 'prompt injection must still register its listeners');
   assert.ok(records.listeners.has('agent/created'), 'injection registers the agent/created listener');
@@ -249,7 +244,7 @@ test('v5: a missing systemPrompt degrades injection without throwing', async (t)
   });
   t.after(() => disposeEffects(records));
 
-  assert.equal(records.tools.length, 8, 'memory and read-only wiki tools must still mount');
+  assert.equal(records.tools.length, 4, 'the memory tools must still mount');
   assert.equal(records.promptRegistrations.length, 0, 'agents without systemPrompt get no injection context');
   assert.equal(
     warnings.some((warning) => /systemPrompt|agent context/i.test(warning)),
@@ -284,12 +279,12 @@ test('v5: dispose removes tools/commands/prompt/listeners and repeats cleanly', 
   await waitFor(() => records.promptRegistrations.length === 1);
 
   assert.ok(plugin && typeof plugin.dispose === 'function');
-  assert.equal(records.tools.length, 8);
+  assert.equal(records.tools.length, 4);
   assert.equal(records.commands.length, 3, '/memory, /remember and /dream (short alias) must be registered');
   assert.ok(pendingListenerCount(records) > 0);
 
   await assert.doesNotReject(() => plugin.dispose(), 'first dispose must not throw');
-  assert.equal(records.toolDisposers.length, 8, 'every tool registration disposer must run');
+  assert.equal(records.toolDisposers.length, 4, 'every tool registration disposer must run');
   assert.equal(records.commandDisposers.length, 3, 'every command registration disposer must run');
   assert.equal(records.promptDisposers.length, 1, 'the systemPrompt context disposer must run');
   assert.equal(pendingListenerCount(records), 0, 'every event listener must be removed on dispose');

@@ -1,5 +1,5 @@
 /**
- * Small LLM helper shared by the v2 dream pipeline and the wiki builder.
+ * Small LLM helper for the v2 dream pipeline.
  *
  * The host exposes `ctx.llm.stream`; this module turns one prompt into text,
  * accumulates usage, and retries once with a larger output budget when the

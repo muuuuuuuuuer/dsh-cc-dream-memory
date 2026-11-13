@@ -25,7 +25,6 @@ test('status names the build and the capabilities this Host mounted', async (t) 
     dreamPipeline: 'classic',
     dreamRuns: false,
     claimMerge: true,
-    wiki: true,
     explicitSaveLedger: true,
   });
 });

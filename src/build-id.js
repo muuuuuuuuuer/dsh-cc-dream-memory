@@ -18,7 +18,6 @@ const BUILD_FILES = [
   'src/http.js',
   'src/inject.js',
   'src/dream-run.js',
-  'src/wiki-build.js',
 ];
 
 const rootDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));

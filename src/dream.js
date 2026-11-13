@@ -32,6 +32,7 @@ import { buildIndex } from './wiki-core.js';
 import { recordVerification } from './verification-ledger.js';
 import { currentFactLines } from './memory-body.js';
 import { supportsStatement } from './support.js';
+import { pageBodyHash } from './dream-merge.js';
 import { gatherDreamInput, pruneProbeSessions } from './dream-input.js';
 import { analyzeLongSessions, plannedAnalysisChars } from './dream-map.js';
 import { buildEvidenceCorpus, checkPlanEvidence, collectStaleReferences, automaticReviewReasons, bodyLineChanges, dropDestructiveDependents } from './dream-evidence.js';
@@ -91,6 +92,24 @@ async function hashFileIfExists(filePath) {
     if (error && error.code === 'ENOENT') return null;
     throw error;
   }
+}
+
+/**
+ * Writes whose page changed since the plan was built. `baseHash` is the hash
+ * of the page body the merge read, so it is compared with the body on disk.
+ */
+async function staleWrites(store, operations) {
+  const stale = [];
+  for (const op of Array.isArray(operations) ? operations : []) {
+    if (!op || op.op !== 'write' || typeof op.baseHash !== 'string' || op.baseHash === '') continue;
+    const scope = op.scope === 'user' ? 'user' : 'project';
+    const current = await store.readEntry(op.file, scope).catch(() => null);
+    const actual = current ? pageBodyHash(current.body) : null;
+    if (actual !== op.baseHash) {
+      stale.push({ file: op.file, expected: op.baseHash, actual, reason: 'changed since the plan was built' });
+    }
+  }
+  return stale;
 }
 
 /** Is this a safe top-level batch file name (no path traversal)? */
@@ -263,7 +282,7 @@ async function loadMetricsModule() {
  * @param {object} payload `{ event, ops?, durationMs?, inputChars?, outputChars?, usage? }`
  * @returns {Promise<boolean>} whether the event was recorded.
  */
-async function recordDreamEvent(paths, payload) {
+export async function recordDreamEvent(paths, payload) {
   try {
     const module = await loadMetricsModule();
     const record = module && typeof module.recordDream === 'function' ? module.recordDream : null;
@@ -291,7 +310,7 @@ function totalTokensOf(usage) {
  * Compare one usage record with `config.dreamMaxTotalTokens` (0 = off).
  * @returns {{exceeded:boolean, limit:number, totalTokens?:number, warning:string}}
  */
-function costLimitStatus(config, usage) {
+export function costLimitStatus(config, usage) {
   const limit = maxTotalTokensLimit(config);
   if (limit === 0) return { exceeded: false, limit: 0, warning: '' };
   const total = totalTokensOf(usage);
@@ -305,19 +324,19 @@ function costLimitStatus(config, usage) {
 }
 
 /** Effective cost mode (`warn` applies anyway, `review` parks a proposal, `block` refuses). */
-function dreamCostModeOf(config) {
+export function dreamCostModeOf(config) {
   const mode = config && typeof config === 'object' ? config.dreamCostMode : undefined;
   return mode === 'review' || mode === 'block' ? mode : 'warn';
 }
 
 /** Configured total-token ceiling; 0 means the limit is off. */
-function maxTotalTokensLimit(config) {
+export function maxTotalTokensLimit(config) {
   const raw = Number(config && typeof config === 'object' ? config.dreamMaxTotalTokens : 0);
   return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : 0;
 }
 
 /** Preflight estimate used before the model call (contract: ceil(chars/4) + 1024). */
-function estimateInputTokens(inputChars) {
+export function estimateInputTokens(inputChars) {
   return Math.ceil(Math.max(0, Number(inputChars) || 0) / 4) + 1024;
 }
 
@@ -664,6 +683,9 @@ export function validateDreamPlan(plan, options = {}) {
         description: oneLine(op.description, 160),
         body,
         ...(evidence.length > 0 ? { evidence } : {}),
+        // The hash of the page this write was built on; apply refuses the write
+        // when the page changed since (a human edit must never be overwritten).
+        ...(typeof op.baseHash === 'string' && /^[0-9a-f]{64}$/.test(op.baseHash) ? { baseHash: op.baseHash } : {}),
       });
       continue;
     }
@@ -2131,7 +2153,9 @@ export class DreamEngine {
         usage,
         costExceeded,
       });
-      if (dropped.length === 0) await callState(state, 'clearSessions', [...sessionIds, ...input.droppedSessions], { reads: input.reads });
+      // A session that was never read keeps its place in `sessionsSince`: nothing
+      // moved its watermark, and clearing it here would drop its turn unread.
+      if (dropped.length === 0) await callState(state, 'clearSessions', [...sessionIds, ...input.droppedSessions].filter((id) => input.reads.some((read) => read?.id === id)), { reads: input.reads });
       await callState(state, 'clearPendingProposal', { silent: true });
       await callState(state, 'clearLastPlan');
       this.invalidate(agent, project);
@@ -2406,6 +2430,14 @@ export class DreamEngine {
       }
       const normalized = validation.plan;
 
+      // Claim-level plans record the body each page had when the merge read it.
+      // Compare before the evidence filter: a page edited after the dry-run must
+      // report a stale plan, not a citation error caused by the newer text.
+      const stale = await staleWrites(store, normalized.operations);
+      if (stale.length > 0) {
+        return fail(`stale-plan: memory changed since this plan was made (${stale.map((item) => item.file).join(', ')}); run a new dry-run`);
+      }
+
       // v0.12.0: the final write path re-checks organizer-added lines against
       // the evidence bundle. A plan cannot become applyable just because its
       // dry-run JSON was edited or its organizer paraphrased pasted material.
@@ -2452,7 +2484,7 @@ export class DreamEngine {
           costExceeded,
           ...metrics,
         });
-        if (dropped.length === 0) await callState(state, 'clearSessions', [...rawSessions, ...normalizeStringArray(plan.droppedSessions)], { reads: Array.isArray(plan.reads) ? plan.reads : [] });
+        if (dropped.length === 0) await callState(state, 'clearSessions', [...rawSessions, ...normalizeStringArray(plan.droppedSessions)].filter((id) => (Array.isArray(plan.reads) ? plan.reads : []).some((read) => read?.id === id)), { reads: Array.isArray(plan.reads) ? plan.reads : [] });
         await callState(state, 'clearPendingProposal', { silent: true });
         await callState(state, 'clearLastPlan');
         failure = false;
@@ -2546,6 +2578,21 @@ export class DreamEngine {
         };
       }
 
+      // A page edited after the plan was built: refuse instead of overwriting.
+      if (execution && execution.ok === false) {
+        const conflicts = Array.isArray(execution.conflicts) ? execution.conflicts : [];
+        return {
+          applied: false,
+          rolledBack: false,
+          error: execution.error === 'conflict'
+            ? `stale-plan: memory changed since this plan was made (${conflicts.map((item) => item.file).join(', ')}); run a new dry-run`
+            : String(execution.error ?? 'apply-failed'),
+          conflicts,
+          ops: 0,
+          path: typeof proposalPath === 'string' ? proposalPath : '',
+        };
+      }
+
       const total = execution.counts.write + execution.counts.delete + execution.counts.index;
       await recordDreamEvent(paths, {
         event: 'applied',
@@ -2563,7 +2610,7 @@ export class DreamEngine {
         costExceeded,
         ...metrics,
       });
-      if (dropped.length === 0) await callState(state, 'clearSessions', [...rawSessions, ...normalizeStringArray(plan.droppedSessions)], { reads: Array.isArray(plan.reads) ? plan.reads : [] });
+      if (dropped.length === 0) await callState(state, 'clearSessions', [...rawSessions, ...normalizeStringArray(plan.droppedSessions)].filter((id) => (Array.isArray(plan.reads) ? plan.reads : []).some((read) => read?.id === id)), { reads: Array.isArray(plan.reads) ? plan.reads : [] });
       await callState(state, 'clearPendingProposal', { silent: true });
       await callState(state, 'clearLastPlan');
       this.invalidate(agent, project);
@@ -2827,6 +2874,8 @@ export class DreamEngine {
       if (plan[key] !== undefined) context[key] = plan[key];
     }
     if (plan.costExceeded === true) context.costExceeded = true;
+    // Claims the host merge left for a person to decide (classic plans set a boolean).
+    if (Array.isArray(plan.review)) context.review = plan.review;
 
     const readCurrent = async (file) => {
       if (typeof store.readEntry !== 'function' || typeof file !== 'string' || file === '') {
@@ -3108,6 +3157,21 @@ export class DreamEngine {
         };
       }
 
+      // A page edited after the plan was built: refuse instead of overwriting.
+      if (execution && execution.ok === false) {
+        const conflicts = Array.isArray(execution.conflicts) ? execution.conflicts : [];
+        return {
+          applied: false,
+          rolledBack: false,
+          error: execution.error === 'conflict'
+            ? `stale-plan: memory changed since this plan was made (${conflicts.map((item) => item.file).join(', ')}); run a new dry-run`
+            : String(execution.error ?? 'apply-failed'),
+          conflicts,
+          ops: 0,
+          path: resolvedPath,
+        };
+      }
+
       const total = execution.counts.write + execution.counts.delete + execution.counts.index;
       await recordDreamEvent(paths, {
         event: 'applied',
@@ -3176,14 +3240,7 @@ export class DreamEngine {
     // Claim-level plans carry the page body they were built from. A page edited
     // after the plan was built must not be silently overwritten: the merge saw
     // an older body and its `Superseded` history would describe the wrong value.
-    const stale = [];
-    for (const op of Array.isArray(operations) ? operations : []) {
-      if (!op || op.op !== 'write' || typeof op.baseHash !== 'string' || op.baseHash === '') continue;
-      const actual = await hashFileIfExists(path.join(paths.memoryDir, op.file));
-      if (actual !== op.baseHash) {
-        stale.push({ file: op.file, expected: op.baseHash, actual, reason: 'changed since the plan was built' });
-      }
-    }
+    const stale = await staleWrites(store, operations);
     if (stale.length > 0) return { ok: false, error: 'conflict', conflicts: stale };
     // v12 Bug 3: post-apply hash per touched file, used for selective rollback.
     const expectedHashes = new Map();

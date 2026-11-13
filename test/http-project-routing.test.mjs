@@ -48,6 +48,25 @@ test('http routing: a live session still reaches its own project for reads and w
   assert.equal(entries[0].name, 'live write');
 });
 
+test('http routing: a saved session with no live agent reaches the project its header names', async (t) => {
+  const env = await httpEnv(t);
+  env.host.services.sessionQuery = {
+    filterSessions: async (filters) => {
+      const ids = filters.find((filter) => filter.kind === 'id')?.values ?? [];
+      return ids.includes('saved-session') ? [{ header: { id: 'saved-session', cwd: env.workspaceDir } }] : [];
+    },
+    readSession: async () => undefined,
+  };
+
+  const status = await callHttp(env, { token: env.token, path: '/status?sessionId=saved-session' });
+  assert.equal(status.statusCode, 200, status.bodyText());
+  assert.equal(status.json().ok, true);
+
+  const gone = await callHttp(env, { token: env.token, path: '/status?sessionId=session-that-vanished' });
+  assert.equal(gone.statusCode, 400, gone.bodyText());
+  assert.equal(gone.json().error, 'unknown-session');
+});
+
 test('http routing: a request without a session may use the single loaded project', async (t) => {
   const env = await httpEnv(t);
   const status = await callHttp(env, { token: env.token, path: '/status' });

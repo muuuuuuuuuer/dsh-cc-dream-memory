@@ -16,9 +16,8 @@
  * @module dsh-cc-dream-memory/inject
  */
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import { entryFingerprint, readLedger, verifiedPage } from './verification-ledger.js';
-import { resolveWikiIndexFile } from './wiki-store.js';
+import { INDEX_TRUNCATION_MARKER } from './store.js';
 import { readMetrics, recordInjection } from './metrics.js';
 import { CORE_RULES, DEFAULT_RULES } from './rules.js';
 import { attachRecall } from './recall.js';
@@ -97,30 +96,39 @@ export async function buildHotIndex({ store, paths, config, limit, scope = 'proj
  * each is revealed after its exact bytes are verified. A page edited after
  * verification drops back to name-only until it is written again. Entries with
  * no ledger record are never read here, so legacy projects cost no extra I/O.
+ *
+ * Masking fails closed: without a readable ledger nothing is trusted, and an
+ * index line that is neither a note pointer, a heading nor the host's
+ * truncation marker is dropped, since nothing can vouch for its text.
  * @param {{store:object, scope?:'project'|'user', index:object}} input
  * @returns {Promise<object>} the index payload, with summaries masked.
  */
 export async function buildNavigationIndex({ store, scope = 'project', index }) {
   const base = index && typeof index === 'object' ? index : {};
   const text = typeof base.text === 'string' ? base.text : '';
-  if (text === '' || typeof store.listEntries !== 'function') return base;
-  let ledger;
+  if (text === '') return base;
+  let records = {};
   try {
-    ledger = await readLedger(store, scope);
+    const ledger = await readLedger(store, scope);
+    if (ledger && typeof ledger.entries === 'object' && ledger.entries !== null) records = ledger.entries;
   } catch {
-    return base;
+    records = {};
   }
-  const records = ledger && typeof ledger.entries === 'object' && ledger.entries !== null ? ledger.entries : {};
   const entries = new Map();
-  for (const entry of await Promise.resolve(store.listEntries(scope)).catch(() => [])) {
+  const listed = typeof store.listEntries === 'function'
+    ? await Promise.resolve(store.listEntries(scope)).catch(() => [])
+    : [];
+  for (const entry of listed) {
     if (entry && typeof entry.file === 'string') entries.set(entry.file, entry);
   }
   const lines = [];
   let masked = false;
   for (const line of text.replace(/\n$/, '').split('\n')) {
-    const match = /^- \[([^\]]*)\]\(([^()]*)\)(.*)$/u.exec(line);
+    // Lazy name: a name may itself contain "]" ("[WIP] deploy").
+    const match = /^- \[(.*?)\]\(([^()]*)\)(.*)$/u.exec(line);
     if (match === null) {
-      lines.push(line);
+      if (line.trim() === '' || /^#{1,6}\s/u.test(line) || line === INDEX_TRUNCATION_MARKER) lines.push(line);
+      else masked = true;
       continue;
     }
     const entry = entries.get(match[2]);
@@ -224,10 +232,6 @@ export function buildInjectionText(input = {}) {
     lines.push(skill);
     lines.push('</skill>');
   }
-  if (input.wikiAvailable === true) {
-    lines.push('');
-    lines.push('A read-only knowledge wiki is available through wiki_search, wiki_read and wiki_links. Answer corpus questions from it and cite the page you used; do not edit the wiki.');
-  }
 
   if (config.injectIndex !== false) {
     lines.push('');
@@ -287,6 +291,11 @@ export function buildInjectionText(input = {}) {
     lines.push('<user-index>');
     lines.push(user.text.replace(/\n$/, ''));
     lines.push('</user-index>');
+    if (user.masked === true && index?.masked !== true) {
+      lines.push(
+        '<index-note>entries without a summary are unverified; read one with memory_read before relying on it, and correct it with memory_update when it is wrong.</index-note>',
+      );
+    }
     if (user.overflow === true) {
       lines.push(
         `<budget-notice>the user MEMORY.md index is over budget (${user.maxLines ?? 0} lines/${user.maxBytes ?? 0} bytes); only its head is injected.</budget-notice>`,
@@ -473,7 +482,10 @@ export function registerInjection(ctx, runtime, configOverride) {
             maxLines: Number(effective.userIndexMaxLines) || undefined,
             maxBytes: Number(effective.userIndexMaxBytes) || undefined,
           });
-          if (userIndex && typeof userIndex.text === 'string' && userIndex.text !== '') user = userIndex;
+          if (userIndex && typeof userIndex.text === 'string' && userIndex.text !== '') {
+            // User and feedback notes get the same summary masking as project notes.
+            user = await buildNavigationIndex({ store, scope: 'user', index: userIndex });
+          }
         }
       } catch (error) {
         warn('user index', error);
@@ -539,20 +551,6 @@ export function registerInjection(ctx, runtime, configOverride) {
         if (error?.code !== 'ENOENT') warn('memory skill', error);
       }
     }
-    let wikiAvailable = false;
-    if (effective.wikiEnabled !== false) {
-      try {
-        // Pages live in the generation the pointer names; the root only holds
-        // the pointer, so a root-level `_index.md` would never be found.
-        const wikiRoot = typeof paths.wikiDir === 'string' && paths.wikiDir !== ''
-          ? paths.wikiDir
-          : path.dirname(paths.wikiIndexFile);
-        await fs.access(resolveWikiIndexFile(wikiRoot));
-        wikiAvailable = true;
-      } catch (error) {
-        if (error?.code !== 'ENOENT') warn('wiki index', error);
-      }
-    }
     const text = buildInjectionText({
       memoryDir: paths.memoryDir,
       userMemoryDir: paths.userMemoryDir,
@@ -563,7 +561,6 @@ export function registerInjection(ctx, runtime, configOverride) {
       rulesSource,
       digest,
       skill,
-      wikiAvailable,
     });
     // Effect metrics: count each successful non-empty injection. Fire-and-forget
     // through the runtime so unload/drain and tests can await it; a metrics

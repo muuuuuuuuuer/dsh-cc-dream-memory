@@ -12,8 +12,6 @@
  *                 their reasons and proposed text, and a Dream plan to review;
  *      Dream    — estimate → plan → review and apply, with Dream v2 coverage
  *                 and evidence per change, auto dream, recent dreams and undo;
- *      Wiki     — the knowledge wiki: build status and audit, a page reader
- *                 with citations and [[links]], and the build form;
  *      Settings — switches, what new conversations load, the memory rules,
  *                 trash/backup restore and storage.
  *  - `conversation.composer.dock` (id `cc-memory-status`, order 50): a small
@@ -44,7 +42,6 @@ window.__ModuleLoader__.load({
       'tab.memories': 'Memories',
       'tab.inbox': 'Inbox',
       'tab.tidy': 'Dream',
-      'tab.wiki': 'Wiki',
       'tab.settings': 'Settings',
       'chip.label': 'Memory',
       'chip.attention': '{n} to review',
@@ -84,7 +81,7 @@ window.__ModuleLoader__.load({
         "The memory service isn't available on this page. Reload the page; if it still fails, check that the plugin is installed.",
       'banner.tokenExpired': 'The connection to the memory service expired. Reload the page to reconnect.',
       'banner.backendStale':
-        'The memory plugin is still running older code than this page, so newer parts (wiki pages, trust marks, write details) fail. Quit DeepSeek Harness completely and open it again.',
+        'The memory plugin is still running older code than this page, so newer parts (trust marks, write details) fail. Quit DeepSeek Harness completely and open it again.',
       'error.load': "Couldn't load memory",
 
       'type.all': 'All',
@@ -294,41 +291,6 @@ window.__ModuleLoader__.load({
       'readiness.backoff': 'The last attempt failed; it will retry later.',
       'readiness.throttle': 'Checked recently; it will check again soon.',
 
-      'wiki.title': 'Knowledge wiki',
-      'wiki.intro':
-        'Topic pages built from a folder of documents. Every fact keeps a citation to the passage it came from, and the agent can search, read and cite the pages.',
-      'wiki.pages': '{n} pages',
-      'wiki.lastBuild': 'Last build {time}',
-      'wiki.neverBuilt': 'Not built yet',
-      'wiki.docs': '{processed} / {expected} documents',
-      'wiki.auditOk': 'All links resolve and every page is in the index.',
-      'wiki.dangling': '{n} broken links',
-      'wiki.indexMissing': '{n} not in the index',
-      'wiki.oversized': '{n} too large',
-      'wiki.search': 'Filter pages',
-      'wiki.empty': 'No pages yet. Build the wiki from a folder of text documents below.',
-      'wiki.noMatch': 'No pages match "{q}".',
-      'wiki.missing': 'This page no longer exists.',
-      'wiki.linksTo': 'Links to',
-      'wiki.citations': '{n} citations',
-      'wiki.otherDomain': 'Other',
-      'wiki.buildTitle': 'Build or refresh',
-      'wiki.dir': 'Documents folder',
-      'wiki.dirPlaceholder': 'e.g. docs',
-      'wiki.dirHint': 'Relative to the project, or an absolute path. Text files only: convert Office documents first.',
-      'wiki.dirRequired': 'Enter a documents folder.',
-      'wiki.focus': 'Focus (optional)',
-      'wiki.dryRun': 'Dry run: report what would change, publish nothing',
-      'wiki.start': 'Build wiki',
-      'wiki.startConfirm': 'This uses the model. Build?',
-      'wiki.building': 'Building: reading documents and writing pages… this can take a few minutes.',
-      'wiki.result': 'Last result',
-      'wiki.resultDry': 'Dry run, nothing published',
-      'wiki.resultDocs': '{processed} / {expected} documents read, {failed} failed',
-      'wiki.resultPages': '{created} pages created, {updated} updated, {total} in total',
-      'wiki.resultLinks': '{added} links added, {dangling} broken',
-      'wiki.resultConflicts': '{n} conflicts kept for review',
-
       'settings.switches': 'Switches',
       'settings.switchesHint': 'These apply to every project.',
       'settings.enabled': 'Memory',
@@ -386,7 +348,6 @@ window.__ModuleLoader__.load({
       'tab.memories': '记忆',
       'tab.inbox': '待处理',
       'tab.tidy': 'Dream',
-      'tab.wiki': 'Wiki',
       'tab.settings': '设置',
       'chip.label': '记忆',
       'chip.attention': '{n} 项待处理',
@@ -423,7 +384,7 @@ window.__ModuleLoader__.load({
       'banner.apiMissing': '页面在记忆插件加载前打开，目前只能查看。刷新页面后即可编辑。',
       'banner.noBackend': '此页面连不上记忆服务。请刷新页面；如仍失败，检查插件是否已安装。',
       'banner.tokenExpired': '与记忆服务的连接已失效，刷新页面即可重新连接。',
-      'banner.backendStale': '记忆插件的后台还在运行旧代码，和这个页面对不上：Wiki 页面、可信度标记、待处理详情等新功能会出错。请完全退出 DeepSeek Harness 再重新打开。',
+      'banner.backendStale': '记忆插件的后台还在运行旧代码，和这个页面对不上：可信度标记、待处理详情等新功能会出错。请完全退出 DeepSeek Harness 再重新打开。',
       'error.load': '无法加载记忆',
 
       'type.all': '全部',
@@ -629,40 +590,6 @@ window.__ModuleLoader__.load({
       'readiness.lock': '正在 Dream 中。',
       'readiness.backoff': '上次失败了，稍后会重试。',
       'readiness.throttle': '刚检查过，稍后会再检查。',
-
-      'wiki.title': '知识 Wiki',
-      'wiki.intro': '从一个文档文件夹生成主题页。每条事实都带着出处引用，智能体可以搜索、阅读并引用这些页面。',
-      'wiki.pages': '{n} 页',
-      'wiki.lastBuild': '上次构建 {time}',
-      'wiki.neverBuilt': '还没构建过',
-      'wiki.docs': '{processed}/{expected} 份文档',
-      'wiki.auditOk': '所有链接都有效，每一页都在索引里。',
-      'wiki.dangling': '{n} 个断链',
-      'wiki.indexMissing': '{n} 页不在索引里',
-      'wiki.oversized': '{n} 页过大',
-      'wiki.search': '筛选页面',
-      'wiki.empty': '还没有页面。可以在下方用一个文本文档文件夹构建。',
-      'wiki.noMatch': '没有匹配「{q}」的页面。',
-      'wiki.missing': '这一页已不存在。',
-      'wiki.linksTo': '链接到',
-      'wiki.citations': '{n} 处引用',
-      'wiki.otherDomain': '其他',
-      'wiki.buildTitle': '构建或刷新',
-      'wiki.dir': '文档文件夹',
-      'wiki.dirPlaceholder': '例如：docs',
-      'wiki.dirHint': '可填项目内的相对路径或绝对路径。只支持文本文件，Office 文档请先转换。',
-      'wiki.dirRequired': '请填写文档文件夹。',
-      'wiki.focus': '关注点（可选）',
-      'wiki.dryRun': '试运行：只报告会有哪些变化，不发布',
-      'wiki.start': '构建 Wiki',
-      'wiki.startConfirm': '会调用模型，确认构建？',
-      'wiki.building': '正在构建：读取文档并写入页面，可能需要几分钟…',
-      'wiki.result': '上次结果',
-      'wiki.resultDry': '试运行，未发布',
-      'wiki.resultDocs': '读了 {processed}/{expected} 份文档，{failed} 份失败',
-      'wiki.resultPages': '新建 {created} 页，更新 {updated} 页，共 {total} 页',
-      'wiki.resultLinks': '新增 {added} 个链接，{dangling} 个断链',
-      'wiki.resultConflicts': '保留了 {n} 处冲突待核对',
 
       'settings.switches': '开关',
       'settings.switchesHint': '对所有项目生效。',
@@ -1060,7 +987,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 .ccm-path code{flex:1;min-width:0;padding:7px 10px;border-radius:8px;background:var(--ccm-hover);font-family:${MONO};font-size:12px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
-.ccm-stats{display:flex;align-items:center;gap:6px 8px;flex-wrap:wrap;padding:0 16px 14px}
 .ccm-domain{padding:10px 16px 4px;font-size:11px;font-weight:700;color:var(--ccm-fg3);letter-spacing:.02em;text-transform:uppercase;
   border-top:1px solid var(--ccm-line)}
 .ccm-domain:first-child{border-top:0}
@@ -1552,7 +1478,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           writeMode: config.writeMode === 'confirm' ? 'confirm' : 'auto',
           pendingProposalTtlHours: asNumber(config.pendingProposalTtlHours, 72),
           dreamPipeline: config.dreamPipeline === 'v2' ? 'v2' : 'classic',
-          wikiEnabled: config.wikiEnabled !== false,
           injectHotOnly: config.injectHotOnly === true,
           injectHotEntries: asNumber(config.injectHotEntries, 3),
           autoRecall: config.autoRecall !== false,
@@ -1574,7 +1499,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
                   record.capabilities.dreamPipeline === 'v2' ? 'v2' : 'classic',
                 dreamRuns: record.capabilities.dreamRuns === true,
                 claimMerge: record.capabilities.claimMerge === true,
-                wiki: record.capabilities.wiki === true,
                 explicitSaveLedger: record.capabilities.explicitSaveLedger === true,
               }
             : null,
@@ -1855,84 +1779,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
             ops: asNumber(item.ops, 0),
           }))
           .slice(0, 20),
-      };
-    }
-
-    /** Wiki status `{pages, dir, audit, manifest, enabled}` with safe defaults. */
-    function normalizeWikiStatus(raw) {
-      const record = raw && typeof raw === 'object' ? raw : {};
-      const source = record.result && typeof record.result === 'object' ? record.result : record;
-      const audit = source.audit && typeof source.audit === 'object' ? source.audit : {};
-      const count = (value) => (Array.isArray(value) ? value.length : 0);
-      return {
-        enabled: source.enabled !== false,
-        dir: typeof source.dir === 'string' ? source.dir : '',
-        pages: asNumber(source.pages, 0),
-        audit: {
-          ok: audit.ok !== false,
-          dangling: count(audit.dangling),
-          indexMissing: count(audit.indexMissing) + count(audit.indexDangling),
-          oversized: count(audit.oversized),
-        },
-        manifest: normalizeWikiManifest(source.manifest),
-      };
-    }
-
-    /** One wiki build manifest (status or build result) → display numbers. */
-    function normalizeWikiManifest(raw) {
-      if (!raw || typeof raw !== 'object') return null;
-      const documents = raw.documents && typeof raw.documents === 'object' ? raw.documents : {};
-      const pages = raw.pages && typeof raw.pages === 'object' ? raw.pages : {};
-      const links = raw.links && typeof raw.links === 'object' ? raw.links : {};
-      return {
-        runId: typeof raw.runId === 'string' ? raw.runId : '',
-        at: asNumber(raw.finishedAt, 0) || asNumber(raw.startedAt, 0) || timeOf(raw.finishedAt) || timeOf(raw.startedAt),
-        dryRun: raw.dryRun === true,
-        documents: {
-          expected: asNumber(documents.expected, 0),
-          processed: asNumber(documents.processed, 0),
-          failed: Array.isArray(documents.failed) ? documents.failed.length : asNumber(documents.failed, 0),
-        },
-        pages: { created: asNumber(pages.created, 0), updated: asNumber(pages.updated, 0), total: asNumber(pages.total, 0) },
-        links: { added: asNumber(links.added, 0), dangling: asNumber(links.dangling, 0) },
-        conflicts: Array.isArray(raw.conflicts) ? raw.conflicts.length : asNumber(raw.conflicts, 0),
-        errors: Array.isArray(raw.errors) ? raw.errors.filter((item) => typeof item === 'string').slice(0, 5) : [],
-      };
-    }
-
-    /** Wiki page list → `[{file,slug,name,description,domain,modified,links,citations}]`. */
-    function normalizeWikiPages(raw) {
-      const record = raw && typeof raw === 'object' ? raw : {};
-      const source = record.result && typeof record.result === 'object' ? record.result : record;
-      const list = Array.isArray(source.pages) ? source.pages : [];
-      return list
-        .filter((page) => page && typeof page === 'object' && typeof page.file === 'string')
-        .map((page) => ({
-          file: page.file,
-          slug: typeof page.slug === 'string' ? page.slug : page.file.replace(/[.]md$/, ''),
-          name: typeof page.name === 'string' && page.name !== '' ? page.name : page.file,
-          description: typeof page.description === 'string' ? page.description : '',
-          domain: typeof page.domain === 'string' ? page.domain : '',
-          modified: typeof page.modified === 'string' ? page.modified : '',
-          links: Array.isArray(page.links) ? page.links.filter((link) => typeof link === 'string') : [],
-          citations: Array.isArray(page.citations) ? page.citations.length : asNumber(page.citations, 0),
-        }));
-    }
-
-    /** One wiki page read → `{file,name,description,domain,body,links,citations}`. */
-    function normalizeWikiPage(raw) {
-      const record = raw && typeof raw === 'object' ? raw : {};
-      const source = record.result && typeof record.result === 'object' ? record.result : record;
-      const page = source.page && typeof source.page === 'object' ? source.page : source;
-      return {
-        file: typeof page.file === 'string' ? page.file : '',
-        name: typeof page.name === 'string' ? page.name : '',
-        description: typeof page.description === 'string' ? page.description : '',
-        domain: typeof page.domain === 'string' ? page.domain : '',
-        modified: typeof page.modified === 'string' ? page.modified : '',
-        body: typeof page.body === 'string' ? page.body : '',
-        links: Array.isArray(page.links) ? page.links.filter((link) => typeof link === 'string') : [],
-        citations: Array.isArray(page.citations) ? page.citations.length : 0,
       };
     }
 
@@ -2377,7 +2223,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         return normalizeSearch(data);
       }
 
-      // -- v21: inbox details, change history, knowledge wiki ----------------
+      // -- v21: inbox details and change history ------------------------------
 
       /** GET /pending-writes?content=1 → queued writes with their proposed text. */
       async function pendingDetails() {
@@ -2393,34 +2239,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         return normalizeFileHistory(data);
       }
 
-      async function wiki(action, extra = {}) {
-        requireApi('the knowledge wiki');
-        return apiRequest(api, 'POST', '/wiki', { body: { sessionId: sid, action, ...extra } });
-      }
-
-      async function wikiStatus() {
-        return normalizeWikiStatus(await wiki('status'));
-      }
-
-      async function wikiPages() {
-        return normalizeWikiPages(await wiki('pages'));
-      }
-
-      async function wikiPage(target) {
-        return normalizeWikiPage(await wiki('read', { file: target }));
-      }
-
-      /** POST /wiki {action:'build'} → the build manifest (dry-run or published). */
-      async function wikiBuild(options = {}) {
-        const data = await wiki('build', {
-          docsDir: String(options.docsDir || ''),
-          dryRun: options.dryRun === true,
-          focus: typeof options.focus === 'string' ? options.focus : '',
-        });
-        const result = data.result && typeof data.result === 'object' ? data.result : {};
-        return { manifest: normalizeWikiManifest(result.manifest), dryRun: result.dryRun === true };
-      }
-
       return {
         mode,
         reason,
@@ -2428,10 +2246,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         status,
         pendingDetails,
         fileHistory,
-        wikiStatus,
-        wikiPages,
-        wikiPage,
-        wikiBuild,
         file,
         saveRules,
         resetRules,
@@ -2695,7 +2509,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
     const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'];
     const TRUST_FILTERS = ['hot', 'verified', 'unverified', 'stale'];
     const STATUS_NAMES = ['stale', 'superseded', 'disputed', 'review-needed', 'retired'];
-    const TABS = ['memories', 'inbox', 'tidy', 'wiki', 'settings'];
+    const TABS = ['memories', 'inbox', 'tidy', 'settings'];
     const TYPE_COLORS = {
       user: 'var(--dsw-static-blue-500,#3b82f6)',
       feedback: 'var(--dsw-static-amber-500,#f59e0b)',
@@ -3241,7 +3055,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
     }
 
     /**
-     * A note (or wiki page) body split into conditions, conflicts, Markdown and
+     * A note body split into conditions, conflicts, Markdown and
      * earlier values. `options` carries the wiki link handlers.
      */
     function NoteBody(props) {
@@ -4703,352 +4517,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
     }
 
     // -----------------------------------------------------------------------
-    // Wiki tab: status and audit, page reader, build form.
-    // -----------------------------------------------------------------------
-    function WikiTab(props) {
-      const { backend, t, busy, run, readOnly } = props;
-      const [info, setInfo] = React.useState({ phase: 'loading', data: null, error: '' });
-      const [pages, setPages] = React.useState({ phase: 'loading', items: [], error: '' });
-      const [filter, setFilter] = React.useState('');
-      const [selected, setSelected] = React.useState('');
-      const [page, setPage] = React.useState({ phase: 'idle', data: null, error: '' });
-      const [form, setForm] = React.useState({ dir: '', focus: '', dryRun: true, error: '' });
-      const [result, setResult] = React.useState(null);
-      const [reloadKey, setReloadKey] = React.useState(0);
-      const idle = busy === '';
-      const building = busy === 'wiki';
-
-      React.useEffect(() => {
-        if (readOnly || typeof backend.wikiStatus !== 'function') return undefined;
-        let cancelled = false;
-        backend.wikiStatus().then(
-          (data) => {
-            if (!cancelled) setInfo({ phase: 'ready', data, error: '' });
-          },
-          (error) => {
-            if (!cancelled) setInfo({ phase: 'error', data: null, error: errorText(error, t) });
-          },
-        );
-        backend.wikiPages().then(
-          (items) => {
-            if (!cancelled) setPages({ phase: 'ready', items, error: '' });
-          },
-          (error) => {
-            if (!cancelled) setPages({ phase: 'error', items: [], error: errorText(error, t) });
-          },
-        );
-        return () => {
-          cancelled = true;
-        };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [backend, readOnly, reloadKey]);
-
-      React.useEffect(() => {
-        if (selected === '' || readOnly) {
-          setPage({ phase: 'idle', data: null, error: '' });
-          return undefined;
-        }
-        let cancelled = false;
-        setPage((current) => ({ phase: 'loading', data: current.data, error: '' }));
-        backend.wikiPage(selected).then(
-          (data) => {
-            if (!cancelled) setPage({ phase: 'ready', data, error: '' });
-          },
-          (error) => {
-            if (!cancelled) setPage({ phase: 'error', data: null, error: errorText(error, t) });
-          },
-        );
-        return () => {
-          cancelled = true;
-        };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [selected, backend, readOnly, reloadKey]);
-
-      if (readOnly) {
-        return h(EmptyState, { icon: 'layers', title: t('wiki.title'), text: t('wiki.intro') });
-      }
-
-      const bySlug = new Map(pages.items.map((item) => [item.slug.toLowerCase(), item]));
-      const openSlug = (slug) => {
-        const target = bySlug.get(String(slug || '').toLowerCase());
-        if (target) setSelected(target.file);
-      };
-      const linkOptions = { onWikiLink: openSlug, hasPage: (slug) => bySlug.has(String(slug || '').toLowerCase()) };
-
-      const build = async () => {
-        const dir = form.dir.trim();
-        if (dir === '') {
-          setForm((current) => ({ ...current, error: t('wiki.dirRequired') }));
-          return;
-        }
-        const done = await run('wiki', () => backend.wikiBuild({ docsDir: dir, dryRun: form.dryRun, focus: form.focus.trim() }), {
-          refresh: false,
-        });
-        if (done) {
-          setResult(done.value);
-          setReloadKey((key) => key + 1);
-        }
-      };
-
-      // ---- overview ----------------------------------------------------------
-      const data = info.data;
-      const manifest = data ? data.manifest : null;
-      const auditPills = [];
-      if (data) {
-        if (data.audit.dangling > 0) auditPills.push(h('span', { key: 'd', className: 'ccm-pill ccm-pill-danger' }, t('wiki.dangling', { n: data.audit.dangling })));
-        if (data.audit.indexMissing > 0) auditPills.push(h('span', { key: 'i', className: 'ccm-pill ccm-pill-warn' }, t('wiki.indexMissing', { n: data.audit.indexMissing })));
-        if (data.audit.oversized > 0) auditPills.push(h('span', { key: 'o', className: 'ccm-pill ccm-pill-warn' }, t('wiki.oversized', { n: data.audit.oversized })));
-        if (auditPills.length === 0 && data.pages > 0) {
-          auditPills.push(h('span', { key: 'ok', className: 'ccm-pill ccm-pill-ok' }, icon('check', 11), t('wiki.auditOk')));
-        }
-      }
-      const overview = h(
-        'section',
-        { className: 'ccm-card' },
-        h(
-          'div',
-          { className: 'ccm-card-head' },
-          icon('layers', 16),
-          h('span', { className: 'ccm-card-title' }, t('wiki.title')),
-          data ? h('span', { className: 'ccm-pill' }, t('wiki.pages', { n: data.pages })) : null,
-          h('span', { className: 'ccm-spacer' }),
-          h('span', { className: 'ccm-card-sub' }, manifest && manifest.at ? t('wiki.lastBuild', { time: ago(manifest.at, t) }) : t('wiki.neverBuilt')),
-        ),
-        h('p', { className: 'ccm-card-text' }, t('wiki.intro')),
-        info.phase === 'error' ? h('p', { className: 'ccm-card-text ccm-note-error' }, info.error) : null,
-        data && (manifest || auditPills.length > 0)
-          ? h(
-              'div',
-              { className: 'ccm-stats' },
-              manifest ? h('span', { className: 'ccm-pill' }, t('wiki.docs', manifest.documents)) : null,
-              auditPills,
-            )
-          : null,
-      );
-
-      // ---- pages + reader --------------------------------------------------------
-      const needle = filter.trim().toLowerCase();
-      const shown = pages.items.filter(
-        (item) => needle === '' || (item.name + '\n' + item.description + '\n' + item.domain).toLowerCase().includes(needle),
-      );
-      const groups = new Map();
-      for (const item of shown) {
-        const key = item.domain || '';
-        if (!groups.has(key)) groups.set(key, []);
-        groups.get(key).push(item);
-      }
-      const groupKeys = [...groups.keys()].sort((left, right) => (left === '' ? 1 : right === '' ? -1 : left.localeCompare(right)));
-      let listBody;
-      if (pages.phase === 'loading') listBody = h('div', { className: 'ccm-none' }, t('detail.loading'));
-      else if (pages.phase === 'error') listBody = h('div', { className: 'ccm-none ccm-note-error' }, pages.error);
-      else if (pages.items.length === 0) listBody = h('div', { className: 'ccm-none' }, t('wiki.empty'));
-      else if (shown.length === 0) listBody = h('div', { className: 'ccm-none' }, t('wiki.noMatch', { q: filter.trim() }));
-      else {
-        listBody = groupKeys.map((key) =>
-          h(
-            React.Fragment,
-            { key: key || '~' },
-            groupKeys.length > 1 || key !== '' ? h('div', { className: 'ccm-domain' }, key || t('wiki.otherDomain')) : null,
-            groups.get(key).map((item) =>
-              h(
-                'button',
-                {
-                  key: item.file,
-                  type: 'button',
-                  className: 'ccm-row',
-                  'aria-current': item.file === selected ? 'true' : undefined,
-                  onClick: () => setSelected(item.file === selected ? '' : item.file),
-                  onKeyDown: rowKeyDown,
-                },
-                h(
-                  'span',
-                  { className: 'ccm-row-main' },
-                  h('span', { className: 'ccm-row-name' }, item.name),
-                  item.description ? h('span', { className: 'ccm-row-desc' }, item.description) : null,
-                ),
-                h(
-                  'span',
-                  { className: 'ccm-row-side' },
-                  item.citations > 0 ? h('span', { className: 'ccm-row-time' }, t('wiki.citations', { n: item.citations })) : null,
-                ),
-              ),
-            ),
-          ),
-        );
-      }
-      const listPane = h(
-        'div',
-        { className: 'ccm-listpane' },
-        pages.items.length > 0
-          ? h(
-              'label',
-              { className: 'ccm-search' },
-              h('span', { className: 'ccm-search-icon' }, icon('search', 15)),
-              h('input', {
-                className: 'ccm-input',
-                type: 'text',
-                value: filter,
-                placeholder: t('wiki.search'),
-                'aria-label': t('wiki.search'),
-                onChange: (event) => setFilter(event.target.value),
-              }),
-            )
-          : null,
-        h('div', { className: 'ccm-card ccm-rows' }, listBody),
-      );
-
-      let reader = null;
-      if (selected !== '') {
-        const doc = page.data;
-        let content;
-        if (page.phase === 'error') content = h('div', { className: 'ccm-inline-error' }, page.error || t('wiki.missing'));
-        else if (!doc) content = h('div', { className: 'ccm-md ccm-muted' }, t('detail.loading'));
-        else {
-          content = h(
-            React.Fragment,
-            null,
-            h(
-              'div',
-              { className: 'ccm-detail-tags' },
-              doc.domain ? h('span', { className: 'ccm-pill' }, doc.domain) : null,
-              doc.citations > 0 ? h('span', { className: 'ccm-pill ccm-pill-accent' }, t('wiki.citations', { n: doc.citations })) : null,
-            ),
-            h('h2', { className: 'ccm-detail-name' }, doc.name || doc.file),
-            doc.description ? h('p', { className: 'ccm-detail-desc' }, doc.description) : null,
-            h(NoteBody, { body: doc.body, t, options: linkOptions }),
-            doc.links.length > 0
-              ? h(
-                  'div',
-                  { className: 'ccm-sub' },
-                  h('h3', { className: 'ccm-sub-title' }, t('wiki.linksTo')),
-                  h(
-                    'div',
-                    { className: 'ccm-filters' },
-                    doc.links.map((link) => h('span', { key: link }, renderInline('[[' + link + ']]', linkOptions))),
-                  ),
-                )
-              : null,
-            h('div', { className: 'ccm-meta' }, doc.modified ? h('span', null, t('detail.updated', { time: formatTime(timeOf(doc.modified)) })) : null,
-              h('span', { className: 'ccm-mono' }, doc.file)),
-          );
-        }
-        reader = h(
-          'section',
-          { className: 'ccm-card ccm-detail' },
-          h(
-            'div',
-            { className: 'ccm-detail-bar' },
-            h(
-              'button',
-              { type: 'button', className: 'ccm-btn ccm-btn-ghost ccm-btn-sm ccm-only-narrow', onClick: () => setSelected('') },
-              icon('back', 14),
-              t('btn.back'),
-            ),
-            h('span', { className: 'ccm-spacer' }),
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'ccm-btn ccm-btn-ghost ccm-btn-sm ccm-icon-btn ccm-only-wide',
-                'aria-label': t('btn.close'),
-                title: t('btn.close'),
-                onClick: () => setSelected(''),
-              },
-              icon('close', 15),
-            ),
-          ),
-          h('div', { className: 'ccm-detail-body' }, content),
-        );
-      }
-
-      // ---- build -------------------------------------------------------------------
-      const shownResult = result && result.manifest ? result : null;
-      const buildCard = h(
-        'section',
-        { className: 'ccm-card' },
-        h('div', { className: 'ccm-card-head' }, h('span', { className: 'ccm-card-title' }, t('wiki.buildTitle'))),
-        h(
-          'div',
-          { className: 'ccm-card-body', style: { display: 'flex', flexDirection: 'column', gap: 14 } },
-          h(
-            Field,
-            { label: t('wiki.dir'), help: t('wiki.dirHint') },
-            h('input', {
-              className: 'ccm-input ccm-mono',
-              value: form.dir,
-              disabled: !idle,
-              placeholder: t('wiki.dirPlaceholder'),
-              onChange: (event) => setForm({ ...form, dir: event.target.value, error: '' }),
-            }),
-          ),
-          h(
-            Field,
-            { label: t('wiki.focus') },
-            h('input', {
-              className: 'ccm-input',
-              value: form.focus,
-              disabled: !idle,
-              onChange: (event) => setForm({ ...form, focus: event.target.value }),
-            }),
-          ),
-          h(
-            'label',
-            { className: 'ccm-checkline' },
-            h('input', {
-              type: 'checkbox',
-              checked: form.dryRun,
-              disabled: !idle,
-              onChange: (event) => setForm({ ...form, dryRun: event.target.checked }),
-            }),
-            t('wiki.dryRun'),
-          ),
-          form.error ? h('div', { className: 'ccm-inline-error', style: { marginTop: 0 } }, form.error) : null,
-          building ? h('div', null, h('p', { className: 'ccm-help', style: { margin: '0 0 8px' } }, t('wiki.building')), h('div', { className: 'ccm-progress' })) : null,
-          shownResult
-            ? h(
-                'div',
-                { className: 'ccm-trustline' },
-                icon('info', 14),
-                h(
-                  'div',
-                  { className: 'ccm-trustline-text' },
-                  h('strong', null, t('wiki.result') + (shownResult.dryRun || shownResult.manifest.dryRun ? ' · ' + t('wiki.resultDry') : '')),
-                  h('span', null, t('wiki.resultDocs', shownResult.manifest.documents)),
-                  h('span', null, t('wiki.resultPages', shownResult.manifest.pages)),
-                  h('span', null, t('wiki.resultLinks', shownResult.manifest.links)),
-                  shownResult.manifest.conflicts > 0 ? h('span', null, t('wiki.resultConflicts', { n: shownResult.manifest.conflicts })) : null,
-                  shownResult.manifest.errors.map((error) => h('span', { key: error, className: 'ccm-note-error' }, error)),
-                ),
-              )
-            : null,
-        ),
-        h(
-          'div',
-          { className: 'ccm-foot' },
-          h(ConfirmButton, {
-            className: 'ccm-btn-primary',
-            icon: 'layers',
-            label: t('wiki.start'),
-            confirmLabel: t('wiki.startConfirm'),
-            disabled: !idle,
-            onConfirm: build,
-            t,
-          }),
-        ),
-      );
-
-      return h(
-        React.Fragment,
-        null,
-        overview,
-        pages.items.length > 0 || pages.phase !== 'ready'
-          ? h('div', { className: 'ccm-split' + (reader ? ' has-detail' : '') }, listPane, reader)
-          : null,
-        buildCard,
-      );
-    }
-
-    // -----------------------------------------------------------------------
     // Settings tab
     // -----------------------------------------------------------------------
     function SettingsTab(props) {
@@ -5502,8 +4970,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       const errorMessage = load.error ? formatError(load.error) : '';
       const tokenExpired =
         load.error !== null && (load.error.status === 401 || /401|unauthori[sz]ed/i.test(errorMessage));
-      const wikiOn = !status || status.config.wikiEnabled;
-      const activeTab = !wikiOn && tab === 'wiki' ? 'memories' : tab;
+      const activeTab = tab;
 
       // ---- header ------------------------------------------------------------
       const attention = attentionCount(status);
@@ -5512,7 +4979,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         ['memories', t('tab.memories'), status ? h('span', { className: 'ccm-tab-n' }, String(status.entries.length)) : null],
         ['inbox', t('tab.inbox'), attention > 0 ? h('span', { className: 'ccm-badge' }, String(attention)) : null],
         ['tidy', t('tab.tidy'), status && planWaiting(status) ? h('span', { className: 'ccm-badge-dot' }) : null],
-        wikiOn ? ['wiki', t('tab.wiki'), null] : null,
         ['settings', t('tab.settings'), null],
       ].filter(Boolean);
       const header = h(
@@ -5644,7 +5110,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         const tabProps = { status, backend, t, busy, run, notify, readOnly, refresh };
         if (activeTab === 'tidy') body = h(DreamTab, tabProps);
         else if (activeTab === 'inbox') body = h(InboxTab, { ...tabProps, goTo: selectTab, openNote });
-        else if (activeTab === 'wiki') body = h(WikiTab, tabProps);
         else if (activeTab === 'settings') body = h(SettingsTab, tabProps);
         else body = h(MemoriesTab, { ...tabProps, focusFile, onFocused: () => setFocusFile('') });
       }
@@ -5922,9 +5387,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           normalizeTrend,
           normalizePreviewPlan,
           normalizeFileHistory,
-          normalizeWikiStatus,
-          normalizeWikiPages,
-          normalizeWikiPage,
           filterEntries,
           countByType,
           countByTrust,

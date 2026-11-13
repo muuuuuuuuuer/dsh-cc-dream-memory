@@ -134,6 +134,55 @@ export function seedUserMessages(env, ...texts) {
   return env;
 }
 
+/**
+ * Script one Dream for a runtime env: the transcripts the host returns and what
+ * the analyzer answers. `sessions` maps a session id to the user's messages.
+ * `claims`/`verify` are the analyzer reply for every unit, or pass
+ * `analyzer(prompt)` to answer per unit. Only analyzer calls are expected: Dream
+ * has no other model stage. Returns the list of analyzer prompts sent.
+ */
+export async function scriptDream(env, {
+  sessions = { s1: ['Deploy with make release.'] },
+  claims = [],
+  verify = [],
+  summary = 'scripted dream',
+  usage = null,
+  analyzer = null,
+} = {}) {
+  const { ANALYZER_SYSTEM_PROMPT } = await import('../src/dream-analyzer.js');
+  const prompts = [];
+  const eventsById = new Map(Object.entries(sessions).map(([id, texts]) => [id, texts.map((message, index) => ({
+    type: 'user/message',
+    seq: index + 1,
+    time: Date.parse('2026-11-12T09:00:00Z') + index,
+    data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: message }] },
+  }))]));
+  env.host.services.sessionQuery = {
+    filterSessions: async () => [],
+    readSession: async (id) => ({ session: { id, createdAt: '2026-11-12T09:00:00Z' }, events: eventsById.get(id) ?? [] }),
+  };
+  env.host.services.llm = {
+    stream(options) {
+      env.host.llmCalls.push(options);
+      if (options?.system !== ANALYZER_SYSTEM_PROMPT) throw new Error('Dream should only call the analyzer');
+      const prompt = (options.messages ?? []).flatMap((message) => message.content ?? []).map((part) => part.text ?? '').join('');
+      prompts.push(prompt);
+      const reply = typeof analyzer === 'function' ? analyzer(prompt) : { summary, claims, patches: [], verify };
+      const chunks = [{ type: 'text-delta', text: typeof reply === 'string' ? reply : JSON.stringify(reply) }];
+      if (usage) chunks.push({ type: 'usage', usage });
+      chunks.push({ type: 'finish', reason: { kind: 'stop' } });
+      return streamOf(chunks);
+    },
+  };
+  for (const id of Object.keys(sessions)) await env.pctx.state.ensureSession(id);
+  return prompts;
+}
+
+/** One analyzer claim quoting a user message verbatim. */
+export function claimOf(textValue, { target = '', quote = textValue, kind = 'project', confidence = 'high' } = {}) {
+  return { text: textValue, quote, kind, confidence, ...(target ? { target } : {}) };
+}
+
 export async function exists(file) {
   try {
     const { access } = await import('node:fs/promises');

@@ -293,3 +293,39 @@ test('a summary that repeats the current line is not a change', () => {
   });
   assert.deepEqual(result.operations, []);
 });
+
+test('an untargeted Chinese claim joins the Chinese page it shares terms with', () => {
+  const deploy = page({ name: '部署流程', description: '发布前的检查步骤', body: '- 部署前先跑单元测试。 ^[s0#1, 2026-11-01]\n' });
+  const other = page({ file: 'project_style.md', name: '代码风格', description: '格式化约定', body: '- 缩进用两个空格。\n' });
+  const result = mergeClaims({
+    analyses: [{ sessionId: 's1', claims: [claim({ text: '部署前必须先跑 pnpm test', quote: '部署前必须先跑 pnpm test', target: '' })], verify: [] }],
+    memoryPages: [deploy, other],
+  });
+  const writes = result.operations.filter((op) => op.op === 'write').map((op) => op.file);
+  assert.deepEqual(writes, ['project_deploy.md']);
+  const body = result.operations.find((op) => op.file === 'project_deploy.md').body;
+  assert.doesNotMatch(body, /project_style/, 'an unrelated Chinese page must not be linked');
+});
+
+test('an unrelated Chinese claim still gets its own page', () => {
+  const result = mergeClaims({
+    analyses: [{ sessionId: 's1', claims: [claim({ text: '数据库备份每天凌晨执行', quote: '数据库备份每天凌晨执行', target: '' })], verify: [] }],
+    memoryPages: [page({ name: '部署流程', description: '发布前的检查步骤', body: '- 部署前先跑单元测试。\n' })],
+  });
+  const writes = result.operations.filter((op) => op.op === 'write').map((op) => op.file);
+  assert.equal(writes.length, 1);
+  assert.notEqual(writes[0], 'project_deploy.md');
+});
+
+test('two Chinese pages about the same topic get a Related line', () => {
+  const result = mergeClaims({
+    analyses: [{ sessionId: 's1', claims: [claim({ text: '镜像构建在发布流水线里完成', quote: '镜像构建在发布流水线里完成' })], verify: [] }],
+    memoryPages: [
+      page({ name: '部署流程', description: '发布流水线', body: '- 发布流水线每晚构建镜像。\n' }),
+      page({ file: 'project_images.md', name: '镜像构建', description: '镜像仓库', body: '- 镜像构建后推送到仓库。\n' }),
+    ],
+  });
+  const deploy = result.operations.find((op) => op.op === 'write' && op.file === 'project_deploy.md');
+  assert.ok(deploy);
+  assert.match(deploy.body, /^Related: \[\[project_images\]\]$/m);
+});

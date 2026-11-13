@@ -1,5 +1,10 @@
 # Changelog — dsh-cc-dream-memory
 
+## Unreleased
+
+- **Removed the knowledge wiki.** The `wiki_search`, `wiki_read`, `wiki_links` and `wiki_answer` tools, `/memory wiki build|status`, `POST /api/cc-memory/wiki`, the Wiki tab and every `wiki*` setting are gone. This plugin now does memory and Dream only. Pages already built stay on disk under `projects/<id>/wiki/`; nothing reads them any more, and you can delete the folder.
+- Removed duplicate Dream action names: `apply-operations`, `background`, `run-status`, `run-cancel` and `run-resume`. Use `apply-ops`, `start`, `status`, `cancel` and `resume`; `/memory dream status <runId>` replaces `/memory dream run-status`.
+
 ## 0.12.0 (2026-11-09)
 
 First public release, under a new name.

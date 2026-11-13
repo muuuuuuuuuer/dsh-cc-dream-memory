@@ -7,6 +7,5 @@
       config:
         autoDreamEnabled: false
         dreamPipeline: v2
-        wikiEnabled: true
         injectHotOnly: false
         injectHotEntries: 3

@@ -1,12 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { runtimeEnv, commandEnv, httpEnv, callHttp } from './v10-helpers.mjs';
+import { runtimeEnv, commandEnv, httpEnv, callHttp, seedUserMessages } from './v10-helpers.mjs';
 
 test('preflight estimates Dream input without calling a model or advancing session state', async t => {
   const e = await runtimeEnv(t, { dreamMaxTotalTokens: 25000, dreamCostMode: 'block' });
   await e.pctx.store.saveEntry({ type: 'project', name: 'Goal', description: 'Goal', content: 'Prepare a careful release.' });
   await e.pctx.state.ensureSession('pending-session', 1);
+  // The estimate reads the same transcripts a run would; without a session
+  // query there is nothing to count.
+  seedUserMessages(e, 'Prepare a careful release.');
   const stateBefore = await readFile(e.pctx.paths.stateFile, 'utf8');
   const indexBefore = await e.pctx.store.indexText();
   const service = e.mods.status.createStatusService(e.runtime);

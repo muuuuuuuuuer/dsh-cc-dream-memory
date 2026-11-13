@@ -36,15 +36,6 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 | `/memory dream on` | Turn on automatic Dreams. They are off by default |
 | `/memory dream off` | Turn automatic Dreams off |
 
-## Knowledge wiki
-
-| Command | What it does |
-|---|---|
-| `/memory wiki build <docs-dir>` | Build or update the read-only knowledge wiki from `.txt`/`.md` documents |
-| `/memory wiki build <docs-dir> --dry-run` | Extract and count claims without writing pages |
-| `/memory wiki build <docs-dir> --focus "<topic>"` | Prefer a topic during extraction and analysis |
-| `/memory wiki status` | Show page count, dangling links and the last build |
-
 ## Moving memories
 
 | Command | What it does |

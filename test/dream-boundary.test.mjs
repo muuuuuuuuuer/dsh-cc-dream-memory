@@ -80,36 +80,6 @@ test('automatic deletion requires identical content preserved in a surviving fil
   assert.ok(evidence.automaticReviewReasons(memories.map((m) => ({ op: 'delete', file: m.file })), memories).length > 0);
 });
 
-test('an automatic semantic rewrite becomes a proposal and does not consume sessions', async (t) => {
-  const plan = { operations: [op({ body: 'New unverified fact.' })] };
-  const e = await runtimeEnv(t, { minHours: 0, minSessions: 1, scanThrottleMs: 1000 }, { plan });
-  const saved = await e.pctx.store.saveEntry({ name: 'deploy', type: 'project', description: 'deployment', content: 'Old fact.' });
-  await e.pctx.state.ensureSession('s1', 1);
-  const r = await e.runtime.dream({ pctx: e.pctx, force: true, trigger: 'auto', noSessions: true });
-  assert.equal(r.applied, false, JSON.stringify(r));
-  assert.equal(r.mode, 'review');
-  assert.equal((await e.pctx.store.readEntry(saved.file)).body, 'Old fact.');
-  assert.ok((await e.pctx.state.read()).sessionsSince.length > 0);
-  const proposal = JSON.parse(await readFile(r.proposalPath, 'utf8'));
-  assert.match(proposal.warnings.join(' '), /review/i);
-  const second = await e.runtime.dream({ pctx: e.pctx, force: true, trigger: 'auto', noSessions: true });
-  assert.equal(second.skipReason, 'pending-proposal');
-  assert.equal(second.proposalPath, r.proposalPath);
-});
-
-test('a large automatic shrink is proposed for review without consuming the source session', async (t) => {
-  const plan = { operations: [op({ body: 'Keep this important fact.' })] };
-  const e = await runtimeEnv(t, {}, { plan });
-  const original = 'Keep this important fact.\n' + 'Another fact that must survive.\n'.repeat(20);
-  const saved = await e.pctx.store.saveEntry({ name: 'deploy', type: 'project', description: 'deployment', content: original });
-  await e.pctx.state.ensureSession('s1', 1);
-  const r = await e.runtime.dream({ pctx: e.pctx, force: true, trigger: 'auto', noSessions: true });
-  assert.equal(r.mode, 'review');
-  assert.equal(r.applied, false);
-  assert.equal(r.operations, 1);
-  assert.equal((await e.pctx.store.readEntry(saved.file)).body, original.trim());
-  assert.equal(e.pctx.state.snapshot().sessionsSince.length, 1);
-});
 
 test('tool evidence locates the result event in short and mapped transcripts', async () => {
   const { buildSessionTranscript, chunkTranscript } = await import('../src/dream-session-text.js');

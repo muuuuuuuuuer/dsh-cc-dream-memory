@@ -54,7 +54,6 @@ export const CONFIG_FIELDS = Object.freeze([
   'dreamAnalyzerModel',
   'dreamOrganizerModel',
   'dreamAnalyzerConcurrency',
-  'wikiEnabled',
   'indexMaxLines',
   'indexMaxBytes',
   'injectHotOnly',
@@ -1124,11 +1123,13 @@ export function createStatusService(runtime) {
       }
     }
     // A plan with nothing in it is not a pending action either. The desktop
-    // renders lastPlanPath as a reviewable plan, so hide an empty one.
+    // renders lastPlanPath as a reviewable plan, so hide an empty one. Claims
+    // left for a person to decide count as content even without a write.
     if (stateView.lastPlanPath !== '') {
       try {
         const plan = JSON.parse(await fs.readFile(stateView.lastPlanPath, 'utf8'));
-        if (Array.isArray(plan?.operations) && plan.operations.length === 0) {
+        const reviewItems = Array.isArray(plan?.review) ? plan.review.length : 0;
+        if (Array.isArray(plan?.operations) && plan.operations.length === 0 && reviewItems === 0) {
           stateView.lastPlanPath = '';
           if (!stateView.lastError) stateView.lastError = 'Dream found nothing to change; there is no plan to review.';
         }
@@ -1182,7 +1183,8 @@ export function createStatusService(runtime) {
     try {
       const { listRunManifests, summarizeRun } = await import('./dream-run.js');
       const manifests = await listRunManifests(pctx?.paths, 5);
-      dreamRuns = manifests.map((manifest) => summarizeRun(manifest, { running: false }));
+      const live = new Set(typeof rt.liveDreamRunIds === 'function' ? await rt.liveDreamRunIds() : []);
+      dreamRuns = manifests.map((entry) => summarizeRun(entry.manifest, { running: live.has(entry.manifest?.runId) }));
     } catch {
       dreamRuns = [];
     }
@@ -1196,7 +1198,6 @@ export function createStatusService(runtime) {
         dreamPipeline: config.dreamPipeline === 'v2' ? 'v2' : 'classic',
         dreamRuns: config.dreamPipeline !== 'classic',
         claimMerge: config.dreamOrganizerMode !== 'maintenance',
-        wiki: config.wikiEnabled === true,
         explicitSaveLedger: true,
       },
       project: {
@@ -1348,7 +1349,7 @@ export function createStatusService(runtime) {
       }
       return { ok: true, result: lossless(await rt.previewPlan(pctx)) };
     }
-    if (action === 'apply-ops' || action === 'apply-operations') {
+    if (action === 'apply-ops') {
       if (typeof rt.applyPlanOperations !== 'function') {
         return {
           ok: false,
@@ -1362,7 +1363,7 @@ export function createStatusService(runtime) {
       }
       return { ok: true, result: lossless(await rt.applyPlanOperations(pctx, { indexes, agent })) };
     }
-    if (action === 'start' || action === 'background') {
+    if (action === 'start') {
       if (typeof rt.startDream !== 'function') {
         return { ok: false, error: 'dream-unavailable', message: 'this runtime cannot start a background dream run' };
       }
@@ -1375,24 +1376,25 @@ export function createStatusService(runtime) {
         reason: options.reason || '',
         focus: typeof options.focus === 'string' ? options.focus : '',
         maintenance: options.maintenance === true,
+        pipeline: options.pipeline === 'v2' ? 'v2' : '',
         noSessions: options.noSessions === true,
         signal: options.signal,
       });
       return { ok: true, result: lossless(result) };
     }
-    if (action === 'status' || action === 'run-status') {
+    if (action === 'status') {
       if (typeof rt.dreamRun !== 'function') {
         return { ok: false, error: 'dream-unavailable', message: 'this runtime cannot report dream runs' };
       }
       return { ok: true, result: lossless(await rt.dreamRun(pctx, String(options.runId ?? ''))) };
     }
-    if (action === 'cancel' || action === 'run-cancel') {
+    if (action === 'cancel') {
       if (typeof rt.cancelDreamRun !== 'function') {
         return { ok: false, error: 'dream-unavailable', message: 'this runtime cannot cancel dream runs' };
       }
       return { ok: true, result: lossless(await rt.cancelDreamRun(pctx, String(options.runId ?? ''))) };
     }
-    if (action === 'resume' || action === 'run-resume') {
+    if (action === 'resume') {
       if (typeof rt.resumeDreamRun !== 'function') {
         return { ok: false, error: 'dream-unavailable', message: 'this runtime cannot resume dream runs' };
       }
@@ -1642,43 +1644,6 @@ export function createStatusService(runtime) {
     return { rejected: true, id: result.id, path: result.path };
   }
 
-  async function wikiBuild(pctx, options = {}) {
-    if (typeof rt.wikiBuild !== 'function') {
-      return { ok: false, error: 'not-ready', message: 'knowledge wiki builder is unavailable' };
-    }
-    const result = await rt.wikiBuild(pctx, options);
-    invalidateAll('wiki-build');
-    return {
-      ok: result?.ok !== false,
-      ...(result?.ok === false ? { error: result.error || 'wiki-build-failed', message: result.failure?.code || result.error || 'wiki build failed' } : {}),
-      result: lossless(result),
-    };
-  }
-
-  async function wikiStatus(pctx) {
-    if (typeof rt.wikiStatus !== 'function') {
-      return { ok: false, error: 'not-ready', message: 'knowledge wiki is unavailable' };
-    }
-    return { ok: true, result: lossless(await rt.wikiStatus(pctx)) };
-  }
-
-  async function wikiPages(pctx) {
-    if (typeof rt.wikiPages !== 'function') {
-      return { ok: false, error: 'not-ready', message: 'knowledge wiki is unavailable' };
-    }
-    const result = await rt.wikiPages(pctx);
-    return result?.ok === false ? result : { ok: true, result: lossless(result) };
-  }
-
-  async function wikiPage(pctx, file) {
-    if (typeof file !== 'string' || file.trim() === '') throw coded('invalid-file', 'a wiki page file name is required');
-    if (typeof rt.wikiPage !== 'function') {
-      return { ok: false, error: 'not-ready', message: 'knowledge wiki is unavailable' };
-    }
-    const result = await rt.wikiPage(pctx, file.trim());
-    return result?.ok === false ? result : { ok: true, result: lossless(result) };
-  }
-
   return {
     status,
     file,
@@ -1703,9 +1668,5 @@ export function createStatusService(runtime) {
     pendingWrites,
     approveWrite,
     rejectWrite,
-    wikiBuild,
-    wikiStatus,
-    wikiPages,
-    wikiPage,
   };
 }

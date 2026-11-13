@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 import { access, mkdir, readdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { loadModule, makeTempDir } from './helpers.mjs';
+import { runtimeEnv, scriptDream, claimOf } from './v10-helpers.mjs';
 
 // ---------------------------------------------------------------------------
 // Modules / fixtures
@@ -346,13 +347,12 @@ test('v7 dream: applyPendingDream returns dream-locked while the consolidate loc
 // ---------------------------------------------------------------------------
 
 test('v7 dream: dry-run plan and apply run record durationMs/inputChars/outputChars/usage', async (t) => {
-  const plan = {
-    summary: 'metrics dream',
-    operations: [
-      { op: 'write', scope: 'project', type: 'user', name: 'metrics note', description: 'metrics', body: 'metrics body' },
-    ],
-  };
-  const env = await makeEnv(t, {}, { plan });
+  const env = await runtimeEnv(t);
+  await scriptDream(env, {
+    sessions: { s1: ['Metrics are exported every minute.'] },
+    claims: [claimOf('Metrics are exported every minute.')],
+    usage: { inputTokens: 120, outputTokens: 45, totalTokens: 165 },
+  });
 
   // Dry run: the plan JSON carries the metrics.
   const dry = await env.runtime.dream({ pctx: env.pctx, force: true, dryRun: true, trigger: 'manual' });

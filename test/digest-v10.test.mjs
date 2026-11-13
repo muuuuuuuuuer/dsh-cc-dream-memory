@@ -170,3 +170,20 @@ test('v10 digest: config validates compactionDigest', async (t) => {
     'invalid compactionDigest falls back to true',
   );
 });
+
+test('v23 navigation: user-level summaries are masked like project ones', async (t) => {
+  const env = await digestEnv(t, { userMemoryEnabled: true });
+  const note = await env.pctx.store.saveEntry({
+    scope: 'user',
+    name: 'tone',
+    type: 'user',
+    description: 'inferred preference nobody confirmed',
+    content: 'Prefers short answers.',
+  });
+  env.runtime.refreshSession(env.agent.id);
+  await waitFor(() => /<user-index>/.test(agentText(env.agent)), { timeout: 6000 });
+  const text = agentText(env.agent);
+  const userIndex = text.slice(text.indexOf('<user-index>'), text.indexOf('</user-index>'));
+  assert.ok(userIndex.split('\n').includes(`- [tone](${note.file})`), userIndex);
+  assert.doesNotMatch(text, /nobody confirmed/);
+});

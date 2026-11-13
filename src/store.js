@@ -296,7 +296,7 @@ function isIndexEntryReference(reference) {
 }
 
 /** Marker line used whenever the injected index is shortened. */
-const INDEX_TRUNCATION_MARKER = '<!-- … index truncated for budget; oldest and newest lines kept … -->';
+export const INDEX_TRUNCATION_MARKER = '<!-- … index truncated for budget; oldest and newest lines kept … -->';
 
 /**
  * Select whole index lines within both budgets. When bytes are the binding

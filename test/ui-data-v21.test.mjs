@@ -1,7 +1,7 @@
 /**
  * Read-only data the redesigned Memory page needs: per-entry trust facts on
- * `/status` (hot set, host ledger, STATUS marker), pending-write details,
- * knowledge-wiki pages and the Dream v2 coverage carried by the plan preview.
+ * `/status` (hot set, host ledger, STATUS marker), pending-write details and
+ * the Dream v2 coverage carried by the plan preview.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -10,7 +10,7 @@ import path from 'node:path';
 import { callHttp, httpEnv, memoryFile, writePlan } from './v10-helpers.mjs';
 import { recordVerification } from '../src/verification-ledger.js';
 import { queuePendingWrite } from '../src/pending-writes.js';
-import { WikiStore } from '../src/wiki-store.js';
+import { shapeManifest, writeRunManifest } from '../src/dream-run.js';
 
 async function seed(env, file, meta, body) {
   await writeFile(path.join(env.pctx.paths.memoryDir, file), memoryFile(meta, body), 'utf8');
@@ -74,32 +74,6 @@ test('pending writes: list carries action and file; content only on request', as
   assert.equal('content' in plain.items[0].candidate, false);
   const full = (await callHttp(env, { path: '/pending-writes?sessionId=s1&content=1' })).json();
   assert.equal(full.items[0].candidate.content, 'Always reply in German.');
-});
-
-test('wiki: pages and read are read-only API actions', async (t) => {
-  const env = await httpEnv(t);
-  const wiki = new WikiStore({ rootDir: env.pctx.paths.wikiDir });
-  await wiki.ensure();
-  await wiki.writePage('timeouts.md', {
-    name: 'Timeouts',
-    description: 'request timeouts',
-    domain: 'ops',
-    body: 'Read timeout is 15 seconds. ^[spec.md#p2, 2026-11-10]\n\nSee [[retries]].',
-  });
-  wiki.close();
-  const pages = (await callHttp(env, { method: 'POST', path: '/wiki', body: { sessionId: 's1', action: 'pages' } })).json();
-  assert.equal(pages.ok, true);
-  assert.equal(pages.result.pages.length, 1);
-  assert.equal(pages.result.pages[0].file, 'timeouts.md');
-  assert.equal(pages.result.pages[0].domain, 'ops');
-  assert.equal(pages.result.pages[0].citations, 1);
-  assert.deepEqual(pages.result.pages[0].links, ['retries']);
-  const read = (await callHttp(env, { method: 'POST', path: '/wiki', body: { sessionId: 's1', action: 'read', file: 'timeouts.md' } })).json();
-  assert.equal(read.ok, true);
-  assert.match(read.result.page.body, /15 seconds/);
-  const missing = (await callHttp(env, { method: 'POST', path: '/wiki', body: { sessionId: 's1', action: 'read', file: 'nope.md' } })).json();
-  assert.equal(missing.ok, false);
-  assert.equal(missing.error, 'not-found');
 });
 
 test('status: carries the UI data contract version', async (t) => {
@@ -235,4 +209,41 @@ test('a plan with work stays reviewable', async (t) => {
   });
   const status = (await callHttp(env, { path: '/status?sessionId=s1' })).json();
   assert.equal(status.state.lastPlanPath, planPath);
+});
+
+test('status: dream runs carry each run status and counts', async (t) => {
+  const env = await httpEnv(t);
+  const runId = '2026-11-12T09-00-00-abcdef';
+  await writeRunManifest(
+    path.join(env.pctx.paths.dreamsDir, runId),
+    shapeManifest({ runId, status: 'failed', stage: 'analyze', counts: { done: 1, failed: 2, pending: 0 } }),
+  );
+  const res = await callHttp(env, { token: env.token, path: '/status?sessionId=s1' });
+  assert.equal(res.statusCode, 200, res.bodyText());
+  const [run] = res.json().dreamRuns;
+  assert.equal(run.runId, runId);
+  assert.equal(run.status, 'failed');
+  assert.deepEqual(run.counts, { done: 1, failed: 2, pending: 0 });
+});
+
+test('a plan with only review items stays reviewable and the preview lists them', async (t) => {
+  const env = await httpEnv(t);
+  const review = [{ file: 'project_deploy.md', claim: 'Deploy on Fridays.', reason: 'low-confidence source; nothing to verify it against yet' }];
+  const planPath = await writePlan(env, {
+    summary: 'one claim needs a person',
+    kind: 'dream-v2',
+    coverageComplete: true,
+    expectedSessions: 1,
+    processedSessions: 1,
+    failedSessions: [],
+    partialSessions: [],
+    operations: [],
+    review,
+    truncatedFiles: [],
+  });
+  const status = (await callHttp(env, { path: '/status?sessionId=s1' })).json();
+  assert.equal(status.state.lastPlanPath, planPath);
+  const preview = (await callHttp(env, { method: 'POST', path: '/dream', body: { sessionId: 's1', action: 'preview' } })).json();
+  assert.equal(preview.ok, true);
+  assert.deepEqual(preview.result.review, review);
 });

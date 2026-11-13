@@ -390,3 +390,79 @@ test('eight long sessions survive one truncated unit and one transport failure w
   );
   await resumed.pipeline.settled(e.pctx);
 });
+
+test('a run left marked running by a stopped process reads as failed and resumable', async (t) => {
+  const e = await env(t);
+  const failing = scriptedCtx({
+    events: longEvents(),
+    onAnalyzer: ({ call }) => (call === 0 ? streamOf(JSON.stringify(ANALYZER_REPLY)) : streamOf('', { finish: 'error' })),
+  });
+  const first = pipelineFor(e, failing).pipeline;
+  const started = await first.start({ pctx: e.pctx, force: true });
+  await first.settled(e.pctx);
+  const file = path.join(e.paths.dreamsDir, started.runId, 'manifest.json');
+  const manifest = JSON.parse(await fs.readFile(file, 'utf8'));
+  await fs.writeFile(file, JSON.stringify({ ...manifest, status: 'running', error: '' }));
+
+  const reloaded = pipelineFor(e, failing).pipeline;
+  const status = await reloaded.status(e.pctx, started.runId);
+  assert.equal(status.running, false);
+  assert.equal(status.status, 'failed');
+  assert.equal(status.interrupted, true);
+  assert.match(status.error, /resume/);
+  assert.equal((await reloaded.status(e.pctx)).status, 'failed', 'the newest-run view must agree');
+});
+
+test('a resume blocked by the lock keeps the stopped run record', async (t) => {
+  const e = await env(t);
+  const failing = scriptedCtx({
+    events: longEvents(),
+    onAnalyzer: ({ call }) => (call === 0 ? streamOf(JSON.stringify(ANALYZER_REPLY)) : streamOf('', { finish: 'error' })),
+  });
+  const { pipeline } = pipelineFor(e, failing);
+  const started = await pipeline.start({ pctx: e.pctx, force: true });
+  await pipeline.settled(e.pctx);
+  const before = await pipeline.status(e.pctx, started.runId);
+  assert.equal(before.status, 'failed');
+
+  await fs.writeFile(e.paths.lockFile, JSON.stringify({ pid: process.pid, startedAt: Date.now(), runId: 'another-run' }));
+  const resumed = await pipeline.resume(e.pctx, started.runId);
+  assert.equal(resumed.started, true);
+  await pipeline.settled(e.pctx);
+
+  const after = await pipeline.status(e.pctx, started.runId);
+  assert.equal(after.status, 'failed', 'a skipped resume must not erase the failed run');
+  assert.equal(after.skipReason, 'lock');
+  assert.deepEqual(after.counts, before.counts);
+  assert.equal(after.input.expectedUnits, before.input.expectedUnits);
+});
+
+test('a synchronous run with nothing new closes its own manifest', async (t) => {
+  const e = await env(t);
+  const script = scriptedCtx({ events: longEvents(), onAnalyzer: () => streamOf(JSON.stringify(ANALYZER_REPLY)) });
+  const { pipeline } = pipelineFor(e, script);
+  await pipeline.run({ pctx: e.pctx, force: true });
+  const second = await pipeline.run({ pctx: e.pctx, force: true });
+  assert.equal(second.skipReason, 'nothing-new');
+  assert.ok(second.runId, 'a sync run still reports the run it recorded');
+  const status = await pipeline.status(e.pctx, second.runId);
+  assert.equal(status.status, 'skipped');
+  assert.equal(status.interrupted, false);
+});
+
+test('a human focus reaches the analyzer prompt', async (t) => {
+  const e = await env(t);
+  const prompts = [];
+  const script = scriptedCtx({
+    events: longEvents(4000),
+    onAnalyzer: ({ options }) => {
+      prompts.push((options.messages ?? []).flatMap((message) => message.content ?? []).map((part) => part.text ?? '').join(''));
+      return streamOf(JSON.stringify(ANALYZER_REPLY));
+    },
+  });
+  const { pipeline } = pipelineFor(e, script);
+  const result = await pipeline.run({ pctx: e.pctx, force: true, dryRun: true, focus: 'only care about deployment' });
+  assert.equal(result.dryRun, true, JSON.stringify(result).slice(0, 300));
+  assert.ok(prompts.length > 0, 'the analyzer must be called');
+  for (const prompt of prompts) assert.match(prompt, /only care about deployment/u);
+});

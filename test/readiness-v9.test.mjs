@@ -9,6 +9,16 @@ import assert from 'node:assert/strict';
 import { access, mkdir, readFile, utimes, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { loadModule, makeTempDir } from './helpers.mjs';
+import { runtimeEnv as dreamEnvBase, scriptDream, claimOf } from './v10-helpers.mjs';
+
+// A Dream whose analyzer reports `usage` and places one new page.
+const COST_FACT = 'Keep cost reports short.';
+const COST_FILE = 'keep-cost-reports-short.md';
+async function dreamEnv(t, config, usage) {
+  const env = await dreamEnvBase(t, config);
+  await scriptDream(env, { sessions: { s1: [COST_FACT] }, claims: [claimOf(COST_FACT)], usage });
+  return env;
+}
 
 // ---------------------------------------------------------------------------
 // Modules / fixtures
@@ -332,7 +342,7 @@ test('v9 readiness: stale pending proposals expire into .pending/expired with a 
 // ---------------------------------------------------------------------------
 
 test('v9 cost: block mode preflight refuses before calling the LLM', async (t) => {
-  const env = await runtimeEnv(t, { dreamMaxTotalTokens: 100, dreamCostMode: 'block' }, { plan: PLAN });
+  const env = await dreamEnv(t, { dreamMaxTotalTokens: 100, dreamCostMode: 'block' }, null);
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual' });
   assert.equal(env.host.llmCalls.length, 0, 'the preflight must not call the LLM');
   const text = JSON.stringify(result);
@@ -349,23 +359,15 @@ test('v9 cost: block mode preflight refuses before calling the LLM', async (t) =
 test('v9 cost: warn applies with costExceeded; review saves a proposal; block post-hoc refuses', async (t) => {
   const overUsage = { inputTokens: 4000, outputTokens: 1000, totalTokens: 5000 };
 
-  const warnEnv = await runtimeEnv(
-    t,
-    { dreamMaxTotalTokens: 100, dreamCostMode: 'warn' },
-    { plan: PLAN, usage: overUsage },
-  );
+  const warnEnv = await dreamEnv(t, { dreamMaxTotalTokens: 100, dreamCostMode: 'warn' }, overUsage);
   const warned = await warnEnv.runtime.dream({ pctx: warnEnv.pctx, force: true, trigger: 'manual' });
   assert.equal(warned.applied, true, 'warn mode still applies');
   assert.equal(warned.costExceeded, true, JSON.stringify(warned).slice(0, 400));
   assert.match(JSON.stringify(warned.warnings ?? []), /cost-limit-exceeded/i);
-  assert.equal(await exists(path.join(warnEnv.pctx.paths.memoryDir, 'user_cost_note.md')), true);
+  assert.equal(await exists(path.join(warnEnv.pctx.paths.memoryDir, COST_FILE)), true);
   assert.equal(warnEnv.pctx.state.snapshot().lastDreamCostExceeded, true);
 
-  const reviewEnv = await runtimeEnv(
-    t,
-    { dreamMaxTotalTokens: 100, dreamCostMode: 'review' },
-    { plan: PLAN, usage: overUsage },
-  );
+  const reviewEnv = await dreamEnv(t, { dreamMaxTotalTokens: 100, dreamCostMode: 'review' }, overUsage);
   const reviewed = await reviewEnv.runtime.dream({ pctx: reviewEnv.pctx, force: true, trigger: 'manual' });
   assert.notEqual(reviewed.applied, true, 'review mode does not apply an over-cost plan');
   assert.match(JSON.stringify(reviewed), /cost-limit-exceeded|costExceeded/);
@@ -373,20 +375,16 @@ test('v9 cost: warn applies with costExceeded; review saves a proposal; block po
   assert.equal(typeof snapshot.pendingProposal, 'string');
   assert.ok(snapshot.pendingProposal !== '', 'review mode parks the over-cost plan as a proposal');
   assert.equal(await exists(snapshot.pendingProposal), true);
-  assert.equal(await exists(path.join(reviewEnv.pctx.paths.memoryDir, 'user_cost_note.md')), false);
+  assert.equal(await exists(path.join(reviewEnv.pctx.paths.memoryDir, COST_FILE)), false);
 
   // Post-hoc block: estimate stays under the limit (so the LLM is called),
   // but the reported usage is over it.
-  const blockEnv = await runtimeEnv(
-    t,
-    { dreamMaxTotalTokens: 4000, dreamCostMode: 'block' },
-    { plan: PLAN, usage: overUsage },
-  );
+  const blockEnv = await dreamEnv(t, { dreamMaxTotalTokens: 4000, dreamCostMode: 'block' }, overUsage);
   const blocked = await blockEnv.runtime.dream({ pctx: blockEnv.pctx, force: true, trigger: 'manual' });
   assert.ok(blockEnv.host.llmCalls.length > 0, 'the post-hoc check requires the LLM call');
   assert.match(JSON.stringify(blocked), /cost-limit/);
   assert.notEqual(blocked.applied, true, 'block mode does not apply');
-  assert.equal(await exists(path.join(blockEnv.pctx.paths.memoryDir, 'user_cost_note.md')), false, 'block mode writes no memory');
+  assert.equal(await exists(path.join(blockEnv.pctx.paths.memoryDir, COST_FILE)), false, 'block mode writes no memory');
   const blockState = blockEnv.pctx.state.snapshot();
   assert.equal(blockState.lastDreamCostExceeded, true);
   assert.ok(String(blockState.lastError ?? '').length > 0, 'block markDreamFailed records an error');

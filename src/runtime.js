@@ -283,10 +283,30 @@ export class MemoryRuntime {
     } catch (error) {
       warn('agents.get', error);
     }
-    if (!cwdHint) return undefined;
-    const projectContext = { ...(await this.storeFor(cwdHint)), sessionId };
+    const cwd = cwdHint || (await this._persistedCwd(sessionId));
+    if (!cwd) return undefined;
+    const projectContext = { ...(await this.storeFor(cwd)), sessionId };
     this.bySession.set(sessionId, projectContext);
     return projectContext;
+  }
+
+  /**
+   * The directory a saved (not live) session was created in. An old
+   * conversation reopened in the app has no agent yet, but its header still
+   * names its own project, so it never has to borrow whichever one is loaded.
+   */
+  async _persistedCwd(sessionId) {
+    try {
+      const sessionQuery = this.ctx.get('sessionQuery');
+      if (!sessionQuery || typeof sessionQuery.filterSessions !== 'function') return '';
+      const records = await sessionQuery.filterSessions([{ kind: 'id', values: [sessionId] }]);
+      const record = Array.isArray(records) ? records.find((item) => item?.header?.id === sessionId) : undefined;
+      const cwd = record?.header?.cwd;
+      return typeof cwd === 'string' ? cwd : '';
+    } catch (error) {
+      warn('sessionQuery.filterSessions', error);
+      return '';
+    }
   }
 
   /**
@@ -443,11 +463,15 @@ export class MemoryRuntime {
    * pipeline keeps per-unit state; the classic path has nothing to resume.
    */
   async startDream(pctx, options = {}) {
-    if (this.config.dreamPipeline === 'classic' && options.pipeline !== 'v2') {
-      return { ok: false, error: 'no-resumable-pipeline' };
-    }
     const pipeline = await this.dreamPipeline();
     return pipeline.start({ pctx, ...options });
+  }
+
+  /** Run ids a Dream worker in this process is executing; none before the pipeline exists. */
+  async liveDreamRunIds() {
+    if (!this.pipelinePromise) return [];
+    const pipeline = await this.pipelinePromise;
+    return pipeline.liveRunIds();
   }
 
   /** Read one Dream run (or the newest) from disk. */
@@ -468,89 +492,9 @@ export class MemoryRuntime {
     return pipeline.resume(pctx, runId, options);
   }
 
-  /** Run the v2 knowledge-wiki builder for one project. */
-  async wikiBuild(pctx, options = {}) {
-    const context = pctx && typeof pctx === 'object' && pctx.paths ? pctx : undefined;
-    if (!context) return { ok: false, error: 'no-project' };
-    const { WikiBuilder } = await import('./wiki-build.js');
-    const builder = new WikiBuilder({
-      ctx: this.ctx,
-      runtime: this,
-      config: this.config,
-      getConfig: () => this.config,
-    });
-    return builder.build({ pctx: context, ...options });
-  }
-
-  /** Read-only knowledge-wiki status for commands/API. */
-  async wikiStatus(pctx) {
-    const context = pctx && typeof pctx === 'object' && pctx.paths ? pctx : undefined;
-    if (!context?.paths?.wikiDir) return { ok: false, error: 'no-project' };
-    const { WikiStore } = await import('./wiki-store.js');
-    const store = new WikiStore({
-      rootDir: context.paths.wikiDir,
-      maxPageBytes: this.config.wikiMaxPageBytes,
-      config: this.config,
-    });
-    const pages = await store.listPages();
-    const audit = await store.audit({ maxBytes: this.config.wikiMaxPageBytes });
-    const manifest = await store.latestBuildManifest();
-    return {
-      ok: true,
-      dir: store.rootDir,
-      pages: pages.length,
-      audit,
-      manifest: manifest ?? null,
-      enabled: this.config.wikiEnabled !== false,
-    };
-  }
-
-  /** Read-only list of knowledge-wiki pages (metadata only) for the UI. */
-  async wikiPages(pctx) {
-    const { wikiStoreFor } = await import('./wiki-query.js');
-    const store = wikiStoreFor(pctx, this.config);
-    if (!store) return { ok: false, error: 'no-project' };
-    let pages;
-    try {
-      pages = await store.listPages();
-    } finally {
-      store.close();
-    }
-    return {
-      ok: true,
-      pages: pages.map((page) => ({
-        file: page.file,
-        slug: page.slug,
-        name: page.name,
-        description: page.description,
-        domain: page.domain,
-        type: page.type,
-        modified: page.modified,
-        bytes: page.bytes,
-        links: page.links,
-        citations: Array.isArray(page.citations) ? page.citations.length : 0,
-      })),
-    };
-  }
-
-  /** Read one knowledge-wiki page for the UI; `notFound` when it is absent. */
-  async wikiPage(pctx, file) {
-    const { readWikiPage, wikiStoreFor } = await import('./wiki-query.js');
-    const store = wikiStoreFor(pctx, this.config);
-    if (!store) return { ok: false, error: 'no-project' };
-    let page;
-    try {
-      page = await readWikiPage(store, String(file ?? ''));
-    } finally {
-      store.close();
-    }
-    if (!page) return { ok: false, error: 'not-found' };
-    return { ok: true, page };
-  }
-
   async estimateDream(pctx, options = {}) {
-    const engine = await this.engine();
-    return engine.estimate({ pctx, ...options });
+    const pipeline = await this.dreamPipeline();
+    return pipeline.estimate({ pctx, ...options });
   }
 
   /**
@@ -663,7 +607,7 @@ export class MemoryRuntime {
    * Run one dream pass. `force` bypasses the time/session gates (manual runs).
    * @returns {Promise<object>} DreamRunResult as defined in INTERFACES.md.
    */
-  async dream({ agent, pctx, sessionId, force = false, dryRun = false, trigger = 'auto', reason, signal, noSessions = false, focus = '', pipeline = '', maintenance = false } = {}) {
+  async dream({ agent, pctx, sessionId, force = false, dryRun = false, trigger = 'auto', reason, signal, noSessions = false, focus = '', maintenance = false } = {}) {
     let projectContext = pctx;
     if (!projectContext) {
       projectContext = agent ? await this.forAgent(agent) : await this.forSessionId(sessionId);
@@ -671,25 +615,8 @@ export class MemoryRuntime {
     if (!projectContext) {
       return { ran: false, skipped: true, skipReason: 'no-project', applied: false, dryRun: Boolean(dryRun) };
     }
-    const useV2 = pipeline === 'v2' || (pipeline !== 'classic' && this.config.dreamPipeline === 'v2');
-    if (useV2) {
-      const v2 = await this.dreamPipeline();
-      const result = await v2.run({
-        pctx: projectContext,
-        agent: agent ?? projectContext.agent,
-        force,
-        dryRun,
-        trigger,
-        reason,
-        signal,
-        noSessions: noSessions === true,
-        focus,
-        maintenance: maintenance === true,
-      });
-      return withDreamSummary(result);
-    }
-    const engine = await this.engine();
-    const result = await engine.run({
+    const pipeline = await this.dreamPipeline();
+    const result = await pipeline.run({
       pctx: projectContext,
       agent: agent ?? projectContext.agent,
       force,
@@ -699,6 +626,7 @@ export class MemoryRuntime {
       signal,
       noSessions: noSessions === true,
       focus,
+      maintenance: maintenance === true,
     });
     // v7: `{ path, ops, durationMs }` for UI display (added on top of the full result).
     return withDreamSummary(result);

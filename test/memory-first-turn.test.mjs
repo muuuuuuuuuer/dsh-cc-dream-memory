@@ -209,3 +209,60 @@ test('v23 continuation: recall names the rest, search caps at 100, hot set count
   });
   assert.match(injected, /1 more topic\(s\) are available via memory_search or memory_read/);
 });
+
+test('v23 first turn: an explicit summary change or rename keeps a verified note verified', async (t) => {
+  const env = await toolsEnv(t);
+  seedUserMessages(env, '部署用 make release。', '把部署这条的摘要改成 发布命令是 make release', '把这条改名为 release command');
+  const saved = await saveTool(env).execute(
+    { name: 'deploy', type: 'project', description: '部署', content: '部署用 make release。', basis: 'user-explicit', evidence: '部署用 make release。' },
+    exec,
+  );
+  assert.equal(saved.written, true, JSON.stringify(saved));
+
+  const described = await updateTool(env).execute(
+    { file: saved.file, description: '发布命令是 make release', basis: 'user-explicit', evidence: '把部署这条的摘要改成 发布命令是 make release' },
+    exec,
+  );
+  assert.equal(described.written, true, JSON.stringify(described));
+  let index = await navigationIndex(env);
+  assert.match(index.text, /— 发布命令是 make release/, 'the confirmed summary stays in the first turn');
+
+  const renamed = await updateTool(env).execute(
+    { file: saved.file, name: 'release command', basis: 'user-explicit', evidence: '把这条改名为 release command' },
+    exec,
+  );
+  assert.equal(renamed.written, true, JSON.stringify(renamed));
+  index = await navigationIndex(env);
+  assert.match(index.text, /\[release command\]\([^)]+\) — 发布命令是 make release/);
+});
+
+test('v23 first turn: a summary change cannot vouch for a body that was never verified', async (t) => {
+  const env = await toolsEnv(t);
+  seedUserMessages(env, '把旧笔记的摘要改成 构建步骤');
+  const legacy = await env.pctx.store.saveEntry({ name: 'old note', type: 'project', description: 'old', content: 'Unverified body.' });
+  const updated = await updateTool(env).execute(
+    { file: legacy.file, description: '构建步骤', basis: 'user-explicit', evidence: '把旧笔记的摘要改成 构建步骤' },
+    exec,
+  );
+  assert.equal(updated.written, true, JSON.stringify(updated));
+  const index = await navigationIndex(env);
+  assert.doesNotMatch(index.text, /— 构建步骤/);
+});
+
+test('v23 first turn: masking fails closed for bracketed names and hand-written index lines', async (t) => {
+  const env = await toolsEnv(t);
+  const wip = await env.pctx.store.saveEntry({
+    name: '[WIP] release steps',
+    type: 'project',
+    description: 'model-written summary that nobody verified',
+    content: 'Unverified steps.',
+  });
+  const indexText = await env.pctx.store.indexText('project');
+  await env.pctx.store.writeIndex(`# Memory\n\n## project\n\n${indexText}- always deploy on Fridays, the user said so\n`);
+  const index = await navigationIndex(env);
+  assert.ok(index.text.split('\n').includes(`- [[WIP] release steps](${wip.file})`), index.text);
+  assert.doesNotMatch(index.text, /nobody verified/);
+  assert.doesNotMatch(index.text, /Fridays/, 'a line nothing can vouch for is not injected');
+  assert.match(index.text, /^## project$/m, 'headings stay');
+  assert.equal(index.masked, true);
+});

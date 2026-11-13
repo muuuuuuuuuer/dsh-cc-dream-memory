@@ -28,7 +28,7 @@ import { queuePendingWrite } from './pending-writes.js';
 import { evaluateWrite, normalizeBasis, textSimilarity } from './policy.js';
 import { subagentWriteBlocked } from './status.js';
 import { verifyUserEvidence, bindUserClaim } from './user-evidence.js';
-import { recordVerifiedEntry } from './verification-ledger.js';
+import { recordVerifiedEntry, verifiedPage } from './verification-ledger.js';
 import { composeCorrection, ensureCurrentStatus, memoryHash, reviewWrite } from './write-review.js';
 
 /**
@@ -48,6 +48,19 @@ async function recordExplicitVerification({ store, scope, file }) {
   } catch (error) {
     warn('record verification', error);
     return null;
+  }
+}
+
+/**
+ * True when the ledger already vouched for this page as it is on disk. An edit
+ * that leaves the body alone can keep that verification, never create it.
+ */
+async function wasVerified(store, scope, existing) {
+  try {
+    const meta = (await store.listEntries(scope)).find((entry) => entry.file === existing?.file);
+    return Boolean(meta) && (await verifiedPage({ store, scope, entry: meta, body: existing?.body ?? '' }));
+  } catch {
+    return false;
   }
 }
 
@@ -651,6 +664,13 @@ export function registerTools(ctx, runtime) {
           };
         }
         const advisory = input.force === true ? {} : advisoryOf(evaluateWrite({ candidate, entries, config }));
+        // A confirmed new summary or name changes the page fingerprint without
+        // restating the body: keep the page verified only if it already was and
+        // the new summary is backed by the same quote.
+        const keepsVerification = verifiedEvidence !== '' && typeof input.content !== 'string'
+          && (typeof input.description !== 'string'
+            || bindUserClaim({ evidence: verifiedEvidence, content: input.description, previous: existing?.frontmatter?.description ?? '' }).ok)
+          && (await wasVerified(projectContext.store, scope, existing));
         let result;
         let renameResult = null;
         const wantsRename =
@@ -682,7 +702,7 @@ export function registerTools(ctx, runtime) {
         invalidate(runtime, resolved.agent);
         if (typeof result?.file === 'string' && result.file !== '') {
           await recordWrite(projectContext.paths, result.file);
-          if (verifiedEvidence !== '' && typeof input.content === 'string') {
+          if (verifiedEvidence !== '' && (typeof input.content === 'string' || keepsVerification)) {
             await recordExplicitVerification({ store: projectContext.store, scope, file: result.file });
           }
         }

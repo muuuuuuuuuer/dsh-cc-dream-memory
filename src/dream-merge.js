@@ -54,6 +54,11 @@ function hashOf(value) {
   return createHash('sha256').update(text(value), 'utf8').digest('hex');
 }
 
+/** Hash of a page body as the merge saw it; apply compares it before writing. */
+export function pageBodyHash(body) {
+  return hashOf(body);
+}
+
 function safePage(file) {
   const name = oneLine(file, 200);
   if (!PAGE_RE.test(name) || RESERVED.has(name) || name.includes('..')) return '';
@@ -69,13 +74,29 @@ function slug(value, max = 40) {
     .replace(/-+$/u, '');
 }
 
+// Chinese and Japanese are written without spaces, so splitting on non-letters
+// leaves a whole sentence as one token and no two texts ever share a word.
+// Index those runs as overlapping character pairs instead, skipping pairs that
+// contain a grammatical particle or pronoun.
+const CJK_RUN_RE = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+/gu;
+const CJK_STOP = new Set([...'的了是在和与及或也就都又还我你他她它们这那其之吗呢吧啊のはがをにでとも']);
+
 function words(value) {
-  return new Set(
-    text(value)
-      .toLowerCase()
+  const lower = text(value).toLowerCase();
+  const out = new Set(
+    lower
+      .replace(CJK_RUN_RE, ' ')
       .split(/[^\p{L}\p{N}]+/gu)
       .filter(word => word.length >= 3 && !STOPWORDS.has(word)),
   );
+  for (const [run] of lower.matchAll(CJK_RUN_RE)) {
+    const chars = [...run];
+    for (let i = 0; i + 1 < chars.length; i += 1) {
+      if (CJK_STOP.has(chars[i]) || CJK_STOP.has(chars[i + 1])) continue;
+      out.add(chars[i] + chars[i + 1]);
+    }
+  }
+  return out;
 }
 
 function overlap(a, b) {
@@ -364,7 +385,7 @@ export function mergeClaims({
       name: nextName,
       description: nextDescription,
       body,
-      ...(page !== undefined ? { baseHash: hashOf(page.body) } : {}),
+      ...(page !== undefined ? { baseHash: pageBodyHash(page.body) } : {}),
     });
     touched.add(file);
   }
