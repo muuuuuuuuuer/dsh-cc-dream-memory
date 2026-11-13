@@ -95,12 +95,13 @@
 - [x] 默认 Dream 复用分析器已有的逐条输出：claims 带事实、原话引用、类型、置信度和目标页；verify 对已有说法给出成立、矛盾或不确定，并附原话（[dream-analyzer.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/dream-analyzer.js:50>)）。本任务只补两处：纠正时标出旧事实在页面中的位置；默认路径不再接受 `replace` 补丁，因为它要求模型返回整页正文。宿主按目标页和来源去重，用现有证据校验规则构造新增、补充或明确纠正。旧值进入 Superseded 历史；对象、数量或条件不一致、来源不可靠、定位不唯一则保留为审核项。日期和来源定位从已验证 transcript 取值。分段分析时，某段没有提到的笔记保持不动，不算矛盾；沿用 [dream-analyzer.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/dream-analyzer.js:27>) 按会话的同一规则，并加分段回归。
 - [x] 把跨会话发现作为逐条提议的一种。分析结果先与当前主题笔记、同任务的其他已完成分段比对，再按同一事实合并。复用现有 focus 做分析优先级，完整跟踪输入覆盖。案例中放入两个会话各自不完整的线索、一次已核验的修正和一个仍无证据的猜测，验证 Dream 能合成可用经验，同时保留证据状态。
 - [x] 从默认 Dream 路径移除生成全量页面、索引、SKILL 和全库合并的终场 organizer 调用。当前页面内容由宿主合并，索引重建复用现有宿主生成逻辑。相互矛盾的候选显示各自出处，用户决定。全库合并、重命名和重写留给显式维护命令，采用相同的分段、续跑和独立候选机制。宿主合并继续只产出证据检查接受的三类行：逐字保留的原有行、带引用的新事实行、元数据与标题和空行。跨页链接由宿主写成一行 `Related:`（`renderRelatedLinks`），模型不在正文里写链接行。organizer 提示词里关于逐字合并、不跨类型合并和链接的规则，随维护命令保留。审阅时展示合并后的完整页面，沿用现有对比视图。
+  - 简化（2026-11-12）：维护模式随经典引擎一起删除——Dream 不再提供整页重写、页面合并或 SKILL 写入；重复页面只能靠写入前去重或手工 `/memory merge`。
 - [x] Dream 可以提议修改首轮索引里某条笔记的一行简介，走同一证据检查和审阅。哪些笔记进首轮由宿主决定：现有排序先看每条笔记的读取次数，再看修改时间（[inject.js](<C:/Users/16864/Documents/deepseek-harness/default-workspace/plugins/dsh-cc-memory/src/inject.js:58>)）。核查范围限于本轮会话涉及的笔记，以及读取次数较多的笔记，不每次核查整个库。
   - 实施说明（0.12.3）：claims 里的 `description` 现在可以单独形成一条提案——即使事实行已在页面里，宿主也会写出只改简介的 write op（正文逐字不变、仍带 `baseHash`），首轮索引的那一行随之更新；简介没有变化则不产生操作；低置信度仍先进待审（`test/dream-merge.test.mjs` 两个用例）。哪些笔记进首轮仍由宿主决定：`buildMemoryIndex` 列出全部笔记，`inject.js` 的 hot 选择按读取次数再按修改时间取前 N。核查范围不再扩大到全库：证据校验只跑本轮真正写出的页面（`pageFullyVerified` 只对 write op 的正文），分析器看到的记忆页由 `dreamAnalyzerMemoryChars` 封顶而非全库无界。
 - [x] 候选记录目标文件的基线哈希。应用前持锁重读当前文件与证据，检测在线编辑冲突。复用 DreamEngine 的备份、最终检查和撤销；写入事务后才更新应用水位。按运行 ID 与操作 ID 记录应用结果，同一请求重试不重复写入。发布过程中崩溃后，以持久化应用记录与文件哈希确定哪些已完成。未选中的可用条目保留待决定，只有明确完成的会话或空产出才推进连续水位。
 - [x] 保留经典与 v2 历史记录的读取和已应用方案的撤销。旧预览仍遵守原证据和覆盖规则，不能直接变成新任务的完整结果。导入旧的成功会话水位作为起点，按项目区分。新旧任务共存时，发布用同一项目写锁，防止把用户新写入覆盖掉。
 - [x] 回归覆盖：一次运行只有一条新事实；同一读超时从 15 改到 90；写超时 90 与读超时 15 并存；同页有效和冲突条目；在线保存恰好发生于审阅期间；中断于应用后的状态回写。完整测试从新会话读取现行值并核对历史。
-  - 实施说明（0.12.2）：claim 合并的回归在 `test/dream-merge.test.mjs`（一条新事实、跨会话同事实去重、唯一行纠正 + Superseded、多处匹配进 review、低置信/无定位进 review/warning、未提及页面不动、Related 链接、应用期基线哈希冲突、默认路径不调用 organizer）；15→90 与写/读超时并存、审阅期间在线保存、应用回写由既有 `dream-pipeline.test.mjs`/`dream-v8`/`write-conflict` 用例覆盖。
+- 实施说明（0.12.2）：claim 合并的回归在 `test/dream-merge.test.mjs`（一条新事实、跨会话同事实去重、唯一行纠正 + Superseded、多处匹配进 review、低置信/无定位进 review/warning、未提及页面不动、Related 链接、应用期基线哈希冲突、默认路径不调用 organizer）；15→90 与写/读超时并存、审阅期间在线保存、应用回写由既有 `dream-pipeline.test.mjs`/`dream-v8`/`write-conflict` 用例覆盖。
   - 仍未实现（后续阶段跟进）：首轮索引成员未按「读取次数→修改时间」裁剪（`buildMemoryIndex` 列出全部页面）；analyzer 仍看到全部记忆页而非仅本轮相关 + 高读取页；应用结果未按 runId+opId 落账（一次运行只应用一次，重试重跑整份计划）。
 
 **交付条件**  
@@ -139,6 +140,17 @@
 
 **发布条件**  
 桌面使用者可以通过一次短的真实操作完成「记住 → 找到 → 用上 → 纠正」。Dream 失败时能看见本轮错误、从失败位置继续，旧结果保留历史。Wiki 成功切换且引用可追溯。功能通过后，才更新使用说明与发布产物。
+
+## 6. 简化：移除经典引擎（2026-11-12）
+
+- 任务来源：用户四步方案——先把只有旧引擎才有的能力补进 v2、所有入口只走 v2、逐个迁移测试、最后删代码。
+- 已删除：`DreamEngine.run`/`estimate`/`complete`、`src/dream-prompt.js`、`src/dream-map.js`、`src/dream-organizer.js`、`DreamPipeline` 的终场 organizer 分支与无人调用的 `applyVerificationCorrections`，配置 `dreamPipeline`/`dreamOrganizerMode`/`dreamOrganizer*`/`dreamAnalyzerTranscriptChars`/`dreamMaxAnalyzerCalls`/`dreamMapMaxChunks`，以及 `--pipeline`/`--maintenance` 两个开关。
+- Dream 现在只做四件事：追加带引用的事实行、把被推翻的旧值换成新值并把旧值留在 `## History`、把跨会话的同一条事实合并成一行、在证据允许时改进一句话摘要。不再重写整页、合并重复页面或写 `SKILL.md`，也不再提供维护模式。
+- 迁移中被测试逼出的三个缺陷：同一对象/数量不一致的「推翻」不再替换旧行；没有 verdict 但同一对象只有一条带数值的行时按纠正处理；一次应用失败不再计两次连续失败。
+- 测试：22 个 organizer 驱动用例改写为 claim 断言，删除只测 organizer 的用例与 `test/dream-links.test.mjs`，把 focus 投递、回滚和取消不变式补进 v2 用例。
+- 文档：README / README.zh、`docs/ARCHITECTURE.md`、`docs/INTERFACES.md`、`docs/commands.md`、CHANGELOG 全部同步。
+- 提交：`c2b9557` 删引擎与测试迁移，`4986156` 面板显示 v2，`50e3852` 清理死代码与注释。
+- 门禁：verify 84 个测试文件 / 709 断言 PASS，ui-freeze PASS，eval validate PASS。真实模型与桌面安装的验收仍未做（见阶段 1 与阶段 5 的未勾选项）。
 
 
 
