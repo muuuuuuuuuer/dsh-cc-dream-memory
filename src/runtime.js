@@ -440,7 +440,7 @@ export class MemoryRuntime {
     return this.enginePromise;
   }
 
-  /** Lazily construct the v2 pipeline (kept separate so classic users pay nothing). */
+  /** Lazily construct the Dream pipeline; the engine is loaded separately. */
   async dreamPipeline() {
     if (!this.pipelinePromise) {
       this.pipelinePromise = Promise.all([import('./dream.js'), import('./dream-pipeline.js')])
@@ -459,8 +459,8 @@ export class MemoryRuntime {
   }
 
   /**
-   * Start a resumable Dream run and return its id immediately. Only the v2
-   * pipeline keeps per-unit state; the classic path has nothing to resume.
+   * Start a resumable Dream run and return its id immediately. The pipeline
+   * keeps per-unit state, so a later `resumeDreamRun` only redoes what failed.
    */
   async startDream(pctx, options = {}) {
     const pipeline = await this.dreamPipeline();

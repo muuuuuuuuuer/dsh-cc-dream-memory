@@ -1,18 +1,16 @@
 /**
- * Dream v2: analyze one transcript at a time, verify mechanically, then organize.
- *
- * This module replaces the single monolithic consolidation call with a bounded
- * pipeline:
+ * Dream: analyze every unit of every session, verify the quotes mechanically,
+ * then merge the verified claims into pages on the host.
  *
  *   export transcripts
- *     -> analyzer per session (concurrent, small JSON)
- *     -> host verifier (quotes, source tag, date)
- *     -> organizer (one call, page writes)
+ *     -> analyzer per unit (concurrent, small JSON)
+ *     -> host verifier (quote, source tag, date)
+ *     -> host merge (append, replace with history, review)
  *     -> existing atomic apply / backup / undo
  *
- * The existing `DreamEngine` remains the apply layer and the classic pipeline is
- * Dream v2 is the only pipeline: a claim-level analyzer reads every unit of
- * every session, and the host merges the verified claims into pages.
+ * A unit is one chunk of one session, keyed by
+ * `sha256(sessionId, firstSeq, lastSeq, text)`; a truncated answer splits it
+ * into two units rather than dropping the rest of the input.
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -30,10 +28,9 @@ import { ANALYZER_SYSTEM_PROMPT, buildAnalyzerPrompt, parseAnalyzerReply } from 
 import { stampVerification, SUPERSEDED_LINE_RE } from './memory-body.js';
 import { normalizeForMatch } from './dream-evidence.js';
 import { supportsStatement } from './support.js';
-import { bodyHasStatement, verifyAnalysis } from './dream-verifier.js';
-import { buildEvidence, checkWriteOperations } from './dream-write-evidence.js';
+import { verifyAnalysis } from './dream-verifier.js';import { buildEvidence, checkWriteOperations } from './dream-write-evidence.js';
 import { mergeClaims } from './dream-merge.js';
-import { buildIndex, buildSkill, citationToken } from './wiki-core.js';
+import { buildIndex } from './wiki-core.js';
 import { scanSecrets, secretScanDecision, secretWarnings } from './secrets.js';
 import { resolveModel, streamText } from './llm-call.js';
 import {
@@ -141,72 +138,6 @@ async function mapLimit(items, limit, worker) {
   });
   await Promise.all(workers);
   return results;
-}
-
-/**
- * Turn analyzer `verify: contradicts` results into a deterministic replacement:
- * the old value stays as a dated Superseded line that records where the
- * correction came from, the new claim becomes current with its own citation.
- * The organizer's page text is amended before the final evidence gate.
- *
- * The old value is read from `originalPages` (the pages as they were before the
- * organizer wrote): the writes below replace whole bodies, so a page that
- * already carries the new value no longer contains the text to supersede.
- */
-function applyVerificationCorrections({ finalPages, originalPages, analyses }) {
-  const claims = [];
-  for (const analysis of Array.isArray(analyses) ? analyses : []) {
-    for (const claim of Array.isArray(analysis?.claims) ? analysis.claims : []) {
-      claims.push({ ...claim, sessionId: analysis.sessionId });
-    }
-  }
-  const today = new Date().toISOString().slice(0, 10);
-  for (const analysis of Array.isArray(analyses) ? analyses : []) {
-    for (const item of Array.isArray(analysis?.verify) ? analysis.verify : []) {
-      if (item?.result !== 'contradicts') continue;
-      const page = finalPages.get(item.file);
-      if (!page) continue;
-      const oldNorm = normalizeForMatch(item.claim);
-      if (oldNorm.length < 6) continue;
-      const before = originalPages?.get(item.file) ?? page;
-      const oldLine = before.body.split(/\r?\n/).find((line) => normalizeForMatch(line).includes(oldNorm));
-      if (oldLine === undefined) continue;
-      const oldValue = oldLine.replace(/^\s*[-*]\s*/u, '').trim();
-      if (oldValue === '') continue;
-      const replacement = claims.find((claim) => claim.sessionId === analysis.sessionId
-        && Number.isFinite(Number(claim.seq))
-        && (Number(claim.seq) === Number(item.seq)
-          || normalizeForMatch(String(claim.quote ?? '')) === normalizeForMatch(String(item.quote ?? '')))
-        && normalizeForMatch(String(claim.text ?? '')) !== oldNorm);
-      if (!replacement) continue;
-      const citation = citationToken({
-        source: analysis.sessionId,
-        locator: String(replacement.seq),
-        date: replacement.date || item.date || today,
-      });
-      const trace = ['source: dream',
-        analysis.sessionId ? `session ${analysis.sessionId}` : '',
-        item.source ? `quote ${item.source}` : ''].filter(Boolean).join(', ');
-      const superseded = `- Superseded: ${oldValue} (until ${replacement.date || today}) — ${trace}`;
-      const lines = page.body.split(/\r?\n/);
-      const index = lines.findIndex((line) => normalizeForMatch(line).includes(oldNorm));
-      if (index >= 0) {
-        lines[index] = `- ${replacement.text} ${citation}`;
-        lines.splice(index + 1, 0, superseded);
-      } else {
-        // The organizer already replaced (or dropped) the statement in its own
-        // write. The correction still has to leave the same history behind.
-        const kept = [];
-        if (!bodyHasStatement(page.body, replacement.text)) kept.push(`- ${replacement.text} ${citation}`);
-        if (!normalizeForMatch(page.body).includes(normalizeForMatch(superseded))) kept.push(superseded);
-        if (kept.length === 0) continue;
-        while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
-        if (lines.length > 0) lines.push('');
-        lines.push(...kept);
-      }
-      page.body = `${lines.join('\n').replace(/\n+$/, '')}\n`;
-    }
-  }
 }
 
 /** Simple cross-process lock using the existing `.consolidate-lock` path. */
@@ -458,7 +389,7 @@ export class DreamPipeline {
           ...promptInput,
           maxMemoryChars: Math.min(promptInput.maxMemoryChars, 12_000),
         });
-        const retry = `Compact retry: return only the most durable evidence. Use a one-sentence summary, at most 8 claims and 8 verdicts, and leave patches empty (the organizer writes pages). Return empty arrays when appropriate.\n\n${compact}`;
+        const retry = `Compact retry: return only the most durable evidence. Use a one-sentence summary, at most 8 claims and 8 verdicts, and leave patches empty (the host merges claims into pages). Return empty arrays when appropriate.\n\n${compact}`;
         stage.retries += 1;
         stats.input += retry.length;
         return retry;
@@ -1013,7 +944,7 @@ export class DreamPipeline {
         }
       });
       analyzerStage.durationMs = Date.now() - analyzerStarted;
-      // A stop must not slide into the organizer and apply a partial plan.
+      // A stop must not slide into the merge and apply a partial plan.
       if (signal?.aborted) {
         const aborted = new Error('cancelled by user');
         aborted.name = 'AbortError';
@@ -1068,7 +999,7 @@ export class DreamPipeline {
         await writeJson(path.join(runDir, 'analysis', `${row.sessionId}.json`), row).catch((error) => warn('write analysis', error));
       }
 
-      // Preserve analyzer diagnostics even when no organizer response is usable.
+      // Preserve analyzer diagnostics even when the merge produced nothing.
       const expectedSessions = sessionIds.length + (input.deferredSessions?.length ?? 0);
       failureManifest = {
         startedAt,
@@ -1111,7 +1042,7 @@ export class DreamPipeline {
         ? `${merged.length} session(s) placed ${organizerCounts.writes} page change(s); ${reviewItems.length} item(s) need review`
         : 'nothing new to remember';
 
-      // Final write gate: organizer-added lines must be backed by claims the
+      // Final write gate: new lines must be backed by claims the
       // analyzer actually verified. Pure consolidation (no transcripts read)
       // has no fresh evidence and is exempt.
       const evidence = buildEvidence(merged);
@@ -1356,8 +1287,8 @@ export class DreamPipeline {
           counts: countUnits(),
           error: '',
         });
-        // Keep plan.review (the claims left for a person) instead of the
-        // classic engine's `review: true` flag, which nothing reads.
+        // Keep plan.review (the claims left for a person) instead of a boolean
+        // `review` flag, which nothing reads.
         await writeJson(proposalPath, { ...plan, manifest });
         await state.setPendingProposal(proposalPath);
         failure = false;
@@ -1495,7 +1426,7 @@ export class DreamPipeline {
       });
     } catch (error) {
       const detail = errorMessage(error);
-      const message = stage === 'organize' ? `Dream organizer: ${detail}` : detail;
+      const message = stage === 'merge' ? `Dream merge: ${detail}` : detail;
       const cancelled = signal?.aborted === true || error?.name === 'AbortError';
       // A failed write is recorded once, by handleApplyFailure below: calling
       // markDreamFailed here too would count one failure twice and push the
