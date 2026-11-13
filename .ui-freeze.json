@@ -1,8 +1,8 @@
 {
-  "frozenAt": "2026-11-12T20:30:43.317Z",
+  "frozenAt": "2026-11-13T02:44:12.681Z",
   "policy": "UI design is FROZEN by maintainer decision (2026-11-07). Do not modify client.js, locale/*.json or icon.svg without explicit user approval; then run `node scripts/ui-freeze.mjs --update` and commit with a `UI-FREEZE:` reason.",
   "files": {
-    "client.js": "sha256:ce48357c6108d32f5bed54eb8ddf0d62f25d0ca5b90e7a233fb3db1d2f03a073",
+    "client.js": "sha256:d16ea0d0b9c375a2be2e8364ddc1ed70a48f94df5c04f6b068799f8a1512a230",
     "locale/en.json": "sha256:48fe991283e6e0b91b1d6c803e60e0b944d9c29fbeeeceb6a23d1b33c758c99b",
     "locale/zh.json": "sha256:f08418d2d681f251bc6d90fe4de61a8282420b5a5cbd8330e98cc32374a1a9ec",
     "icon.svg": "sha256:93b0a62e3584fd9b5fc1f511fea9c01fa388a33fca36ea06c6d38502bad3b07e"

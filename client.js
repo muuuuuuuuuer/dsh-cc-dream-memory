@@ -1477,7 +1477,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
               : 'warn',
           writeMode: config.writeMode === 'confirm' ? 'confirm' : 'auto',
           pendingProposalTtlHours: asNumber(config.pendingProposalTtlHours, 72),
-          dreamPipeline: config.dreamPipeline === 'v2' ? 'v2' : 'classic',
+          dreamPipeline: 'v2',
           injectHotOnly: config.injectHotOnly === true,
           injectHotEntries: asNumber(config.injectHotEntries, 3),
           autoRecall: config.autoRecall !== false,
@@ -4434,7 +4434,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         h(
           'div',
           { className: 'ccm-setting' },
-          h('div', { className: 'ccm-setting-text' }, h('div', { className: 'ccm-setting-hint' }, t('tidy.pipeline.' + config.dreamPipeline))),
+          h('div', { className: 'ccm-setting-text' }, h('div', { className: 'ccm-setting-hint' }, t('tidy.pipeline.v2'))),
         ),
       );
 
