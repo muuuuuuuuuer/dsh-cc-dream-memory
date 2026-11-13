@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Removed the classic Dream engine.** The v2 claim pipeline is now the only path: `DreamEngine.run`/`estimate`, `dream-prompt.js`, `dream-map.js`, `dream-organizer.js`, the `dreamPipeline` and `dreamOrganizerMode` settings, and the `--pipeline` / `--maintenance` flags are gone. Dream appends sourced fact lines, replaces a contradicted value while keeping the old one in history, merges the same fact from several sessions into one line, and may improve a page's one-line summary; it no longer rewrites whole pages, merges duplicate pages or writes `SKILL.md`.
 - **Removed the knowledge wiki.** The `wiki_search`, `wiki_read`, `wiki_links` and `wiki_answer` tools, `/memory wiki build|status`, `POST /api/cc-memory/wiki`, the Wiki tab and every `wiki*` setting are gone. This plugin now does memory and Dream only. Pages already built stay on disk under `projects/<id>/wiki/`; nothing reads them any more, and you can delete the folder.
 - Removed duplicate Dream action names: `apply-operations`, `background`, `run-status`, `run-cancel` and `run-resume`. Use `apply-ops`, `start`, `status`, `cancel` and `resume`; `/memory dream status <runId>` replaces `/memory dream run-status`.
 

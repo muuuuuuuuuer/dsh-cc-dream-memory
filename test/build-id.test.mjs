@@ -22,8 +22,8 @@ test('status names the build and the capabilities this Host mounted', async (t) 
   assert.equal(status.build.packageVersion, '0.12.0');
   assert.equal(status.uiApi, 3);
   assert.deepEqual(status.capabilities, {
-    dreamPipeline: 'classic',
-    dreamRuns: false,
+    dreamPipeline: 'v2',
+    dreamRuns: true,
     claimMerge: true,
     explicitSaveLedger: true,
   });

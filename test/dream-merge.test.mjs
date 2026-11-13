@@ -220,7 +220,6 @@ test('the default pipeline path never calls the organizer', async (t) => {
   const workspaceDir = path.join(tmp, 'workspace');
   const paths = buildPaths({ memoryRoot, workspaceDir });
   const config = resolveConfig({ memoryRoot, dreamPipeline: 'v2', dreamMode: 'apply' });
-  assert.equal(config.dreamOrganizerMode, 'claims');
   const store = new MemoryStore({ paths, config });
   await store.ensure();
   const saved = await store.saveEntry({

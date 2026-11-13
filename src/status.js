@@ -50,9 +50,7 @@ export const CONFIG_FIELDS = Object.freeze([
   'autoMemoryEnabled',
   'autoDreamEnabled',
   'dreamMode',
-  'dreamPipeline',
   'dreamAnalyzerModel',
-  'dreamOrganizerModel',
   'dreamAnalyzerConcurrency',
   'indexMaxLines',
   'indexMaxBytes',
@@ -1195,9 +1193,9 @@ export function createStatusService(runtime) {
       uiApi: UI_API,
       build: buildIdentity(),
       capabilities: {
-        dreamPipeline: config.dreamPipeline === 'v2' ? 'v2' : 'classic',
-        dreamRuns: config.dreamPipeline !== 'classic',
-        claimMerge: config.dreamOrganizerMode !== 'maintenance',
+        dreamPipeline: 'v2',
+        dreamRuns: true,
+        claimMerge: true,
         explicitSaveLedger: true,
       },
       project: {
@@ -1375,8 +1373,6 @@ export function createStatusService(runtime) {
         trigger: options.trigger || 'manual',
         reason: options.reason || '',
         focus: typeof options.focus === 'string' ? options.focus : '',
-        maintenance: options.maintenance === true,
-        pipeline: options.pipeline === 'v2' ? 'v2' : '',
         noSessions: options.noSessions === true,
         signal: options.signal,
       });
@@ -1415,8 +1411,6 @@ export function createStatusService(runtime) {
         trigger: options.trigger || 'manual',
         reason: options.reason || '',
         focus: typeof options.focus === 'string' ? options.focus : '',
-        pipeline: options.pipeline === 'v2' || options.pipeline === 'classic' ? options.pipeline : '',
-        maintenance: options.maintenance === true,
         noSessions: options.noSessions === true,
       });
       return { ok: true, result: lossless(result) };

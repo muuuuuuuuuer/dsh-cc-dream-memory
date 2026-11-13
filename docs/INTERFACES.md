@@ -15,7 +15,7 @@
 |---|---|
 | `package.json`, `cordis.patch.yml`, `index.js`, `src/config.js`, `src/paths.js`, `src/runtime.js`, `src/state.js`, `src/scheduler.js` | Lead |
 | `src/frontmatter.js`, `src/store.js`, `src/inject.js`, `src/tools.js` | memory-core |
-| `src/dream.js`, `src/dream-prompt.js`, `src/dream-input.js` | dream-engine |
+| `src/dream.js`, `src/dream-pipeline.js`, `src/dream-run.js`, `src/dream-merge.js`, `src/dream-analyzer.js`, `src/dream-input.js` | dream-engine |
 | `src/commands.js`, `client.js`, `locale/*.json`, `icon.svg` | ui-commands |
 | `test/*.test.mjs`, `scripts/*.mjs` | verifier |
 
@@ -209,20 +209,12 @@ export function registerTools(ctx, runtime): () => void
 export class DreamEngine {
   constructor({ ctx, runtime, config })
   // pctx 由 runtime 提供（含 paths/store/state/workspaceDir；agent 可能为 undefined，例如自动触发）
-  async run({ pctx, agent, force = false, dryRun = false, trigger = 'auto', signal, reason }): Promise<DreamRunResult>
+  // run/estimate 已随经典引擎移除；运行与续跑见 src/dream-pipeline.js
   // review 模式产出的提案审批后应用
   async applyPending({ pctx, agent, plan, proposalPath }): Promise<{ applied: boolean, summary?: string, filesTouched?: number, error?: string }>
 }
-// DreamRunResult = { ran, skipped?, skipReason?, applied, mode:'apply'|'review', dryRun,
-//                    summary, operations, filesTouched, sessionsReviewed, proposalPath?,
-//                    backupDir?, error?, startedAt, finishedAt }
 ```
 职责：
-- 闸门（`force` 时只保留 enabled/lock）：enabled → lastDreamAt+minHours → sessionsSince≥minSessions → lastScanAt 节流 → 锁。
-- 锁：`pctx.paths.lockFile` 即 `<projectDir>/.consolidate-lock`（与 memory 目录平级），`open(path,'wx')` 写入 `{pid, startedAt}`；已存在且 mtime 在 `lockTtlMs` 内 → skip `lock`；过期则接管。失败/异常时把 mtime 回滚为上次 dream 时间（`utimes`）。
-- gather：调用 `gatherDreamInput()`。
-- LLM：`ctx.llm.stream({ provider, model, messages:[{role:'user', content:[{type:'text', text: prompt}]}], system: DREAM_SYSTEM_PROMPT, maxTokens: config.llmMaxTokens, signal, purpose:'cc-memory-dream' })`；收集 `text-delta`；`finish.reason.kind==='error'|'aborted'` 抛错。provider/model 来自 `ctx.get('agentDefaultModel')?.currentSelection?.()`，缺失或调用失败 → `{ran:false, skipReason:'llm-unavailable'}`（不抛）。
-- 解析：从文本中提取第一个 ```json 代码块或首个 `{` 到末个 `}`；`JSON.parse`；校验（见下）。
 - 校验（纯函数 `validateDreamPlan(plan, {config, existingFiles})`，单独导出便于测试）：
   - `operations` 数组、≤ dreamMaxOps；
   - op ∈ write/delete/index 之一；
@@ -231,6 +223,7 @@ export class DreamEngine {
   - write 的 `content`/`body` ≤ config.maxContentBytes；
   - `type` ∈ user|feedback|project|reference；
   - 返回 `{ ok, plan: normalized, dropped: string[] }`。
+- 运行流程（闸门、runId 锁、gather、按单元分析、合并、覆盖率与计划生成）在 `src/dream-pipeline.js`。
 - 应用：先备份当前 memory 目录全部文件到 `pctx.paths.dreamsDir/<ts>/`；`dryRun` 时只写 `<dreamsDir>/<ts>/plan.json` 不应用；`mode==='review'` 时写 `pctx.paths.pendingDir/<ts>.json` + 返回 proposalPath；`apply` 时写文件、写索引、写 changelog（`pctx.paths.changelogFile`）、更新 state、清 sessions。
 - changelog 条目格式：
 ```
@@ -238,7 +231,7 @@ export class DreamEngine {
 - trigger: auto|manual, sessions: 3, ops: 4 (write 3, delete 0, index 1), backup: .dreams/2026-11-06T23-10-00
 - summary: ...
 ```
-- 幂等：失败后释放锁并回滚 mtime；下一轮重新整理。
+- 幂等：失败时写 `manifest.json`（`status:'failed'`）并释放锁；`resume` 只重跑未完成的单元。
 
 ## `src/dream-input.js`（dream-engine）
 
@@ -250,24 +243,29 @@ export async function gatherDreamInput({ ctx, store, config, workspaceDir, state
 }>
 ```
 - session 来源：优先 `state.snapshot().sessionsSince` 中的 id；不足 `sessionLookback` 时用 `ctx.get('sessionQuery')?.filterSessions([{kind:'cwd', values:[workspaceDir]}])` 补齐（取 header.createdAt 最新）。
-- 每个 session：`readSession(id)` → `events`，抽取 `user/message` 文本与 `assistant/message` 文本（`message.content` 里 `type==='text'` 的 `text`），按顺序合并，单 session ≤4000 字符；总字符 ≤ `dreamInputMaxChars`。
+- 每个 session：`readSession(id)` → `events`，抽取 `user/message` 文本与 `assistant/message` 文本（`message.content` 里 `type==='text'` 的 `text`），按顺序合并。v2 路径传 `unboundedSessions: true`，会话不再被字符上限截断或推迟；旧的 `dreamMaxSessionChars`/`dreamMapChunkChars` 预算分支只服务旧调用点与测试。
 - 任何 session 读取失败跳过并记录。
 
-## `src/dream-prompt.js`（dream-engine）
+## `src/dream-pipeline.js` / `dream-run.js` / `dream-merge.js`（dream-engine）
 
-导出 `DREAM_SYSTEM_PROMPT` 与 `buildDreamPrompt(input)`；包含：
-- 标题 `Dream: Memory Consolidation`；
-- 四阶段 Orient/Gather/Consolidate/Prune；
-- 规则：合并重复、纠正矛盾、相对日期转绝对、不臆造、不得编辑 CLAUDE.md/AGENTS.md、索引一行一条且 <200 行/~25KB、细节下沉到 topic 文件；
-- 输出严格 JSON schema：
-```json
-{"summary":"...","operations":[
- {"op":"write","scope":"project","type":"user","name":"user_role","description":"...","body":"..."},
- {"op":"delete","scope":"project","file":"old.md","reason":"..."},
- {"op":"index","content":"- [user_role](user_role.md) — ...\n"}
-],"notes":"..."}
+```js
+export class DreamPipeline {
+  async run({ pctx, agent, force, dryRun, trigger, reason, signal, noSessions, focus, runId, resume })
+  async start(options)          // 立即返回 { ok, started, runId, status:'running' }
+  async status(pctx, runId)     // manifest 摘要；无记录 { status:'none' }；未知 { ok:false, error:'unknown-run' }
+  async cancel(pctx, runId)
+  async resume(pctx, runId, options)
+  async settled(pctx, runId)    // 等待正在结束的运行，避免测试/退出竞态
+  async estimate(pctx, { noSessions, focus })
+}
+export function mergeClaims({ analyses, memoryPages, indexText, title })
+export function buildMemoryIndex(pages, title)
 ```
-- 只输出 JSON（可包在 ```json 代码块内），不要解释。
+- 输入规划：`gatherDreamInput({ unboundedSessions: true, unitChars: 24000 })`，每个会话按事件边界分块，不因调用数或长度上限静默丢弃。
+- 单元：`unitId = sha256(sessionId, firstSeq, lastSeq, text)`；`<dreamsDir>/<runId>/analysis/<session>/<unitId>.json` 按单元落盘；单次 max-tokens 截断时把该单元对半拆成两个单元重跑；`resume` 只补未完成单元。
+- 锁：`<projectDir>/.consolidate-lock` 记录 `{pid, startedAt, runId}`，运行中按进度 `utimes` 续期，`resume` 可接管同一 runId 的过期锁。
+- 合并：`mergeClaims` 只产出逐字保留的原有行、带引用（`^[session#locator, date]`）的新事实行和元数据/标题；唯一匹配的旧行被推翻时替换并把旧值写进 `## History`；对象/数量不一致、位置不唯一、低置信进 `plan.review`；未提及的页面不动。
+- 运行状态：`<runId>/manifest.json` 记录 `status`（running/done/failed/cancelled/ready/blocked/review/skipped）、`stage`、输入会话与单元区间、模型、用量、最近错误。
 
 ## `src/commands.js`（ui-commands）
 
@@ -275,7 +273,7 @@ export async function gatherDreamInput({ ctx, store, config, workspaceDir, state
 export function registerCommands(ctx, runtime): () => void
 export function parseCommandLine(rawInput): { verb, args }   // 纯函数，便于测试
 ```
-`/memory` 子命令：`json`、`list`、`show <file>`、`index`、`on`/`off`、`dream on|off`、`dream status`、`dream run [--dry-run]`、`dream apply`、`delete <file>`。`/remember [--type=..] [--scope=..] <text>`。
+`/memory` 子命令：`json`、`list`、`show <file>`、`index`、`on`/`off`、`dream on|off`、`dream status [runId]`、`dream cancel|resume [runId]`、`dream run [--dry-run] [--wait]`、`dream apply`、`delete <file>`。`/remember [--type=..] [--scope=..] <text>`。
 - 返回 `{kind:'success', text}` 或 `{kind:'error', text}`；`json` 返回可被 `JSON.parse` 的文本。
 - 开关状态持久化：`/memory on|off` 与 `/memory dream on|off` 需要写回插件配置。用 `ctx.fiber.entry` + `ctx.get('configEditor')` 按 host-plugin.md 的方法改行 config；若 editor/entry 不可用，返回 error 说明「cannot persist」。改完提示「takes effect after plugin reload」。
 - `/memory dream run` 调用 `runtime.dream({agent, force:true, dryRun, trigger:'manual'})`；`apply` 调用 `runtime.applyPendingDream({agent})`（Lead 提供）。JSON 输出用于 UI。

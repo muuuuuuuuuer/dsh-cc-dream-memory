@@ -6,6 +6,5 @@
       name: dsh-cc-dream-memory
       config:
         autoDreamEnabled: false
-        dreamPipeline: v2
         injectHotOnly: false
         injectHotEntries: 3

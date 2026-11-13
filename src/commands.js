@@ -27,7 +27,7 @@ const MEMORY_TYPES = Object.freeze(['user', 'feedback', 'project', 'reference'])
 const TYPE_SET = new Set(MEMORY_TYPES);
 
 const MEMORY_HINT =
-  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|writes|approve <id>|reject <id>|refresh|live on|off|user on|off|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|dream on|off|dream status|dream estimate|dream history|dream undo|dream run [--dry-run] [--pipeline v2] [--focus <text>] [--maintenance]|dream apply|dream reject|dream preview|dream apply-ops <indexes>]';
+  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|writes|approve <id>|reject <id>|refresh|live on|off|user on|off|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|dream on|off|dream status|dream estimate|dream history|dream undo|dream run [--dry-run] [--focus <text>]|dream apply|dream reject|dream preview|dream apply-ops <indexes>]';
 const REMEMBER_HINT = '[--type=user|feedback|project|reference] [--scope=project|user] <text>';
 
 function warn(scope, error) {
@@ -1100,13 +1100,10 @@ export function registerCommands(ctx, runtime) {
     if (sub === 'run') {
       const dryRun = flags['dry-run'] === true || flags.dryrun === true || flags.dry === true;
       const wait = flags.wait === true || flags.sync === true;
-      const maintenance = flags.maintenance === true || flags.maintenance === 'true';
-      const pipeline = flags.pipeline === 'v2' || flags.pipeline === 'classic' ? flags.pipeline : '';
       const status = await collectStatus(invocation);
       if (!status.ok) return fail(`cc-memory: ${status.error}`);
       let response;
-      // The classic pipeline keeps no per-unit state, so it always runs inline.
-      if (!dryRun && !wait && pipeline !== 'classic') {
+      if (!dryRun && !wait) {
         try {
           response = await service.dream(status.pctx, {
             agent: invocation.agent,
@@ -1114,8 +1111,6 @@ export function registerCommands(ctx, runtime) {
             action: 'start',
             trigger: 'manual',
             focus: typeof flags.focus === 'string' ? flags.focus : '',
-            maintenance,
-            pipeline,
           });
         } catch (error) {
           return fail(`dream run: ${errorText(error)}`);
@@ -1135,8 +1130,8 @@ export function registerCommands(ctx, runtime) {
             ].join('\n'),
           );
         }
-        // Classic pipeline and older builds have no resumable run: fall through
-        // to the synchronous path so /dream run still works everywhere.
+        // Older builds have no resumable run: fall through to the synchronous
+        // path so /dream run still works everywhere.
       }
       try {
         response = await service.dream(status.pctx, {
@@ -1145,8 +1140,6 @@ export function registerCommands(ctx, runtime) {
           action: dryRun ? 'dry-run' : 'run',
           trigger: 'manual',
           focus: typeof flags.focus === 'string' ? flags.focus : '',
-          maintenance,
-          pipeline,
         });
       } catch (error) {
         return fail(`dream run: ${errorText(error)}`);
@@ -1735,7 +1728,7 @@ export function registerCommands(ctx, runtime) {
             [
               `usage: /memory ${MEMORY_HINT}`,
               '       /dream run [--dry-run] [--focus <text>]|status|apply|history|undo   (short alias for /memory dream …)',
-              '       /memory dream on|off|status|history|undo|run [--dry-run] [--pipeline v2] [--maintenance]|apply|reject|preview|apply-ops <indexes>',
+              '       /memory dream on|off|status|history|undo|run [--dry-run]|apply|reject|preview|apply-ops <indexes>',
               '       /memory backups | trash | restore <backup|trash> <id> [file]',
               '       /memory metrics   (injections, reads, writes, searches, dream acceptance, 7-day trend, quality, last cost)',
               '       /memory search <query> | show <file> | history <file> | edit <file> | merge <file1> <file2> [...]',

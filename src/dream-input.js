@@ -14,11 +14,12 @@
  * head+tail and reported in `truncatedFiles`, so validation can refuse a write
  * to it (a partial view must never become a full rewrite).
  *
- * Sessions are never sampled. A session that fits `dreamMaxSessionChars` is
- * passed whole. A longer one is returned as ordered chunks for the analysis pass
- * (`dream-map.js`), which reads as many as the budget allows and reports how far
- * it got; the rest stays unread for a later pass. A session that does not fit the
- * remaining budget is deferred whole.
+ * Sessions are never sampled. With `unboundedSessions` (the only mode the v2
+ * pipeline uses) every session is returned as ordered chunks and nothing is
+ * deferred; the caller sizes the chunks. The legacy path still uses
+ * `dreamMaxSessionChars` / a remaining budget and defers a session that doesn't
+ * fit; both are kept because `test/dream-gather*.mjs` and `dream-input-v*.test.mjs`
+ * drive them directly.
  *
  * Delegated sessions (subagents/teammates) are never part of the dream input:
  * their transcripts carry task-dispatch wording, not user preferences.

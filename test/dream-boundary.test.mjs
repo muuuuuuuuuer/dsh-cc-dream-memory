@@ -91,9 +91,4 @@ test('tool evidence locates the result event in short and mapped transcripts', a
   const built = evidence.buildEvidenceCorpus({ sessions: [{ id: 's-tool', excerpt: chunk.text, evidenceBlocks: chunk.evidenceBlocks }] });
   assert.equal(built.find((item) => item.tag === 'tool-result').seq, 9);
   assert.equal(built.find((item) => item.tag === 'tool-call').seq, 4);
-  const { analyzeLongSessions } = await import('../src/dream-map.js');
-  const input = { sessions: [{ id: 's-tool', chunks: [chunk], baseSeq: 0 }], reads: [] };
-  await analyzeLongSessions({ input, config: {}, tokensSpent: () => 0, parseJson: JSON.parse,
-    complete: async () => ({ text: JSON.stringify({ facts: [{ text: 'Deployment uses GCP.', quote: 'Deploy on GCP Cloud Run.' }] }) }) });
-  assert.equal(input.sessions[0].facts[0].seq, 9);
 });

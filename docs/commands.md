@@ -24,7 +24,7 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 |---|---|
 | `/memory dream run --dry-run` | Make a plan without changing anything |
 | `/memory dream run --dry-run --focus "<topic>"` | Prefer one topic in this round |
-| `/memory dream run --pipeline v2 --dry-run` | Use the per-session analyzer pipeline instead of the classic one |
+| `/memory dream run` | Start a background run; `/memory dream status [runId]` shows progress, `cancel`/`resume` stop and continue it |
 | `/memory dream preview` | Show the plan's operations and the quotes behind new statements |
 | `/memory dream apply` | Apply the whole plan |
 | `/memory dream apply-ops 0,2` | Apply only the numbered operations |

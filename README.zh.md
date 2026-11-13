@@ -104,7 +104,7 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
     quote: "For handoff notes I want the conclusion first, then risks, with no headings."
 ```
 
-**改了也能退回。** Dream 只提出方案，由你挑选要应用的改动。应用前会先备份，删除的记忆进回收目录，一条命令就能撤销整次 Dream。自动 Dream 默认关闭，要你自己打开。
+**改了也能退回。** Dream 只提出方案，由你挑选要应用的改动。应用前会先备份，一条命令就能撤销整次 Dream。它只追加带出处的事实，把被推翻的旧值留在历史里；不合并页面，也不删除笔记。自动 Dream 默认关闭，要你自己打开。
 
 ## 上手
 

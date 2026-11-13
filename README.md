@@ -100,7 +100,7 @@ A **Memory** tab sits next to Chat in every session, and the status bar shows ho
     quote: "For handoff notes I want the conclusion first, then risks, with no headings."
 ```
 
-**Nothing is final.** Dream only proposes a plan. You pick the changes, a backup is taken first, deleted notes go to a trash folder, and one command undoes the whole Dream. Automatic Dreams are off until you turn them on.
+**Nothing is final.** Dream only proposes a plan. You pick the changes, a backup is taken first, and one command undoes the whole Dream. It appends sourced facts and replaces a contradicted value while keeping the old one in history; it does not merge pages or delete notes. Automatic Dreams are off until you turn them on.
 
 ## Try it
 

@@ -38,9 +38,6 @@ function core() {
       runtime: await loadModule('../src/runtime.js', { requireExports: ['MemoryRuntime'] }),
       dream: await loadModule('../src/dream.js', { requireExports: ['DreamEngine'] }),
       dreamInput: await loadModule('../src/dream-input.js', { requireExports: ['gatherDreamInput'] }),
-      dreamPrompt: await loadModule('../src/dream-prompt.js', {
-        requireExports: ['DREAM_SYSTEM_PROMPT', 'buildDreamPrompt'],
-      }),
     }))();
   }
   return corePromise;
@@ -281,71 +278,35 @@ test('P0-1: validateDreamPlan drops writes to files truncated in the dream input
   assert.match(result.dropped.join(' '), /truncat/i, 'the drop reason must mention truncation');
 });
 
-test('P0-1: dream apply never rewrites a long file that was truncated in the input', async (t) => {
-  const proj = await setupProject(t);
+test('P0-1: a dream leaves a long page it was not asked to change byte-identical', async (t) => {
+  const env = await dreamRuntimeEnv(t, { dreamMaxFileChars: 2_000 });
+  const { runtime, pctx } = env;
   const content = Array.from({ length: 800 }, (_, index) => `- fact ${index}: ${'x'.repeat(30)}`).join('\n');
-  const saved = await proj.store.saveEntry({
+  const saved = await pctx.store.saveEntry({
     name: 'api notes',
     type: 'reference',
     description: 'long reference',
     content,
   });
-  const fileName = saved.file;
-  const before = await proj.store.readEntry(fileName);
+  const before = await pctx.store.readEntry(saved.file);
   assert.ok(
-    before.body.length > proj.config.dreamMaxFileChars,
-    `fixture body (${before.body.length}) must exceed dreamMaxFileChars (${proj.config.dreamMaxFileChars})`,
+    before.body.length > env.config.dreamMaxFileChars,
+    `fixture body (${before.body.length}) must exceed dreamMaxFileChars (${env.config.dreamMaxFileChars})`,
   );
-  await proj.state.ensureSession('session-1', 1000);
-
-  const ctx = fakeCtx({
-    workspaceDir: proj.workspaceDir,
-    sessions: {
-      'session-1': sessionRecord({ id: 'session-1', createdAt: 1000, user: ['整理记忆'], assistant: ['好的'] }),
-    },
-    planFor: () => ({
-      summary: 'tidy long reference',
-      operations: [
-        {
-          op: 'write',
-          type: 'reference',
-          file: fileName,
-          name: 'api notes',
-          description: 'long reference',
-          body: `${before.body.slice(0, 400)}\n- fact NEW`,
-        },
-        { op: 'index', content: `- [api notes](${fileName}) — long reference\n` },
-      ],
-    }),
+  await scriptDream(env, {
+    sessions: { s1: ['Short note: run the tests first.'] },
+    claims: [claimOf('Short note: run the tests first.', { target: 'short notes' })],
   });
 
-  const engine = new proj.mods.dream.DreamEngine({ ctx: ctx.ctx, runtime: { invalidateInjection() {} }, config: proj.config });
-  const run = await engine.run({ pctx: proj.pctx, force: true, trigger: 'manual' });
-  assert.equal(run.ran, true, 'forced dream must run');
+  const run = await runtime.dream({ pctx, force: true, trigger: 'manual' });
+  assert.equal(run.ran, true, `forced dream must run: ${JSON.stringify(run).slice(0, 300)}`);
 
-  const after = await proj.store.readEntry(fileName);
-  assert.equal(after.body, before.body, 'the truncated source file body must stay byte-identical');
+  const after = await pctx.store.readEntry(saved.file);
+  assert.equal(after.body, before.body, 'a page the dream was not asked to change must stay byte-identical');
   assert.equal(after.body.length, before.body.length);
-
-  if (Array.isArray(run.dropped)) {
-    assert.match(run.dropped.join(' '), /truncat/i, 'run result should report the truncated-file drop');
-  }
-
-  // The gathered input carries head+tail only and reports the truncated file.
-  const input = await proj.mods.dreamInput.gatherDreamInput({
-    ctx: ctx.ctx,
-    store: proj.store,
-    config: proj.config,
-    workspaceDir: proj.workspaceDir,
-    state: proj.state,
-  });
-  assert.ok(Array.isArray(input.truncatedFiles), 'gatherDreamInput must expose truncatedFiles');
-  assert.equal(input.truncatedFiles.includes(fileName), true, `truncatedFiles must include ${fileName}`);
-  const gathered = input.memory.files.find((file) => file.file === fileName);
-  assert.ok(gathered, 'gathered memory must include the long file');
-  assert.ok(gathered.body.length < before.body.length, 'truncated input must carry a bounded excerpt');
-  assert.match(gathered.body, /fact 0/, 'head facts are kept');
-  assert.match(gathered.body, /fact 799/, 'tail facts are kept (latest conclusions survive)');
+  const entries = await pctx.store.listEntries();
+  assert.equal(entries.length, 2, 'the claim is written to its own page next to the untouched one');
+  assert.ok(entries.some((entry) => entry.file !== saved.file), 'a new page carries the claim');
 });
 
 // ---------------------------------------------------------------------------
@@ -498,43 +459,6 @@ test('P0-3: gatherDreamInput filters subagent sessions and keeps mainline sessio
   assert.match(serialized, /主线会话|已完成 P0 修复|第二个主线会话内容/);
 });
 
-test('P0-3: dream prompt makes memory subordinate to instructions and refuses truncated rewrites', async (t) => {
-  await setupProject(t); // just ensures the temp dir fixture machinery works
-  const { DREAM_SYSTEM_PROMPT, buildDreamPrompt } = await core().then((mods) => mods.dreamPrompt);
-  const input = {
-    memory: {
-      index: '- [api notes](reference_api_notes.md) — long reference',
-      files: [
-        {
-          file: 'reference_api_notes.md',
-          type: 'reference',
-          description: 'long reference',
-          modified: '2026-11-06T00:00:00.000Z',
-          body: 'head\n...(truncated)\ntail',
-          truncated: true,
-        },
-      ],
-    },
-    sessions: [],
-    chars: 100,
-    truncated: true,
-    truncatedFiles: ['reference_api_notes.md'],
-  };
-  const prompt = `${DREAM_SYSTEM_PROMPT}\n${buildDreamPrompt(input)}`;
-  assert.doesNotMatch(prompt, /prefer the newer/i, 'the old "prefer the newer memory" wording must be gone');
-  assert.doesNotMatch(prompt, /newer memory/i, 'no "newer memory wins" guidance may remain');
-  assert.match(prompt, /not instructions/i, 'prompt must say memory is context, not instructions');
-  assert.match(prompt, /background context/i, 'prompt must describe memory as background context');
-  assert.match(prompt, /never overrides/i, 'prompt must say memory never overrides instruction files');
-  assert.match(prompt, /TRUNCATED IN INPUT/, 'prompt must mark truncated files');
-  assert.match(prompt, /DO NOT REWRITE/, 'prompt must forbid rewriting truncated files');
-  assert.match(prompt, /reference_api_notes\.md/, 'prompt must name the truncated file');
-});
-
-// ---------------------------------------------------------------------------
-// P0-4: one git root -> one store/state; concurrent saves keep the index
-// ---------------------------------------------------------------------------
-
 test('P0-4: repo and its subdirectory share one store/state instance; concurrent saves keep index consistent', async (t) => {
   const { config, paths, store: storeMod, state: stateMod, runtime: runtimeMod } = await core();
   const tmp = await makeTempDir(t);
@@ -590,45 +514,6 @@ test('P0-4: repo and its subdirectory share one store/state instance; concurrent
 // ---------------------------------------------------------------------------
 // P1: delete-disabled dream merge leaves no orphans; trashEntry moves files
 // ---------------------------------------------------------------------------
-
-test('P1: delete-disabled dream merge keeps disk and index in sync (no orphan files)', async (t) => {
-  const proj = await setupProject(t, { configOverrides: { dreamAllowDelete: false } });
-  await proj.store.saveEntry({ name: 'testing a', type: 'feedback', description: 'run tests first', content: 'A body' });
-  await proj.store.saveEntry({ name: 'testing b', type: 'feedback', description: 'run tests before commit', content: 'B body' });
-  await proj.state.ensureSession('session-1', 1000);
-
-  const ctx = fakeCtx({
-    workspaceDir: proj.workspaceDir,
-    sessions: {
-      'session-1': sessionRecord({ id: 'session-1', createdAt: 1000, user: ['合并测试记忆'], assistant: ['好的'] }),
-    },
-    planFor: () => ({
-      summary: 'merge testing notes',
-      operations: [
-        { op: 'write', type: 'feedback', name: 'testing', description: 'run tests before claiming done', body: 'A+B merged' },
-        { op: 'delete', file: 'feedback_testing_a.md', reason: 'absorbed' },
-        { op: 'delete', file: 'feedback_testing_b.md', reason: 'absorbed' },
-        { op: 'index', content: '- [testing](feedback_testing.md) — run tests before claiming done\n' },
-      ],
-    }),
-  });
-  const engine = new proj.mods.dream.DreamEngine({ ctx: ctx.ctx, runtime: { invalidateInjection() {} }, config: proj.config });
-  const run = await engine.run({ pctx: proj.pctx, force: true, trigger: 'manual' });
-  assert.equal(run.applied, true, 'the merge should apply');
-
-  const entries = await proj.store.listEntries();
-  const audit = await proj.store.auditIndex();
-  assert.equal(audit.missing.length, 0, `orphan files not covered by the index: ${JSON.stringify(audit.missing)}`);
-  assert.equal(audit.dangling.length, 0, `index lines pointing at deleted files: ${JSON.stringify(audit.dangling)}`);
-
-  const injected = await proj.store.injectedIndex();
-  for (const entry of entries) {
-    assert.ok(
-      injected.text.includes(`](${entry.file})`),
-      `file ${entry.file} is on disk but never injected (orphan)`,
-    );
-  }
-});
 
 test('P1: trashEntry soft-deletes into the project trash and removes the index line', async (t) => {
   const proj = await setupProject(t);
@@ -706,57 +591,42 @@ test('P1: dry-run previews a plan and applyLastPlan executes that same plan', as
 // ---------------------------------------------------------------------------
 
 test('P1: a failure in the middle of apply restores the backup and reports rolledBack', async (t) => {
-  const proj = await setupProject(t);
-  const original = await proj.store.saveEntry({
+  const env = await dreamRuntimeEnv(t);
+  const { runtime, pctx } = env;
+  const original = await pctx.store.saveEntry({
     name: 'old',
     type: 'feedback',
     description: 'original',
     content: 'ORIGINAL BODY',
   });
-  await proj.state.ensureSession('session-1', 1000);
-
-  const ctx = fakeCtx({
-    workspaceDir: proj.workspaceDir,
-    sessions: { 'session-1': sessionRecord({ id: 'session-1', createdAt: 1000, user: ['请整理一下记忆文件'], assistant: ['好的'] }) },
-    planFor: () => ({
-      summary: 'rewrite and add',
-      operations: [
-        { op: 'write', type: 'feedback', file: original.file, name: 'old', description: 'original', body: 'REWRITTEN BODY', evidence: ['请整理一下记忆文件'] },
-        { op: 'write', type: 'feedback', name: 'brand new', description: 'new', body: 'NEW BODY', evidence: ['请整理一下记忆文件'] },
-        { op: 'index', content: `- [old](${original.file}) — original\n- [brand new](feedback_brand_new.md) — new\n` },
-      ],
-    }),
+  await scriptDream(env, {
+    sessions: { s1: ['请整理一下记忆文件', '合并前先写变更说明'] },
+    claims: [
+      claimOf('请整理一下记忆文件', { target: 'old' }),
+      claimOf('合并前先写变更说明', { target: 'brand new' }),
+    ],
   });
 
-  const { store: wrappedStore, calls } = failingWriteStore(proj.store, { failOnFile: 'feedback_brand_new.md' });
-  const pctx = { ...proj.pctx, store: wrappedStore };
-  const engine = new proj.mods.dream.DreamEngine({
-    ctx: ctx.ctx,
-    runtime: { invalidateInjection() {} },
-    config: proj.config,
-  });
-  const run = await engine.run({ pctx, force: true, trigger: 'manual' });
+  const { store: wrappedStore, calls } = failingWriteStore(pctx.store);
+  pctx.store = wrappedStore;
+  const run = await runtime.dream({ pctx, force: true, trigger: 'manual' });
 
-  assert.ok(calls.includes('feedback_brand_new.md'), `the failing write was never attempted; writes: ${JSON.stringify(calls)}`);
+  assert.equal(calls.length, 2, `the second write must fail; writes: ${JSON.stringify(calls)}`);
   assert.equal(run.applied, false, 'a failed apply must not report success');
   assert.equal(run.rolledBack, true, 'a failed apply must report rolledBack:true');
   assert.ok(run.error, 'a failed apply must report the error');
 
-  const restored = await proj.store.readEntry(original.file);
+  const restored = await pctx.store.readEntry(original.file);
   assert.equal(restored.body.trim(), 'ORIGINAL BODY', 'the pre-dream body must be restored from the backup');
-  assert.equal(
-    await exists(path.join(proj.paths.memoryDir, 'feedback_brand_new.md')),
-    false,
-    'files created by the failed apply must be rolled back out of the memory dir',
-  );
-  assert.doesNotMatch(await proj.store.indexText(), /brand new/, 'the index must be restored as well');
-  const audit = await proj.store.auditIndex();
+  assert.equal((await pctx.store.listEntries()).length, 1, 'files created by the failed apply are rolled back');
+  assert.doesNotMatch(await pctx.store.indexText(), /合并前先写变更说明/, 'the index must be restored as well');
+  const audit = await pctx.store.auditIndex();
   assert.equal(audit.missing.length, 0);
 
-  const snapshot = proj.state.snapshot();
+  const snapshot = pctx.state.snapshot();
   assert.match(String(snapshot.lastError), /simulated disk failure/i, 'state must record the failure');
   assert.equal(snapshot.consecutiveFailures, 1, 'failure counter must be incremented');
-  const changelog = await readFile(proj.paths.changelogFile, 'utf8').catch(() => '');
+  const changelog = await readFile(pctx.paths.changelogFile, 'utf8').catch(() => '');
   assert.match(changelog, /rollback/i, 'changelog must record the rollback');
 });
 
@@ -832,55 +702,6 @@ test('R3: applyLastPlan refuses a plan once memory changed after the dry-run', a
   assert.match(String(applied.error), /stale-plan/);
   assert.match(String(applied.error), new RegExp(escapeRegExp(goal.file)), 'the error names the changed file');
   assert.equal((await pctx.store.readEntry(goal.file)).body, 'v2 newer human edit', 'the newer edit survives');
-});
-
-test('R3: a direct dream apply aborts when memory changes while the model is running', async (t) => {
-  const proj = await setupProject(t);
-  await proj.store.saveEntry({ name: 'goal', type: 'project', content: 'v1' });
-  const ctx = fakeCtx({
-    workspaceDir: proj.workspaceDir,
-    planFor: () => ({
-      summary: 'refresh goal',
-      operations: [{ op: 'write', type: 'project', file: 'project_goal.md', name: 'goal', body: 'v1 (tidied)' }],
-    }),
-  });
-  // Simulate an edit landing during the (slow) model call.
-  const stream = ctx.services.llm.stream.bind(ctx.services.llm);
-  ctx.services.llm.stream = (options) => {
-    const chunks = stream(options);
-    return (async function* edited() {
-      await proj.store.updateEntry('project_goal.md', { content: 'v2 edit during dream' });
-      yield* chunks;
-    })();
-  };
-  const engine = new proj.mods.dream.DreamEngine({ ctx: ctx.ctx, runtime: { invalidateInjection() {} }, config: proj.config });
-  const run = await engine.run({ pctx: proj.pctx, force: true, trigger: 'manual' });
-  assert.equal(run.applied, false);
-  assert.match(String(run.error), /memory changed while the dream was running/);
-  assert.equal((await proj.store.readEntry('project_goal.md')).body, 'v2 edit during dream');
-});
-
-test('R3: a write without "file" never overwrites a different memory that shares the slug', async (t) => {
-  const proj = await setupProject(t);
-  const first = await proj.store.saveEntry({ name: 'API Notes', type: 'reference', content: 'first' });
-  const second = await proj.store.saveEntry({ name: 'api-notes', type: 'reference', content: 'second' });
-  assert.notEqual(first.file, second.file);
-  const ctx = fakeCtx({
-    workspaceDir: proj.workspaceDir,
-    planFor: () => ({
-      summary: 'update notes',
-      operations: [
-        { op: 'write', type: 'reference', name: 'api-notes', body: 'second (updated)' },
-        { op: 'write', type: 'reference', name: 'API Notes', body: 'first (updated)' },
-      ],
-    }),
-  });
-  const engine = new proj.mods.dream.DreamEngine({ ctx: ctx.ctx, runtime: { invalidateInjection() {} }, config: proj.config });
-  const run = await engine.run({ pctx: proj.pctx, force: true, trigger: 'manual' });
-  assert.equal(run.applied, true);
-  assert.match(run.dropped.join(' '), /already holds a different memory/);
-  assert.equal((await proj.store.readEntry(first.file)).body, 'first (updated)', 'same-name derived write still updates');
-  assert.equal((await proj.store.readEntry(second.file)).body, 'second', 'the suffixed memory is untouched');
 });
 
 test('R3: with deletes enabled, a file truncated in the input cannot be deleted', async () => {

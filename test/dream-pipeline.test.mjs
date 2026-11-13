@@ -37,10 +37,9 @@ async function env(t, overrides = {}) {
   const memoryRoot = path.join(tmp, 'data');
   const workspaceDir = path.join(tmp, 'workspace');
   const paths = buildPaths({ memoryRoot, workspaceDir });
-  // These cases exercise the maintenance organizer path (a whole-library
-  // rewrite requested explicitly). The default claim-level path lives in
-  // test/dream-merge.test.mjs and test/dream-merge-pipeline.test.mjs.
-  const config = resolveConfig({ memoryRoot, dreamPipeline: 'v2', dreamMode: 'apply', dreamMaxOps: 10, dreamOrganizerMode: 'maintenance', ...overrides });
+  // Every Dream test drives the claim-level path: the host merges claims and
+  // there is no terminal organizer any more.
+  const config = resolveConfig({ memoryRoot, dreamMode: 'apply', dreamMaxOps: 10, ...overrides });
   const store = new MemoryStore({ paths, config });
   await store.ensure();
   const state = new ProjectState(paths);
@@ -135,54 +134,46 @@ test('Dream v2 plans created before coverage tracking require a fresh dry-run', 
 test('Dream v2 dry-run writes a plan without touching memory', async (t) => {
   const e = await env(t);
   await e.store.saveEntry({ name: 'Existing', type: 'project', content: '- Tests need FOO=1. ^[s1#1, 2026-11-08]' });
-  const ctx = fakeCtx({
-    summary: 'add tests note',
-    writes: [{
-      file: 'project_testing.md',
-      name: 'Testing',
-      description: 'Test commands',
-      type: 'project',
-      body: '- Tests need FOO=1. ^[s1#1, 2026-11-08]',
-    }],
-    deletes: [],
-    links: [],
-    conflicts: [],
+  const events = [{
+    type: 'user/message', seq: 1, time: Date.parse('2026-11-11T15:00:00Z'),
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Release notes must list the migration step.' }] },
+  }];
+  const ctx = evidenceCtx({
+    events,
+    analyzer: {
+      summary: 'release note',
+      claims: [{ text: 'Release notes must list the migration step.', quote: 'Release notes must list the migration step.', kind: 'project', confidence: 'high', target: 'Release notes' }],
+      patches: [],
+      verify: [{ file: 'project_release_notes.md', claim: 'Release notes must list the migration step.', result: 'holds', quote: 'Release notes must list the migration step.' }],
+    },
   });
+  await e.state.ensureSession('s1');
   const runtime = { invalidateAllInjections: () => {} };
   const engine = new DreamEngine({ ctx, runtime, config: e.config });
   const pipeline = new DreamPipeline({ ctx, runtime, config: e.config, engine });
-  const result = await pipeline.run({ pctx: e.pctx, force: true, dryRun: true, noSessions: true, trigger: 'manual' });
+  const result = await pipeline.run({ pctx: e.pctx, force: true, dryRun: true, trigger: 'manual' });
   assert.equal(result.ran, true);
   assert.equal(result.applied, false);
   assert.equal(result.dryRun, true);
   assert.ok(result.planPath);
-  assert.equal(await fs.access(path.join(e.paths.memoryDir, 'project_testing.md')).then(() => true).catch(() => false), false);
   const plan = JSON.parse(await fs.readFile(result.planPath, 'utf8'));
   assert.equal(plan.kind, 'dream-v2');
-  assert.ok(plan.operations.some((op) => op.op === 'write' && op.file === 'project_testing.md'));
-  assert.equal(await fs.access(result.planPath).then(() => true).catch(() => false), true);
+  const write = plan.operations.find((op) => op.op === 'write');
+  assert.ok(write, 'the verified claim is planned as a page write');
+  assert.match(write.body, /Release notes must list the migration step\./);
+  assert.equal(await fs.access(path.join(e.paths.memoryDir, write.file)).then(() => true).catch(() => false), false);
 });
 
-test('Dream v2 pure consolidation rejects a new uncited fact', async (t) => {
+test('Dream v2 consolidation without transcripts invents no page', async (t) => {
   const e = await env(t);
-  const ctx = fakeCtx({
-    summary: 'new fact',
-    writes: [{
-      file: 'project_new.md',
-      name: 'New',
-      description: 'New fact',
-      type: 'project',
-      body: '- A brand new fact with no evidence.',
-    }],
-    deletes: [],
-    links: [],
-    conflicts: [],
-  });
+  const ctx = fakeCtx({});
   const engine = new DreamEngine({ ctx, config: e.config });
   const pipeline = new DreamPipeline({ ctx, config: e.config, engine });
   const result = await pipeline.run({ pctx: e.pctx, force: true, dryRun: true, noSessions: true, trigger: 'manual' });
   assert.equal(result.applied, false);
-  assert.match(String(result.error), /EVIDENCE_REJECTED/);
+  assert.ok(result.planPath);
+  const plan = JSON.parse(await fs.readFile(result.planPath, 'utf8'));
+  assert.equal(plan.operations.some((op) => op.op === 'write'), false, 'a claim without a transcript cannot become a page');
   assert.equal(await fs.access(path.join(e.paths.memoryDir, 'project_new.md')).then(() => true).catch(() => false), false);
 });
 
@@ -230,33 +221,34 @@ test('both apply paths reject a v2 plan with missing or mismatched evidence', as
   }
 });
 
-test('Dream v2 pure consolidation rejects a type-change that reclassifies a project line as user feedback', async (t) => {
+test('a claim never reclassifies the page it lands on', async (t) => {
   const e = await env(t);
-  await e.store.saveEntry({
+  const saved = await e.store.saveEntry({
     name: 'Route',
     type: 'project',
     content: '- 转发材料说路由改动要加测试。 ^[s2#1, 2026-11-11]',
   });
-  const ctx = fakeCtx({
-    summary: 'reclassify',
-    writes: [{
-      file: 'project_route.md',
-      name: 'Route',
-      description: 'Route',
-      type: 'feedback',
-      body: '- 转发材料说路由改动要加测试。 ^[s2#1, 2026-11-11]',
-    }],
-    deletes: [],
-    links: [],
-    conflicts: [],
+  const events = [{
+    type: 'user/message', seq: 1, time: Date.parse('2026-11-11T15:00:00Z'),
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: '以后路由改动要用真实入口验证。' }] },
+  }];
+  const ctx = evidenceCtx({
+    events,
+    analyzer: {
+      summary: 'reclassify attempt',
+      claims: [{ text: '以后路由改动要用真实入口验证。', quote: '以后路由改动要用真实入口验证。', kind: 'user', confidence: 'high', target: saved.file }],
+      patches: [],
+      verify: [{ file: saved.file, claim: '以后路由改动要用真实入口验证。', result: 'holds', quote: '以后路由改动要用真实入口验证。' }],
+    },
   });
+  await e.state.ensureSession('s1');
   const engine = new DreamEngine({ ctx, config: e.config });
   const pipeline = new DreamPipeline({ ctx, config: e.config, engine });
-  const result = await pipeline.run({ pctx: e.pctx, force: true, dryRun: true, noSessions: true, trigger: 'manual' });
-  assert.equal(result.applied, false);
-  assert.match(String(result.error), /EVIDENCE_REJECTED/);
-  const saved = await e.store.readEntry('project_route.md');
-  assert.equal(saved.frontmatter.type, 'project');
+  const result = await pipeline.run({ pctx: e.pctx, force: true, dryRun: false, trigger: 'manual' });
+  assert.equal(result.applied, true, result.error);
+  const page = await e.store.readEntry(saved.file);
+  assert.equal(page.frontmatter.type, 'project', 'the host keeps the existing page type');
+  assert.match(page.body, /以后路由改动要用真实入口验证/);
 });
 
 test('apply rebuilds MEMORY.md from checked pages and never keeps an organizer heading', async (t) => {
@@ -482,7 +474,7 @@ test('Dream v2 will not replace a read timeout with a write timeout', async (t) 
   assert.doesNotMatch(page.body, /Superseded/, 'nothing was superseded');
 });
 
-test('Dream v2 keeps the same correction history when the organizer already wrote the new value', async (t) => {
+test('a repeated correction records its history once', async (t) => {
   const e = await env(t);
   const saved = await e.store.saveEntry({
     name: 'Route',
@@ -501,20 +493,17 @@ test('Dream v2 keeps the same correction history when the organizer already wrot
       patches: [],
       verify: [{ file: saved.file, claim: '路由用旧入口。', result: 'contradicts', quote: '路由改动用真实入口验证' }],
     },
-    organizer: {
-      summary: 'rewrite with the new value',
-      writes: [{ file: saved.file, name: '路由改动用真实入口验证', description: '路由改动用真实入口验证', type: 'project', body: '- 路由改动用真实入口验证 ^[s1#1, 2026-11-11]' }],
-      deletes: [], links: [], conflicts: [],
-    },
   });
   await e.state.ensureSession('s1');
   const engine = new DreamEngine({ ctx, config: e.config });
   const pipeline = new DreamPipeline({ ctx, config: e.config, engine });
-  const result = await pipeline.run({ pctx: e.pctx, force: true, dryRun: false, trigger: 'manual' });
-  assert.equal(result.applied, true, result.error);
+  for (const pass of [1, 2]) {
+    const result = await pipeline.run({ pctx: e.pctx, force: true, dryRun: false, trigger: 'manual' });
+    if (pass === 1) assert.equal(result.applied, true, result.error);
+  }
   const savedPage = await e.store.readEntry(saved.file);
-  assert.match(savedPage.body, /Superseded: 路由用旧入口。[^\n]*\(until \d{4}-\d{2}-\d{2}\) — source: dream, session s1/);
-  assert.match(savedPage.body, /— source: dream, session s1/);
+  assert.match(savedPage.body, /Superseded: 路由用旧入口。 \(until \d{4}-\d{2}-\d{2}\)/);
+  assert.equal((savedPage.body.match(/Superseded:/gu) ?? []).length, 1, 'history is written once');
   assert.equal((savedPage.body.match(/路由改动用真实入口验证/gu) ?? []).length, 1, 'the new value is not duplicated');
 });
 
@@ -636,41 +625,42 @@ test('Dream v2 applies a correction backed by a [user] quote', async (t) => {
   assert.match(saved.body, /真实入口验证/);
 });
 
-test('Dream v2 rejects a user attribution that came only from forwarded material', async (t) => {
+test('a forwarded quote cannot become a user preference', async (t) => {
   const e = await env(t);
-  const forwarded = Array.from({ length: 12 }, (_, i) =>
-    `转发材料第${i + 1}行：路由改动要加测试。${'这是转发文档的正文内容，不是用户本人说的话。'.repeat(3)}`,
-  ).join('\n');
-  const events = [
-    { type: 'user/message', seq: 1, time: Date.parse('2026-11-11T15:00:00Z'), data: { role: 'user', content: [{ type: 'text', text: forwarded }], source: { kind: 'user' } } },
-  ];
-  const ctx = evidenceCtx({
-    events,
-    analyzer: {
-      summary: 'forwarded route note',
-      claims: [{ text: '路由改动要加测试', quote: '路由改动要加测试', kind: 'reference', confidence: 'medium', target: 'user_route_testing.md' }],
-      patches: [],
-      verify: [],
-    },
-    organizer: {
-      summary: 'wrongly attribute forwarded note',
-      writes: [{
-        file: 'user_route_testing.md',
-        name: 'Route testing preference',
-        description: 'Route testing preference',
-        type: 'user',
-        body: '- 路由改动要加测试。 ^[s1#1, 2026-11-11]',
-      }],
-      deletes: [], links: [], conflicts: [],
-    },
-  });
-  await e.state.ensureSession('s1');
-  const runtime = { invalidateAllInjections: () => {} };
-  const engine = new DreamEngine({ ctx, runtime, config: e.config });
-  const pipeline = new DreamPipeline({ ctx, runtime, config: e.config, engine });
-  const result = await pipeline.run({ pctx: e.pctx, force: true, dryRun: false, trigger: 'manual' });
+  const engine = new DreamEngine({ ctx: fakeCtx({}), config: e.config });
+  const plan = {
+    kind: 'dream-v2',
+    coverageVersion: 1,
+    coverageComplete: true,
+    expectedSessions: 1,
+    processedSessions: 1,
+    sessions: ['s1'],
+    reads: [{ id: 's1', seq: 1, complete: true }],
+    failedSessions: [],
+    partialSessions: [],
+    summary: 'forwarded material',
+    evidenceRequired: true,
+    evidence: [{
+      sessionId: 's1',
+      source: 'user-pasted',
+      text: '路由改动要加测试',
+      quote: '路由改动要加测试',
+      date: '2026-11-11',
+      seq: 1,
+    }],
+    operations: [{
+      op: 'write',
+      scope: 'project',
+      type: 'user',
+      file: 'user_route_testing.md',
+      name: 'Route testing preference',
+      description: 'Route testing preference',
+      body: '- 路由改动要加测试。 ^[s1#1, 2026-11-11]',
+    }],
+  };
+  const result = await engine.applyPending({ pctx: e.pctx, plan });
   assert.equal(result.applied, false);
-  assert.match(String(result.error), /EVIDENCE_REJECTED/);
+  assert.match(String(result.error), /no \[user\] claim|forwarded material/);
   await assert.rejects(() => e.store.readEntry('user_route_testing.md'));
 });
 
@@ -706,32 +696,36 @@ test('final apply path re-checks evidence and refuses a tampered plan', async (t
   await assert.rejects(() => e.store.readEntry('user_tampered.md'));
 });
 
-test('Dream v2 apply writes pages, index, SKILL and manifest', async (t) => {
+test('Dream v2 apply writes the page, the index and the run manifest', async (t) => {
   const e = await env(t);
   await e.store.saveEntry({ name: 'Existing', type: 'project', content: '- Tests need FOO=1. ^[s1#1, 2026-11-08]' });
-  const ctx = fakeCtx({
-    summary: 'add tests note',
-    writes: [{
-      file: 'project_testing.md',
-      name: 'Testing',
-      description: 'Test commands',
-      type: 'project',
-      body: '- Tests need FOO=1. ^[s1#1, 2026-11-08]',
-    }],
-    deletes: [],
-    links: [],
-    conflicts: [],
+  const events = [{
+    type: 'user/message', seq: 1, time: Date.parse('2026-11-11T15:00:00Z'),
+    data: { source: { kind: 'user' }, content: [{ type: 'text', text: 'Deploy uses the blue pipeline.' }] },
+  }];
+  const ctx = evidenceCtx({
+    events,
+    analyzer: {
+      summary: 'add tests note',
+      claims: [{ text: 'Deploy uses the blue pipeline.', quote: 'Deploy uses the blue pipeline.', kind: 'project', confidence: 'high', target: 'Deployment' }],
+      patches: [],
+      verify: [{ file: 'project_deployment.md', claim: 'Deploy uses the blue pipeline.', result: 'holds', quote: 'Deploy uses the blue pipeline.' }],
+    },
   });
+  await e.state.ensureSession('s1');
   const runtime = { invalidateAllInjections: () => {} };
   const engine = new DreamEngine({ ctx, runtime, config: e.config });
   const pipeline = new DreamPipeline({ ctx, runtime, config: e.config, engine });
-  const result = await pipeline.run({ pctx: e.pctx, force: true, dryRun: false, noSessions: true, trigger: 'manual' });
+  const result = await pipeline.run({ pctx: e.pctx, force: true, dryRun: false, trigger: 'manual' });
   assert.equal(result.ran, true);
   assert.equal(result.applied, true, result.error || 'not applied');
-  const file = path.join(e.paths.memoryDir, 'project_testing.md');
-  assert.match(await fs.readFile(file, 'utf8'), /Tests need FOO=1/);
-  assert.match(await fs.readFile(e.paths.indexFile, 'utf8'), /project_testing\.md/);
-  assert.match(await fs.readFile(e.paths.memorySkillFile, 'utf8'), /Start at MEMORY\.md/);
+  const entries = await e.store.listEntries();
+  assert.equal(entries.length, 2, 'the claim became a new page beside the existing one');
+  const pages = await Promise.all(entries.map((entry) => e.store.readEntry(entry.file)));
+  const written = pages.find((page) => page.body.includes('Deploy uses the blue pipeline'));
+  assert.ok(written, 'the new fact is on disk');
+  assert.match(await fs.readFile(e.paths.indexFile, 'utf8'), new RegExp(written.file.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')));
+  assert.equal(await fs.access(e.paths.memorySkillFile).then(() => true).catch(() => false), false, 'the host no longer writes a SKILL.md');
   const runDirs = await fs.readdir(e.paths.dreamsDir);
   assert.ok(runDirs.length >= 1);
 });
@@ -888,43 +882,3 @@ test('Dream v2 retries analyzer failures with a smaller prompt and the full tran
   }
 });
 
-test('Dream v2 retries organizer output limits and reports the failing stage if exhausted', async (t) => {
-  const e = await env(t);
-  const saved = await e.store.saveEntry({ name: 'Keep this page', type: 'project', content: 'Existing durable detail.' });
-  const calls = [];
-  let exhaust = false;
-  const fake = fakeCtx({});
-  const ctx = { get(name) {
-    if (name !== 'llm') return fake.get(name);
-    return { async *stream(options) {
-      calls.push(options);
-      yield { type: 'usage', usage: { totalTokens: 10 } };
-      if (calls.length === 1 || exhaust) {
-        yield { type: 'finish', reason: { kind: 'max-tokens' } };
-        return;
-      }
-      yield { type: 'text-delta', text: JSON.stringify({
-        summary: 'Compact retry', writes: [], deletes: [{ file: saved.file }], skill: 'Untrusted generated skill.',
-      }) };
-      yield { type: 'finish', reason: { kind: 'stop' } };
-    } };
-  } };
-  const engine = new DreamEngine({ ctx, config: e.config });
-  const pipeline = new DreamPipeline({ ctx, config: e.config, engine });
-  const run = () => pipeline.run({ pctx: e.pctx, force: true, dryRun: true, noSessions: true });
-  const recovered = await run();
-  assert.equal(recovered.manifest?.coverageComplete, true, recovered.error);
-  assert.equal(recovered.manifest.stages[1].retries, 1);
-  assert.equal(recovered.usage.totalTokens, 20);
-  assert.match(calls[1].messages[0].content[0].text, /Compact retry/);
-  const plan = JSON.parse(await fs.readFile(recovered.planPath, 'utf8'));
-  assert.ok(!plan.operations.some((op) => op.op === 'delete'));
-  assert.doesNotMatch(plan.skill, /Untrusted generated skill/);
-
-  calls.length = 0;
-  exhaust = true;
-  const failed = await run();
-  assert.match(failed.error, /^Dream organizer: model hit max-tokens twice/);
-  assert.equal(calls.length, 2);
-  assert.match(e.state.snapshot().lastError, /^Dream organizer:/);
-});

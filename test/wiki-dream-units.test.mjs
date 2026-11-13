@@ -2,7 +2,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildAnalyzerPrompt, parseAnalyzerReply } from '../src/dream-analyzer.js';
 import { verifyAnalysis } from '../src/dream-verifier.js';
-import { buildOrganizerPrompt, parseOrganizerReply } from '../src/dream-organizer.js';
 import { contradictsClaim, supportConflict, supportsStatement } from '../src/support.js';
 
 const TRANSCRIPT = [
@@ -78,27 +77,6 @@ test('a verdict without a located quote cannot confirm anything', () => {
   assert.equal(result.verify[0].result, 'unknown', 'an empty transcript cannot produce holds');
   assert.equal(result.verify[0].source, undefined);
   assert.match(result.warnings.join(' '), /downgraded to unknown/);
-});
-
-test('organizer prompt and reply are normalized with domains', () => {
-  const prompt = buildOrganizerPrompt({
-    analyses: [{ sessionId: 's1', summary: 's', claims: [{ text: 'x' }], patches: [], verify: [] }],
-    memoryPages: [{ file: 'project_testing.md', type: 'project', body: 'old' }],
-    index: '- [Testing](project_testing.md) — tests',
-  });
-  assert.match(prompt, /project_testing\.md/);
-  const parsed = parseOrganizerReply(JSON.stringify({
-    summary: 'organized',
-    writes: [{ file: 'project_testing.md', name: 'Testing', description: 'tests', domain: 'testing', type: 'project', body: '- Tests need FOO=1 ^[s1#1, 2026-11-08]' }],
-    deletes: [{ file: 'old.md', reason: 'absorbed' }],
-    links: [{ from: 'project_testing.md', to: 'project_release.md' }],
-    conflicts: [{ file: 'project_testing.md', content: 'CONFLICT: a vs b' }],
-  }));
-  assert.equal(parsed.writes.length, 1);
-  assert.equal(parsed.writes[0].domain, 'testing');
-  assert.deepEqual(parsed.deletes, [{ file: 'old.md', reason: 'absorbed' }]);
-  assert.equal(parsed.links.length, 1);
-  assert.equal(parsed.conflicts.length, 1);
 });
 
 test('a quote that states a different quantity cannot confirm the claim', () => {

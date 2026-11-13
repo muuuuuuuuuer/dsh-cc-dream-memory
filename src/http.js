@@ -225,8 +225,6 @@ export function createHttpHandler({ runtime, token }) {
         dryRun: body.dryRun === true,
         indexes: body.indexes,
         focus: body.focus,
-        pipeline: body.pipeline === 'v2' || body.pipeline === 'classic' ? body.pipeline : '',
-        maintenance: body.maintenance === true,
         noSessions: body.noSessions === true,
         trigger: 'manual',
         reason: 'web ui',

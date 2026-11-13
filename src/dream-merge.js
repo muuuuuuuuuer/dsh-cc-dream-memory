@@ -24,6 +24,10 @@ import { createHash } from 'node:crypto';
 import { bodyLineChanges } from './dream-evidence.js';
 import { citationToken, extractCitations } from './wiki-core.js';
 import { normalizeForMatch } from './dream-evidence.js';
+import { contradictsClaim, supportConflict } from './support.js';
+
+/** A value that carries a number or a duration must restate the same object. */
+const HAS_MEASUREMENT = /\d/u;
 
 const PAGE_RE = /^[\p{L}\p{N}._-]+\.md$/u;
 const RESERVED = new Set(['MEMORY.md', 'SKILL.md', '_index.md', '.dream-log.md']);
@@ -225,9 +229,10 @@ function claimLine(claim, citations) {
   return `- ${oneLine(claim.text, 1000)} ${citations.join(' ')}`;
 }
 
-function supersededLine({ oldValue, date, citation, claim }) {
-  const source = text(claim?.quote) === '' ? '' : ` — ${oneLine(claim.quote, 160)}`;
-  return `- Superseded: ${oneLine(oldValue, 500)} (until ${date || 'unknown date'})${source} ${citation}`.trim();
+function supersededLine({ oldValue, date, citation }) {
+  // No quote here: for a correction the quote is the *new* value, and repeating
+  // it in history reads as if both values were still in play.
+  return `- Superseded: ${oneLine(oldValue, 500)} (until ${date || 'unknown date'}) ${citation}`.trim();
 }
 
 /**
@@ -348,6 +353,48 @@ export function mergeClaims({
         }
       });
       if (matching.length === 0) {
+        // The analyzer may miss a `contradicts` verdict. When exactly one line
+        // measures the same object with a different value, that line is this
+        // claim's old value, not a second fact to append.
+        const sameObject = [];
+        lines.forEach((candidate, index) => {
+          if (!BULLET_RE.test(candidate) || !HAS_MEASUREMENT.test(candidate)) return;
+          const value = candidate.replace(BULLET_RE, '').replace(/\s*\^\[[^\]]*\]\s*$/u, '').trim();
+          if (contradictsClaim(value, claim.text)) sameObject.push(index);
+        });
+        if (sameObject.length > 1) {
+          review.push({
+            file,
+            claim: oneLine(claim.text, 200),
+            reason: 'more than one line records a value for the same object',
+          });
+          continue;
+        }
+        if (sameObject.length === 1) {
+          const oldLine = lines[sameObject[0]];
+          const oldValue = oldLine.replace(BULLET_RE, '').replace(/\s*\^\[[^\]]*\]\s*$/u, '').trim();
+          lines[sameObject[0]] = line;
+          historyEntries.push(supersededLine({ oldValue, date: oneLine(claim.date, 20), citation: citations[0], claim }));
+          corrected = true;
+          changed = true;
+          continue;
+        }
+        // A value that names another object (a write timeout next to a read
+        // timeout) is not a new fact for this page: a person has to decide.
+        const otherObject = lines.find((candidate) => {
+          if (!BULLET_RE.test(candidate) || !HAS_MEASUREMENT.test(candidate)) return false;
+          const value = candidate.replace(BULLET_RE, '').replace(/\s*\^\[[^\]]*\]\s*$/u, '').trim();
+          const conflict = supportConflict(value, claim.text);
+          return (conflict === 'quantity' || conflict === 'negation') && !contradictsClaim(value, claim.text);
+        });
+        if (otherObject !== undefined) {
+          review.push({
+            file,
+            claim: oneLine(claim.text, 200),
+            reason: `the page already records a different value for another object: "${oneLine(otherObject.replace(BULLET_RE, '').replace(/\s*\^\[[^\]]*\]\s*$/u, '').trim(), 120)}"`,
+          });
+          continue;
+        }
         lines.splice(0, lines.length, ...appendToBody(lines, line));
         changed = true;
         continue;
@@ -364,6 +411,17 @@ export function mergeClaims({
       }
       const oldLine = lines[targets[0]];
       const oldValue = oldLine.replace(BULLET_RE, '').replace(/\s*\^\[[^\]]*\]\s*$/u, '').trim();
+      // A written value can only replace a measured one when it speaks about the
+      // same object: `write timeout 90s` says nothing about a read timeout.
+      if ((HAS_MEASUREMENT.test(oldValue) || HAS_MEASUREMENT.test(claim.text))
+        && !contradictsClaim(oldValue, claim.text)) {
+        review.push({
+          file,
+          claim: oneLine(claim.text, 200),
+          reason: `the new value does not restate the same quantity for the same object as "${oneLine(oldValue, 120)}"`,
+        });
+        continue;
+      }
       lines[targets[0]] = line;
       historyEntries.push(supersededLine({ oldValue, date: oneLine(claim.date, 20), citation: citations[0], claim }));
       corrected = true;
