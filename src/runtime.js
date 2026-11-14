@@ -10,15 +10,40 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import { createHash } from 'node:crypto';
-import { buildPaths, resolveMemoryRoot } from './paths.js';
+import { buildPaths, projectLayout, resolveMemoryRoot } from './paths.js';
 import { resolveIdentity } from './identity.js';
 import { MemoryStore } from './store.js';
+import { DreamEngine } from './dream.js';
+import { DreamPipeline } from './dream-pipeline.js';
+import { isDelegated } from './session-kind.js';
 import { ProjectState } from './state.js';
-import { loadRules, saveRulesFile, clearRulesFile } from './rules.js';
+import { loadRules, saveRulesFile } from './rules.js';
 
 function warn(scope, error) {
   // eslint-disable-next-line no-console
   console.warn(`[cc-memory] ${scope}:`, error?.message ?? error);
+}
+
+/**
+ * The preset name doubles as the per-agent memory namespace. The host session
+ * header has no stable agent-name field, so `agentPreset` is the durable name;
+ * fall back to an explicit `name` for embedders that provide one.
+ */
+function agentNamespace(agent) {
+  const header = agent?.session?.header ?? agent?.header ?? {};
+  const preset = typeof header.agentPreset === 'string' ? header.agentPreset.trim() : '';
+  if (preset) return preset;
+  return typeof agent?.name === 'string' ? agent.name.trim() : '';
+}
+
+/** Keep the directory name portable and inside `agents/`. */
+function safeAgentDirName(name) {
+  const safe = String(name || '')
+    .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '-')
+    .replace(/\.+$/u, '')
+    .trim()
+    .slice(0, 80);
+  return safe || '';
 }
 
 /**
@@ -43,9 +68,17 @@ function withDreamSummary(result) {
 }
 
 /** Boolean runtime overrides users may toggle without editing the profile. */
-const OVERRIDE_KEYS = ['enabled', 'autoMemoryEnabled', 'autoDreamEnabled', 'userMemoryEnabled'];
+const OVERRIDE_KEYS = [
+  'enabled',
+  'autoMemoryEnabled',
+  'autoDreamEnabled',
+  'autoExtract',
+];
 
 export class MemoryRuntime {
+  #dreamEngine;
+  #dreamPipeline;
+
   /**
    * @param {import('@deepseek-ai/cordis').Context} ctx
    * @param {Readonly<Record<string, unknown>>} config
@@ -64,6 +97,10 @@ export class MemoryRuntime {
     this.maxSessionCache = 500;
     /** @type {Map<string, object>} projectRoot -> one context per project (shared across subdirectories) */
     this.byProject = new Map();
+    /** @type {Map<string, object>} projectDir/agents/<preset> -> one store per named agent */
+    this.agentProjects = new Map();
+    /** @type {Map<string, Promise<object>>} in-flight per-agent store resolutions */
+    this.agentProjectPromises = new Map();
     /** @type {Map<string, Promise<object>>} in-flight agent resolutions */
     this.agentPromises = new Map();
     /** @type {Map<string, Promise<object>>} in-flight workspace resolutions */
@@ -72,11 +109,14 @@ export class MemoryRuntime {
     this.projectPromises = new Map();
     /** @type {Map<string, {projectId:string,projectRoot:string,source:string,markerPath?:string}>} */
     this.identityByWorkspace = new Map();
-    /** @type {Map<string, 'live'|'auto'>} per-session injection mode (v9) */
-    this.sessionModes = new Map();
+    /** @type {Map<string, {turns:number, writeSeq:number, consumedWriteSeq:number, lastTurnAt:number}>} */
+    this.turnState = new Map();
+    /** Last event seq each session has already offered to auto-extract. */
+    this.extractCursors = new Map();
     /** @type {Set<(info:{sessionId:string, agent?:object}) => void>} */
     this.listeners = new Set();
-    this.enginePromise = null;
+    this.#dreamEngine = new DreamEngine({ runtime: this });
+    this.#dreamPipeline = new DreamPipeline({ ctx, runtime: this });
     /** Background promises tracked so dispose() can drain them. */
     this.pending = new Set();
   }
@@ -176,18 +216,6 @@ export class MemoryRuntime {
     return this.rulesFor(projectContext);
   }
 
-  /** Remove one rules override (project or global). */
-  async resetRules(projectContext, scope, options = {}) {
-    const file =
-      scope === 'global'
-        ? projectContext?.paths?.globalRulesFile
-        : projectContext?.paths?.projectRulesFile;
-    await clearRulesFile(file);
-    await this._auditRulesChange(projectContext, scope, '', options.source || 'api');
-    this.invalidateAllInjections("rules");
-    return this.rulesFor(projectContext);
-  }
-
   /** Append one audit line for a rules change (persistent prompt surface). */
   async _auditRulesChange(projectContext, scope, text, source) {
     try {
@@ -214,8 +242,48 @@ export class MemoryRuntime {
   forgetSession(sessionId) {
     if (typeof sessionId !== 'string' || sessionId === '') return false;
     this.agentPromises.delete(sessionId);
-    this.sessionModes.delete(sessionId);
+    this.turnState.delete(sessionId);
+    this.extractCursors.delete(sessionId);
     return this.bySession.delete(sessionId);
+  }
+
+  /**
+   * Record that this session's model wrote memory during the current turn.
+   * Auto-extract uses it as a mutex: if the main agent already saved, a second
+   * extractor pass would just duplicate its work.
+   */
+  noteMemoryWrite(sessionId, at = Date.now()) {
+    if (typeof sessionId !== 'string' || sessionId === '') return;
+    const state = this.turnState.get(sessionId) ?? {
+      turns: 0,
+      writeSeq: 0,
+      consumedWriteSeq: 0,
+      lastTurnAt: 0,
+    };
+    state.writeSeq += 1;
+    state.lastWriteAt = Number(at) || Date.now();
+    this.turnState.set(sessionId, state);
+  }
+
+  /**
+   * Advance the turn counter at `turn/end` and report whether this turn had a
+   * model write after the previous turn ended. The counter is per session and
+   * only advanced for mainline (non-delegated) sessions by the scheduler.
+   */
+  noteTurnEnd(sessionId, at = Date.now()) {
+    if (typeof sessionId !== 'string' || sessionId === '') return { turns: 0, wrote: false };
+    const state = this.turnState.get(sessionId) ?? {
+      turns: 0,
+      writeSeq: 0,
+      consumedWriteSeq: 0,
+      lastTurnAt: 0,
+    };
+    state.turns += 1;
+    const wrote = state.writeSeq > state.consumedWriteSeq;
+    state.consumedWriteSeq = state.writeSeq;
+    state.lastTurnAt = Number(at) || Date.now();
+    this.turnState.set(sessionId, state);
+    return { turns: state.turns, wrote };
   }
 
   /** @returns {Promise<object|undefined>} project context for one live agent. */
@@ -230,6 +298,74 @@ export class MemoryRuntime {
     if (pending) return pending;
     const promise = this._resolveAgent(agent).finally(() => this.agentPromises.delete(agent.id));
     this.agentPromises.set(agent.id, promise);
+    return promise;
+  }
+
+  /**
+   * The preset namespace for an agent that opted into private memory, or ''.
+   *
+   * Only delegated sessions qualify: the main session already owns the shared
+   * project store, and `subagentMemory:'own'` is the only mode that opens one.
+   * @param {object} agent
+   * @returns {string}
+   */
+  agentMemoryName(agent) {
+    const config = this.config;
+    if (config.subagentMemory !== 'own') return '';
+    if (!isDelegated(agent)) return '';
+    const name = agentNamespace(agent);
+    const dirName = safeAgentDirName(name);
+    if (!dirName) return '';
+    const allow = Array.isArray(config.agentMemoryPresets) ? config.agentMemoryPresets : [];
+    if (allow.length > 0 && !allow.includes(name)) return '';
+    return name;
+  }
+
+  /** True when this agent reads and writes `agents/<preset>/memory`. */
+  agentMemoryEnabled(agent) {
+    return this.agentMemoryName(agent) !== '';
+  }
+
+  /** Whether an agent may use the memory snapshot and write its own notes. */
+  canWriteMemory(agent) {
+    return !isDelegated(agent) || this.config.subagentMemory === 'shared' || this.agentMemoryEnabled(agent);
+  }
+
+  /**
+   * Open (and cache) the private store for one named agent.
+   *
+   * The store is deliberately project-local and separate from the main store:
+   * its index, history and trash never leak into the shared memory, and Dream
+   * never scans it. Rules and global state stay on the base context.
+   */
+  async _agentContextFor(base, agent, name) {
+    const dirName = safeAgentDirName(name);
+    const agentsDir = path.join(base.paths.projectDir, 'agents');
+    const key = path.resolve(path.join(agentsDir, dirName));
+    const cached = this.agentProjects.get(key);
+    if (cached) return cached;
+    const pending = this.agentProjectPromises.get(key);
+    if (pending) return pending;
+    const promise = (async () => {
+      const paths = { ...base.paths, ...projectLayout(path.join(agentsDir, dirName)) };
+      const store = new MemoryStore({ paths, getConfig: () => this.config });
+      await store.ensure();
+      const projectContext = {
+        ...base,
+        paths,
+        store,
+        // Shared state is only used for the main project's Dream cadence; a
+        // private agent store never runs Dream.
+        state: base.state,
+        agent,
+        agentMemory: true,
+        agentMemoryName: name,
+        baseProjectContext: base,
+      };
+      this.agentProjects.set(key, projectContext);
+      return projectContext;
+    })().finally(() => this.agentProjectPromises.delete(key));
+    this.agentProjectPromises.set(key, promise);
     return promise;
   }
 
@@ -250,7 +386,15 @@ export class MemoryRuntime {
       warn('workingDirectory', new Error('no working directory for this session; memory features are disabled for it'));
       return undefined;
     }
-    const projectContext = { ...(await this.storeFor(workspaceDir)), agent, sessionId: agent.id };
+    let projectContext = { ...(await this.storeFor(workspaceDir)), agent, sessionId: agent.id };
+    const agentMemoryName = this.agentMemoryName(agent);
+    if (agentMemoryName) {
+      try {
+        projectContext = await this._agentContextFor(projectContext, agent, agentMemoryName);
+      } catch (error) {
+        warn('agent memory', error);
+      }
+    }
     this.bySession.delete(agent.id);
     this.bySession.set(agent.id, projectContext);
     while (this.bySession.size > this.maxSessionCache) {
@@ -282,10 +426,30 @@ export class MemoryRuntime {
     } catch (error) {
       warn('agents.get', error);
     }
-    if (!cwdHint) return undefined;
-    const projectContext = { ...(await this.storeFor(cwdHint)), sessionId };
+    const cwd = cwdHint || (await this._persistedCwd(sessionId));
+    if (!cwd) return undefined;
+    const projectContext = { ...(await this.storeFor(cwd)), sessionId };
     this.bySession.set(sessionId, projectContext);
     return projectContext;
+  }
+
+  /**
+   * The directory a saved (not live) session was created in. An old
+   * conversation reopened in the app has no agent yet, but its header still
+   * names its own project, so it never has to borrow whichever one is loaded.
+   */
+  async _persistedCwd(sessionId) {
+    try {
+      const sessionQuery = this.ctx.get('sessionQuery');
+      if (!sessionQuery || typeof sessionQuery.filterSessions !== 'function') return '';
+      const records = await sessionQuery.filterSessions([{ kind: 'id', values: [sessionId] }]);
+      const record = Array.isArray(records) ? records.find((item) => item?.header?.id === sessionId) : undefined;
+      const cwd = record?.header?.cwd;
+      return typeof cwd === 'string' ? cwd : '';
+    } catch (error) {
+      warn('sessionQuery.filterSessions', error);
+      return '';
+    }
   }
 
   /**
@@ -340,12 +504,8 @@ export class MemoryRuntime {
       return shared;
     }
     const promise = (async () => {
-      const store = new MemoryStore({
-        paths,
-        config: this.config,
-        // Live provider: runtime toggles must reach an already-open store.
-        getConfig: () => this.config,
-      });
+      // Live provider: runtime toggles must reach an already-open store.
+      const store = new MemoryStore({ paths, getConfig: () => this.config });
       await store.ensure();
       const state = new ProjectState(paths);
       await state.load();
@@ -375,27 +535,10 @@ export class MemoryRuntime {
     }
   }
 
-  /**
-   * Per-session injection mode (v9): 'live' refreshes on every memory change,
-   * 'auto' follows the configured injectionMode. Returns the effective mode.
-   */
-  setSessionMode(sessionId, mode) {
-    if (typeof sessionId !== 'string' || sessionId === '') return 'auto';
-    if (mode === 'live') this.sessionModes.set(sessionId, 'live');
-    else this.sessionModes.delete(sessionId);
-    this.invalidateInjection(sessionId, 'manual');
-    return this.sessionMode(sessionId);
-  }
-
-  /** @returns {'live'|'auto'} */
-  sessionMode(sessionId) {
-    return this.sessionModes.get(sessionId) === 'live' ? 'live' : 'auto';
-  }
-
-  /** Force one session's injected text to be rebuilt now (manual refresh). */
+  /** Force one session's injected snapshot to be rebuilt now (manual refresh). */
   refreshSession(sessionId) {
     if (typeof sessionId === 'string' && sessionId !== '') this.invalidateInjection(sessionId, 'manual');
-    return { sessionId, live: this.sessionMode(sessionId) === 'live' };
+    return { sessionId };
   }
 
   /** Subscribe to memory-change notifications. @returns {() => void} dispose. */
@@ -405,214 +548,91 @@ export class MemoryRuntime {
     return () => this.listeners.delete(listener);
   }
 
-  /** Lazily construct the dream engine, which imports the dream module once. */
-  async engine() {
-    if (!this.enginePromise) {
-      this.enginePromise = import('./dream.js').then(({ DreamEngine }) => new DreamEngine({
-        ctx: this.ctx,
-        runtime: this,
-        config: this.config,
-        // Live provider: toggles apply to the already-created engine too.
-        getConfig: () => this.config,
-      }));
-    }
-    return this.enginePromise;
+  /**
+   * Start a resumable Dream run and return its id immediately. The pipeline
+   * keeps per-unit state, so a later `resumeDreamRun` only redoes what failed.
+   */
+  async startDream(pctx, options = {}) {
+    return this.#dreamPipeline.start({ pctx, ...options });
+  }
+
+  /** Run ids a Dream worker in this process is executing. */
+  liveDreamRunIds() {
+    return this.#dreamPipeline.liveRunIds();
+  }
+
+  /** Read one Dream run (or the newest) from disk. */
+  async dreamRun(pctx, runId = '') {
+    return this.#dreamPipeline.status(pctx, runId);
+  }
+
+  /** Ask a running Dream run to stop; finished units stay on disk. */
+  async cancelDreamRun(pctx, runId = '') {
+    return this.#dreamPipeline.cancel(pctx, runId);
+  }
+
+  /** Resume a stopped/failed Dream run, analyzing only the units left. */
+  async resumeDreamRun(pctx, runId = '', options = {}) {
+    return this.#dreamPipeline.resume(pctx, runId, options);
   }
 
   async estimateDream(pctx, options = {}) {
-    const engine = await this.engine();
-    return engine.estimate({ pctx, ...options });
+    return this.#dreamPipeline.estimate({ pctx, ...options });
   }
 
   /**
-   * Read the newest available dream plan: a review proposal first, then the last
-   * dry-run plan. Both are plan JSON files recorded in the project state.
-   * @param {object} projectContext
-   * @returns {Promise<{path:string, plan?:object, error?:string}>}
+   * Start a dream and wait for its result. Same launcher as {@link startDream};
+   * the run never touches the live notes: it ends with a pending copy the human
+   * switches to or discards.
+   * @param {object} options
+   * @returns {Promise<object>}
    */
-  async latestPlan(projectContext) {
-    let snapshot = {};
-    try {
-      snapshot = projectContext?.state && typeof projectContext.state.snapshot === 'function'
-        ? projectContext.state.snapshot()
-        : {};
-    } catch {
-      snapshot = {};
-    }
-    const candidates = [snapshot.pendingProposal, snapshot.lastPlanPath]
-      .filter((value) => typeof value === 'string' && value !== '');
-    for (const file of candidates) {
-      try {
-        const plan = JSON.parse(await fs.readFile(file, 'utf8'));
-        if (plan && typeof plan === 'object' && !Array.isArray(plan)) return { path: file, plan };
-      } catch (error) {
-        warn('read dream plan', error);
-      }
-    }
-    return { path: '', plan: undefined, error: 'no-plan' };
-  }
-
-  /**
-   * Diff the latest available plan against the current memory without applying
-   * anything. Read-only; safe to call from the Web UI.
-   * @param {object} pctx
-   * @returns {Promise<{path:string, summary:string, ops:object[],
-   *   truncatedFiles:string[], dropped:string[], error?:string}>}
-   */
-  async previewPlan(pctx) {
-    const projectContext = pctx && typeof pctx === 'object' && pctx.paths ? pctx : pctx?.pctx;
+  async dream({ agent, pctx, sessionId, ...options } = {}) {
+    const projectContext = pctx ?? (agent ? await this.forAgent(agent) : await this.forSessionId(sessionId));
     if (!projectContext) {
-      return { path: '', summary: '', ops: [], truncatedFiles: [], dropped: [], error: 'no-project' };
+      return { ran: false, ready: false, skipped: true, skipReason: 'no-project' };
     }
-    const { path: planPath, plan, error } = await this.latestPlan(projectContext);
-    if (!plan) {
-      return { path: '', summary: '', ops: [], truncatedFiles: [], dropped: [], error: error || 'no-plan' };
-    }
-    const engine = await this.engine();
-    if (typeof engine.previewPlan !== 'function') {
-      return {
-        path: planPath,
-        summary: '',
-        ops: [],
-        truncatedFiles: [],
-        dropped: [],
-        error: 'engine-missing-previewPlan',
-      };
-    }
-    return engine.previewPlan({ pctx: projectContext, plan, path: planPath });
+    const started = await this.startDream(projectContext, { agent: agent ?? projectContext.agent, ...options });
+    return started.done ? started.done : started;
   }
 
   /**
-   * Apply a subset of the latest plan's operations by zero-based index.
-   * @param {object} pctx
-   * @param {{indexes?: number[], agent?: object}} [options]
-   * @returns {Promise<{applied:boolean, ops:number, path:string,
-   *   rolledBack?:boolean, error?:string}>}
+   * Switch memory over to the pending copy. The live memory is backed up first,
+   * so {@link undoLastDream} can put it back.
+   * @param {{agent?:object, pctx?:object}} [options]
    */
-  async applyPlanOperations(pctx, options = {}) {
-    const projectContext = pctx && typeof pctx === 'object' && pctx.paths ? pctx : pctx?.pctx;
-    const opts = options && typeof options === 'object' ? options : {};
-    if (!projectContext) return { applied: false, ops: 0, path: '', error: 'no-project' };
-    const { path: planPath, plan, error } = await this.latestPlan(projectContext);
-    if (!plan) return { applied: false, ops: 0, path: '', error: error || 'no-plan' };
-    const engine = await this.engine();
-    if (typeof engine.applyPlanOperations !== 'function') {
-      return { applied: false, ops: 0, path: planPath, error: 'engine-missing-applyPlanOperations' };
-    }
-    return engine.applyPlanOperations({
-      pctx: projectContext,
-      agent: opts.agent ?? projectContext.agent,
-      plan,
-      path: planPath,
-      indexes: opts.indexes,
-    });
-  }
-
-  /**
-   * Reject the pending review proposal (delete the proposal file, clear the
-   * state pointer, count a `rejected` dream metric). The inline reject path in
-   * `status.js` still works without this; new callers should prefer it.
-   * @param {object} pctx
-   * @returns {Promise<{rejected:boolean, proposalPath?:string, reason?:string, error?:string}>}
-   */
-  async rejectPendingPlan(pctx) {
-    const projectContext = pctx && typeof pctx === 'object' && pctx.paths ? pctx : pctx?.pctx;
-    if (!projectContext) return { rejected: false, reason: 'no-project' };
-    const engine = await this.engine();
-    if (typeof engine.rejectPlan !== 'function') {
-      return { rejected: false, reason: 'engine-missing-rejectPlan' };
-    }
-    return engine.rejectPlan({ pctx: projectContext });
-  }
-
-  /** Alias for {@link rejectPendingPlan}. */
-  async rejectPlan(pctx) {
-    return this.rejectPendingPlan(pctx);
-  }
-
-  /**
-   * Run one dream pass. `force` bypasses the time/session gates (manual runs).
-   * @returns {Promise<object>} DreamRunResult as defined in INTERFACES.md.
-   */
-  async dream({ agent, pctx, sessionId, force = false, dryRun = false, trigger = 'auto', reason, signal, noSessions = false, focus = '' } = {}) {
-    let projectContext = pctx;
-    if (!projectContext) {
-      projectContext = agent ? await this.forAgent(agent) : await this.forSessionId(sessionId);
-    }
-    if (!projectContext) {
-      return { ran: false, skipped: true, skipReason: 'no-project', applied: false, dryRun: Boolean(dryRun) };
-    }
-    const engine = await this.engine();
-    const result = await engine.run({
-      pctx: projectContext,
-      agent: agent ?? projectContext.agent,
-      force,
-      dryRun,
-      trigger,
-      reason,
-      signal,
-      noSessions: noSessions === true,
-      focus,
-    });
-    // v7: `{ path, ops, durationMs }` for UI display (added on top of the full result).
-    return withDreamSummary(result);
-  }
-
-  /** Apply the proposal written by a `review`-mode dream. */
-  async applyPendingDream({ agent, pctx } = {}) {
+  async switchDream({ agent, pctx } = {}) {
     const projectContext = pctx ?? (agent ? await this.forAgent(agent) : undefined);
-    if (!projectContext) return { applied: false, error: 'no-project' };
-    const proposalPath = projectContext.state.snapshot().pendingProposal;
-    if (!proposalPath) return { applied: false, error: 'no-pending-proposal' };
-    let plan;
+    if (!projectContext) return { switched: false, error: 'no-project' };
     try {
-      plan = JSON.parse(await fs.readFile(proposalPath, 'utf8'));
+      const result = await this.#dreamEngine.switchShadow({ pctx: projectContext, agent: agent ?? projectContext.agent });
+      if (result && result.switched === true) {
+        try {
+          this.invalidateAllInjections('dream-switch');
+        } catch {
+          /* cache refresh is best-effort */
+        }
+      }
+      return result;
     } catch (error) {
-      return { applied: false, error: `proposal-unreadable: ${error?.message ?? error}` };
+      warn('switchDream', error);
+      return { switched: false, error: 'switch-failed', message: String(error?.message ?? error) };
     }
-    const engine = await this.engine();
-    if (typeof engine.applyPending !== 'function') {
-      return { applied: false, error: 'engine-missing-applyPending' };
-    }
-    return engine.applyPending({ pctx: projectContext, agent, plan, proposalPath });
   }
 
   /**
-   * Apply the plan produced by the last dry run: the exact same plan object,
-   * not a freshly generated one. Clears the recorded plan afterwards.
+   * Discard the pending copy. Live memory is untouched.
+   * @param {{agent?:object, pctx?:object}} [options]
    */
-  async applyLastPlan({ agent, pctx } = {}) {
+  async discardDream({ agent, pctx } = {}) {
     const projectContext = pctx ?? (agent ? await this.forAgent(agent) : undefined);
-    if (!projectContext) return { applied: false, error: 'no-project' };
-    const planPath = projectContext.state.snapshot().lastPlanPath;
-    if (!planPath) return { applied: false, error: 'no-last-plan' };
-    let plan;
+    if (!projectContext) return { discarded: false, error: 'no-project' };
     try {
-      plan = JSON.parse(await fs.readFile(planPath, 'utf8'));
+      return await this.#dreamEngine.discardShadow({ pctx: projectContext });
     } catch (error) {
-      return { applied: false, error: `plan-unreadable: ${error?.message ?? error}` };
+      warn('discardDream', error);
+      return { discarded: false, error: 'discard-failed', message: String(error?.message ?? error) };
     }
-    const engine = await this.engine();
-    if (typeof engine.applyPending !== 'function') {
-      return { applied: false, error: 'engine-missing-applyPending' };
-    }
-    const result = await engine.applyPending({
-      pctx: projectContext,
-      agent,
-      plan,
-      proposalPath: planPath,
-      fromLastPlan: true,
-    });
-    // Only consume the saved plan when it was actually applied: a locked or
-    // failed attempt must keep the pointer so the user can retry.
-    if (result && result.applied === true) {
-      try {
-        await projectContext.state.clearLastPlan();
-      } catch (error) {
-        warn('state.clearLastPlan', error);
-      }
-    }
-    return result;
   }
 
   /**
@@ -636,9 +656,7 @@ export class MemoryRuntime {
     }
     if (!projectContext) return { ok: false, error: 'no-project' };
     try {
-      const engine = await this.engine();
-      if (typeof engine.undoLastDream !== 'function') return { ok: false, error: 'not-ready' };
-      const result = await engine.undoLastDream({ pctx: projectContext, agent: agent ?? projectContext.agent });
+      const result = await this.#dreamEngine.undoLastDream({ pctx: projectContext, agent: agent ?? projectContext.agent });
       try {
         this.invalidateAllInjections('undo');
       } catch {

@@ -37,7 +37,6 @@ for (const example of examples) {
       assert.notEqual(result.written, false, JSON.stringify(result));
       assert.equal((await e.pctx.store.readEntry(result.file ?? target.file)).body, example.addition.content);
       assert.equal((await e.pctx.store.readEntry(original.file)).raw, before.raw);
-      assert.deepEqual(await e.mods.pending.listPendingWrites(e.paths), []);
     });
   }
 }
@@ -50,66 +49,62 @@ test('English polarity words do not match inside user or identifiers', () => {
   assert.equal(polarityOf('Never use legacy-deploy.sh. Use make release.'), null);
 });
 
-test('a contradiction of a positive clause is queued even when another clause is negative', async (t) => {
+test('a contradiction of a positive clause stops the write and names the owner', async (t) => {
   const e = await toolsEnv(t);
   const original = await e.pctx.store.saveEntry({ name: 'release policy', type: 'project', description: 'Production release rules', content: 'Never run legacy-deploy.sh. Use make release for production deploys.' });
   const before = await e.pctx.store.readEntry(original.file);
-  for (const force of [false, true]) {
-    const result = await e.definitions.get('memory_save').execute({ name: 'release correction', type: 'project', description: 'New production command guidance', content: 'Never use make release for production deploys.', force }, exec);
-    assert.equal(result.action, 'queued-review', JSON.stringify(result));
-    assert.equal(result.written, false);
-    assert.equal(result.existingFile, original.file);
-    const record = await e.mods.pending.readPendingWrite(e.paths, result.pendingId);
-    assert.equal(record.action, 'save');
-    assert.equal(record.candidate.content, 'Never use make release for production deploys.');
-    assert.ok(record.reasons.some((reason) => reason.includes(original.file)));
-    assert.equal((await e.pctx.store.readEntry(original.file)).raw, before.raw);
-    assert.equal((await e.pctx.store.listEntries()).length, 1);
-  }
-});
-
-test('approving a conflicting save creates the reviewed proposal and preserves the original fact', async (t) => {
-  const e = await toolsEnv(t);
-  const original = await e.pctx.store.saveEntry({ name: 'indentation', type: 'user', description: 'Indentation preference', content: 'Always use tabs for indentation.' });
-  const before = await e.pctx.store.readEntry(original.file);
-  const result = await e.definitions.get('memory_save').execute({ name: 'new indentation', type: 'user', description: 'Revised indentation preference', content: 'Never use tabs for indentation.', force: true }, exec);
-  assert.equal(result.action, 'queued-review', JSON.stringify(result));
-  assert.equal((await e.pctx.store.listEntries()).length, 1);
-  const approved = await e.mods.pending.approvePendingWrite(e.paths, result.pendingId, { store: e.pctx.store });
-  assert.notEqual(approved.file, original.file);
-  assert.equal((await e.pctx.store.readEntry(approved.file)).body, 'Never use tabs for indentation.');
+  const result = await e.definitions.get('memory_save').execute({ name: 'release correction', type: 'project', description: 'New production command guidance', content: 'Never use make release for production deploys.' }, exec);
+  assert.equal(result.ok, false, JSON.stringify(result));
+  assert.equal(result.error, 'CONFLICT');
+  assert.equal(result.existingFile ?? result.conflicts[0].file, original.file);
+  assert.match(result.conflicts[0].reason, /opposite polarity/);
   assert.equal((await e.pctx.store.readEntry(original.file)).raw, before.raw);
-  assert.equal((await e.mods.pending.listPendingWrites(e.paths)).length, 0);
+  assert.equal((await e.pctx.store.listEntries()).length, 1);
+
+  // force:true is the documented escape hatch: the model states it is deliberate.
+  const forced = await e.definitions.get('memory_save').execute({ name: 'release correction', type: 'project', description: 'New production command guidance', content: 'Never use make release for production deploys.', force: true }, exec);
+  assert.equal(forced.ok, true, JSON.stringify(forced));
+  assert.equal(forced.written, true);
+  assert.equal((await e.pctx.store.listEntries()).length, 2);
 });
 
-test('cross-file conflict updates stay pending, retain stale-write protection, and never overwrite the conflict owner', async (t) => {
+test('an opposite fact against another page stops and leaves both files untouched', async (t) => {
   const e = await toolsEnv(t);
   const owner = await e.pctx.store.saveEntry({ name: 'indentation', type: 'user', description: 'Indentation preference', content: 'Always use tabs for indentation.' });
   const target = await e.pctx.store.saveEntry({ name: 'draft convention', type: 'user', description: 'Another convention', content: 'Pending a concrete convention.' });
   const ownerBefore = await e.pctx.store.readEntry(owner.file);
-  const result = await e.definitions.get('memory_update').execute({ file: target.file, description: 'Changed indentation', content: 'Never use tabs for indentation.', force: true }, exec);
-  assert.equal(result.action, 'queued-review', JSON.stringify(result));
-  assert.equal(result.existingFile, owner.file);
-  const record = await e.mods.pending.readPendingWrite(e.paths, result.pendingId);
-  assert.equal(record.action, 'update');
-  assert.equal(record.file, target.file);
-  assert.match(record.expectedHash, /^[a-f0-9]{64}$/);
+  const result = await e.definitions.get('memory_update').execute({ file: target.file, description: 'Changed indentation', content: 'Never use tabs for indentation.' }, exec);
+  assert.equal(result.ok, false, JSON.stringify(result));
+  assert.equal(result.error, 'CONFLICT');
+  assert.equal(result.existingFile ?? result.conflicts[0].file, owner.file);
   assert.equal((await e.pctx.store.readEntry(target.file)).body, 'Pending a concrete convention.');
-  await e.pctx.store.updateEntry(target.file, { content: 'Edited by the author while review was pending.' });
-  await assert.rejects(e.mods.pending.approvePendingWrite(e.paths, result.pendingId, { store: e.pctx.store }), { code: 'STALE_WRITE' });
-  assert.equal((await e.pctx.store.readEntry(target.file)).body, 'Edited by the author while review was pending.');
   assert.equal((await e.pctx.store.readEntry(owner.file)).raw, ownerBefore.raw);
-  assert.ok(await e.mods.pending.readPendingWrite(e.paths, result.pendingId));
+
+  // force:true writes the reviewed bytes into the target page only.
+  const forced = await e.definitions.get('memory_update').execute({ file: target.file, description: 'Changed indentation', content: 'Never use tabs for indentation.', force: true }, exec);
+  assert.equal(forced.ok, true, JSON.stringify(forced));
+  assert.equal((await e.pctx.store.readEntry(target.file)).body, 'Never use tabs for indentation.');
+  assert.equal((await e.pctx.store.readEntry(owner.file)).raw, ownerBefore.raw);
 });
 
-test('complementary clauses still require review under confirm mode or explicit low confidence, including force', async (t) => {
-  for (const lowConfidence of [false, true]) {
-    const e = await toolsEnv(t, lowConfidence ? {} : { writeMode: 'confirm' });
-    await e.pctx.store.saveEntry({ type: 'project', ...examples[0].original });
-    const result = await e.definitions.get('memory_save').execute({ type: 'project', ...examples[0].addition, force: true, ...(lowConfidence ? { confidence: 'low' } : {}) }, exec);
-    assert.equal(result.action, 'queued-review', JSON.stringify(result));
-    assert.equal(result.written, false);
-    assert.equal((await e.pctx.store.listEntries()).length, 1);
-    assert.ok(await e.mods.pending.readPendingWrite(e.paths, result.pendingId));
-  }
+test('cross-file conflict updates stop and never overwrite the conflict owner', async (t) => {
+  const e = await toolsEnv(t);
+  const owner = await e.pctx.store.saveEntry({ name: 'indentation', type: 'user', description: 'Indentation preference', content: 'Always use tabs for indentation.' });
+  const target = await e.pctx.store.saveEntry({ name: 'draft convention', type: 'user', description: 'Another convention', content: 'Pending a concrete convention.' });
+  const ownerBefore = await e.pctx.store.readEntry(owner.file);
+  const result = await e.definitions.get('memory_update').execute({ file: target.file, description: 'Changed indentation', content: 'Never use tabs for indentation.' }, exec);
+  assert.equal(result.ok, false, JSON.stringify(result));
+  assert.equal(result.error, 'CONFLICT');
+  assert.equal(result.existingFile ?? result.conflicts[0].file, owner.file);
+  assert.equal((await e.pctx.store.readEntry(target.file)).body, 'Pending a concrete convention.');
+  assert.equal((await e.pctx.store.readEntry(owner.file)).raw, ownerBefore.raw);
+});
+
+test('complementary clauses write directly whatever the confidence', async (t) => {
+  const e = await toolsEnv(t);
+  await e.pctx.store.saveEntry({ type: 'project', ...examples[0].original });
+  const result = await e.definitions.get('memory_save').execute({ type: 'project', ...examples[0].addition, confidence: 'low' }, exec);
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.written, true);
+  assert.equal((await e.pctx.store.listEntries()).length, 2);
 });

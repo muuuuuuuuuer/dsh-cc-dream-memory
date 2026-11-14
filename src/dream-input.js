@@ -1,39 +1,28 @@
 /**
  * Dream input gathering.
  *
- * Builds the bounded snapshot handed to the consolidation model: the current
- * project memory (index + topic file bodies) and the unread part of the mainline
- * sessions that touched this workspace. Every read failure degrades to an entry
- * in `errors` instead of aborting the pass.
+ * Builds the bounded snapshot handed to the consolidation model: the unread part
+ * of the mainline sessions that touched this workspace. Memory pages are read
+ * once, in full, by `memoryPagesOf()` in `src/dream-pipeline.js`. Every read
+ * failure degrades to an entry in `errors` instead of aborting the pass.
  *
  * Gathering is a pure read. It never touches project state, so a dry run leaves
  * no trace; what was read travels in `reads` and is written only when a plan is
  * applied.
  *
- * Memory files: a body longer than `dreamMaxFileChars` is only shown as
- * head+tail and reported in `truncatedFiles`, so validation can refuse a write
- * to it (a partial view must never become a full rewrite).
- *
- * Sessions are never sampled. A session that fits `dreamMaxSessionChars` is
- * passed whole. A longer one is returned as ordered chunks for the analysis pass
- * (`dream-map.js`), which reads as many as the budget allows and reports how far
- * it got; the rest stays unread for a later pass. A session that does not fit the
- * remaining budget is deferred whole.
+ * Sessions are never sampled: every candidate session is returned as ordered
+ * chunks sized by the caller. One total budget (`dreamInputMaxChars`) bounds a
+ * run; a session past it is deferred whole to the next run.
  *
  * Delegated sessions (subagents/teammates) are never part of the dream input:
  * their transcripts carry task-dispatch wording, not user preferences.
  */
-import { buildSessionTranscript, chunkTranscript, extractSessionText, isProbeSession } from './dream-session-text.js';
+import { buildSessionTranscript, chunkTranscript, isProbeSession } from './dream-session-text.js';
+import { isDelegated } from './session-kind.js';
 
 const DEFAULT_MAX_CHARS = 96_000;
-const DEFAULT_FILE_CHARS = 20_000;
-const DEFAULT_SESSION_CHARS = 12_000;
-const DEFAULT_LOOKBACK = 8;
 const DEFAULT_CHUNK_CHARS = 24_000;
 const DEFAULT_TOOL_CHARS = 4_000;
-/** Memory may use at most this share of the input, so sessions always get room. */
-const MEMORY_SHARE = 0.7;
-const TRUNCATION_MARKER = '\n...[truncated]...\n';
 
 function positiveInt(value, fallback, max = Number.MAX_SAFE_INTEGER) {
   const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
@@ -45,35 +34,10 @@ function errorMessage(error) {
   return error && typeof error === 'object' && error.message ? String(error.message) : String(error);
 }
 
-/**
- * Cut a text to `maxChars` keeping a head and a tail slice with a marker in the
- * middle. Total length never exceeds `maxChars`.
- */
-function headTail(text, maxChars, headRatio = 0.5) {
-  const value = typeof text === 'string' ? text : '';
-  if (value.length <= maxChars) return { text: value, truncated: false };
-  if (maxChars <= 0) return { text: '', truncated: value.length > 0 };
-  if (maxChars <= TRUNCATION_MARKER.length) return { text: value.slice(0, maxChars), truncated: true };
-  const room = maxChars - TRUNCATION_MARKER.length;
-  const ratio = Number.isFinite(headRatio) ? Math.min(1, Math.max(0, headRatio)) : 0.5;
-  const headLength = Math.floor(room * ratio);
-  const tailLength = room - headLength;
-  const head = value.slice(0, headLength);
-  const tail = tailLength > 0 ? value.slice(value.length - tailLength) : '';
-  return { text: `${head}${TRUNCATION_MARKER}${tail}`, truncated: true };
-}
-
-/** A delegated child session (teammate/subagent) is not a user conversation. */
-function isDelegatedHeader(header) {
-  if (!header || typeof header !== 'object') return false;
-  if (header.parentSession) return true;
-  return header.origin === 'subagent';
-}
-
 function readSessionIdsFromState(state) {
   const ids = [];
   try {
-    const snapshot = typeof state?.snapshot === 'function' ? state.snapshot() : undefined;
+    const snapshot = state?.snapshot();
     const sessions = Array.isArray(snapshot?.sessionsSince) ? snapshot.sessionsSince : [];
     for (const entry of sessions) {
       const id = typeof entry === 'string' ? entry : entry?.id;
@@ -89,7 +53,7 @@ function readSessionIdsFromState(state) {
 function readWatermarks(state) {
   const marks = new Map();
   try {
-    const snapshot = typeof state?.snapshot === 'function' ? state.snapshot() : undefined;
+    const snapshot = state?.snapshot();
     const entries = Array.isArray(snapshot?.dreamProcessedSessions) ? snapshot.dreamProcessedSessions : [];
     for (const entry of entries) {
       if (typeof entry === 'string') {
@@ -121,7 +85,7 @@ function createdAtOf(record) {
  */
 export async function pruneProbeSessions({ ctx, state } = {}) {
   const sessionQuery = ctx && typeof ctx.get === 'function' ? ctx.get('sessionQuery') : undefined;
-  if (!sessionQuery || typeof sessionQuery.readSession !== 'function' || !state || typeof state.snapshot !== 'function') {
+  if (!sessionQuery || typeof sessionQuery.readSession !== 'function' || !state) {
     return 0;
   }
   let entries = [];
@@ -141,7 +105,7 @@ export async function pruneProbeSessions({ ctx, state } = {}) {
   for (const id of ids) {
     try {
       const snapshot = await sessionQuery.readSession(id);
-      const extracted = extractSessionText(snapshot?.events, { maxToolChars: 0 });
+      const extracted = buildSessionTranscript(snapshot?.events);
       if (extracted.userChars === 0 || isProbeSession(extracted.userMessages)) probes.push(id);
     } catch {
       // A session that cannot be read is kept: better one extra dream than
@@ -150,7 +114,7 @@ export async function pruneProbeSessions({ ctx, state } = {}) {
   }
   if (probes.length > 0) {
     try {
-      await state.dropSessions?.(probes);
+      await state.dropSessions(probes);
     } catch {
       // Best effort: the gate still runs; at worst the next pass retries.
     }
@@ -160,118 +124,50 @@ export async function pruneProbeSessions({ ctx, state } = {}) {
 
 /**
  * Gather the dream input. Pure read: never writes project state.
- * @param {{ctx?:object, store?:object, config?:object, workspaceDir?:string, state?:object, noSessions?:boolean}} params
+ * @param {{ctx?:object, config?:object, workspaceDir?:string, state?:object, noSessions?:boolean, unitChars?:number}} params
  * @returns {Promise<{
- *   memory: {index:string, files:Array<{file:string,type:string,modified?:unknown,description:string,body:string,chars:number,truncated:boolean}>},
- *   sessions: Array<{id:string,at:number|null,lastAt:number,excerpt:string,chunks?:Array<{text:string,lastSeq:number}>,baseSeq:number,chars:number,truncated:boolean}>,
- *   reads: Array<{id:string,seq:number,complete:boolean}>,
+ *   sessions: Array<{id:string,at:number|null,lastAt:number,chunks:Array<{text:string,firstSeq:number|null,lastSeq:number|null}>,baseSeq:number,maxSeq:number,chars:number}>,
  *   droppedSessions: string[],
+ *   deferredSessions: string[],
  *   chars: number,
  *   truncated: boolean,
- *   truncatedFiles: string[],
  *   skippedSessions: string[],
  *   errors: string[],
  * }>}
  */
-export async function gatherDreamInput({ ctx, store, config, workspaceDir, state, noSessions = false } = {}) {
+export async function gatherDreamInput({
+  ctx,
+  config,
+  workspaceDir,
+  state,
+  noSessions = false,
+  // Transport unit size; each session is split into chunks of at most this many characters.
+  unitChars = 0,
+} = {}) {
   const maxChars = positiveInt(config?.dreamInputMaxChars, DEFAULT_MAX_CHARS, 1_000_000);
-  const fileMaxChars = positiveInt(config?.dreamMaxFileChars, DEFAULT_FILE_CHARS, 500_000);
-  const sessionMaxChars = positiveInt(config?.dreamMaxSessionChars, DEFAULT_SESSION_CHARS, 100_000);
   const chunkChars = positiveInt(config?.dreamMapChunkChars, DEFAULT_CHUNK_CHARS, 500_000);
   const toolChars = Number.isFinite(Number(config?.dreamMaxToolChars)) ? Math.max(0, Number(config.dreamMaxToolChars)) : DEFAULT_TOOL_CHARS;
-  const lookback = positiveInt(config?.sessionLookback, DEFAULT_LOOKBACK, 100);
   const errors = [];
-  const truncatedFiles = [];
   const skippedSessions = [];
   const droppedSessions = [];
-  const reads = [];
+  const deferredSessions = [];
   let truncated = false;
-
-  const memory = { index: '', files: [] };
-  let memoryChars = 0;
-
-  // 1. Index first: it is the cheapest, highest-signal memory surface.
-  if (store && typeof store.indexText === 'function') {
-    try {
-      memory.index = String((await store.indexText('project')) ?? '');
-      memoryChars += memory.index.length;
-    } catch (error) {
-      errors.push(`memory index: ${errorMessage(error)}`);
-    }
-  }
-
-  // 2. Topic files: metadata always, body bounded per file and by the total
-  //    budget. A truncated body is recorded so the plan cannot rewrite it.
-  let entries = [];
-  if (store && typeof store.listEntries === 'function') {
-    try {
-      const listed = await store.listEntries('project');
-      if (Array.isArray(listed)) entries = listed;
-    } catch (error) {
-      errors.push(`memory file list: ${errorMessage(error)}`);
-    }
-  }
-  const fileBudgetCap = Math.floor(maxChars * MEMORY_SHARE);
-  for (const entry of entries) {
-    const file = typeof entry?.file === 'string' ? entry.file : '';
-    if (!file) continue;
-    const meta = {
-      file,
-      name: entry.name,
-      type: typeof entry?.type === 'string' ? entry.type : 'user',
-      modified: entry?.modified,
-      description: typeof entry?.description === 'string' ? entry.description : '',
-      body: '',
-      chars: 0,
-      truncated: false,
-    };
-    if (store && typeof store.readEntry === 'function') {
-      try {
-        const read = await store.readEntry(file, 'project');
-        if (read && typeof read === 'object') {
-          meta.name = read.frontmatter?.name ?? meta.name;
-          meta.type = typeof read.frontmatter?.type === 'string' ? read.frontmatter.type : meta.type;
-          meta.modified = read.frontmatter?.modified ?? meta.modified;
-          meta.description = typeof read.frontmatter?.description === 'string'
-            ? read.frontmatter.description
-            : meta.description;
-          const body = typeof read.body === 'string' ? read.body : '';
-          meta.chars = body.length;
-          const remaining = Math.max(0, fileBudgetCap - memoryChars);
-          const allowance = Math.min(fileMaxChars, remaining);
-          const result = headTail(body, allowance, 0.5);
-          meta.body = result.text;
-          meta.truncated = result.truncated;
-          memoryChars += result.text.length;
-          if (result.truncated) {
-            truncated = true;
-            if (!truncatedFiles.includes(file)) truncatedFiles.push(file);
-          }
-        }
-      } catch (error) {
-        errors.push(`memory ${file}: ${errorMessage(error)}`);
-      }
-    }
-    memory.files.push(meta);
-  }
 
   // Evaluation mode: pure consolidation of the existing memory only. Never
   // mine transcripts, so the result cannot be attributed to session gathering.
   if (noSessions === true) {
     return {
-      memory,
       sessions: [],
-      reads,
       droppedSessions,
-      chars: memoryChars,
+      deferredSessions,
+      chars: 0,
       truncated,
-      truncatedFiles,
       skippedSessions,
       errors,
     };
   }
 
-  // 3. Session candidates: state-recorded sessions first, then (only when more
+  // 1. Session candidates: state-recorded sessions first, then (only when more
   //    are needed) the session corpus filtered by the workspace cwd. Delegated
   //    child sessions are excluded from both sources.
   const sessionQuery = ctx && typeof ctx.get === 'function' ? ctx.get('sessionQuery') : undefined;
@@ -291,7 +187,7 @@ export async function gatherDreamInput({ ctx, store, config, workspaceDir, state
         const header = record?.header;
         const id = header?.id;
         if (typeof id !== 'string' || id === '') continue;
-        if (isDelegatedHeader(header)) {
+        if (isDelegated(record)) {
           if (!skippedSessions.includes(id)) skippedSessions.push(id);
           continue;
         }
@@ -314,12 +210,11 @@ export async function gatherDreamInput({ ctx, store, config, workspaceDir, state
 
   const sessions = [];
   let sessionsChars = 0;
-  const sessionBudget = Math.max(0, maxChars - memoryChars);
   if (!canRead && queue.length > 0) {
     errors.push('sessionQuery.readSession unavailable; session transcripts skipped');
   }
   if (canRead) {
-    while (sessions.length < lookback) {
+    for (;;) {
       if (queue.length === 0) {
         if (recordsLoaded) break;
         recordsLoaded = true;
@@ -342,7 +237,7 @@ export async function gatherDreamInput({ ctx, store, config, workspaceDir, state
       const candidates = [snapshot?.session, snapshot?.header].filter(
         (value) => value && typeof value === 'object',
       );
-      if (candidates.some((header) => isDelegatedHeader(header))) {
+      if (candidates.some(isDelegated)) {
         if (!skippedSessions.includes(id)) skippedSessions.push(id);
         continue;
       }
@@ -367,46 +262,34 @@ export async function gatherDreamInput({ ctx, store, config, workspaceDir, state
       if (transcript.blocks.length === 0) continue;
       const at = Number.isFinite(header.createdAt) ? header.createdAt : (createdAt.get(id) ?? null);
       const [whole] = chunkTranscript(transcript, { chunkChars: Infinity, toolCharsPerChunk: toolChars });
-      if (whole.text.length > sessionMaxChars) {
-        sessions.push({
-          id,
-          at,
-          lastAt: transcript.lastAt,
-          excerpt: '',
-          chunks: chunkTranscript(transcript, { chunkChars, toolCharsPerChunk: toolChars }),
-          baseSeq,
-          chars: whole.text.length,
-          truncated: false,
-        });
-        continue;
-      }
-      if (sessionsChars + whole.text.length > sessionBudget) {
+      // One total byte budget: nobody should be able to make a single run read the whole corpus.
+      if (sessionsChars + whole.text.length > maxChars) {
         truncated = true;
+        deferredSessions.push(id);
         continue;
       }
       sessions.push({
         id,
         at,
         lastAt: transcript.lastAt,
-        excerpt: whole.text,
-        evidenceBlocks: whole.evidenceBlocks,
+        chunks: chunkTranscript(transcript, {
+          chunkChars: positiveInt(unitChars, chunkChars, 500_000),
+          toolCharsPerChunk: toolChars,
+        }),
         baseSeq,
+        maxSeq: transcript.maxSeq,
         chars: whole.text.length,
-        truncated: false,
       });
-      reads.push({ id, seq: transcript.maxSeq, complete: true });
       sessionsChars += whole.text.length;
     }
   }
 
   return {
-    memory,
     sessions,
-    reads,
     droppedSessions,
-    chars: memoryChars + sessionsChars,
+    deferredSessions,
+    chars: sessionsChars,
     truncated,
-    truncatedFiles,
     skippedSessions,
     errors,
   };

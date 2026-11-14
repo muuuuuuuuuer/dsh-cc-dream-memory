@@ -15,7 +15,7 @@
 |---|---|
 | `package.json`, `cordis.patch.yml`, `index.js`, `src/config.js`, `src/paths.js`, `src/runtime.js`, `src/state.js`, `src/scheduler.js` | Lead |
 | `src/frontmatter.js`, `src/store.js`, `src/inject.js`, `src/tools.js` | memory-core |
-| `src/dream.js`, `src/dream-prompt.js`, `src/dream-input.js` | dream-engine |
+| `src/dream.js`, `src/dream-pipeline.js`, `src/dream-run.js`, `src/dream-merge.js`, `src/dream-analyzer.js`, `src/dream-input.js` | dream-engine |
 | `src/commands.js`, `client.js`, `locale/*.json`, `icon.svg` | ui-commands |
 | `test/*.test.mjs`, `scripts/*.mjs` | verifier |
 
@@ -27,8 +27,6 @@
 {
   enabled: true,            // auto memory 总开关
   memoryRoot: '',           // 空 => $DSH_HOME/cc-memory；支持 ~/ 前缀
-  userMemoryEnabled: false, // 是否启用 user scope（跨项目）
-  injectIndex: true,
   indexMaxLines: 200,
   indexMaxBytes: 25600,
   autoDreamEnabled: false,
@@ -36,19 +34,16 @@
   minSessions: 5,
   scanThrottleMs: 600000,
   lockTtlMs: 3600000,
-  dreamMode: 'apply',       // 'apply' | 'review'
-  dreamProvider: '',        // 空 => 用 agentDefaultModel.currentSelection()
-  dreamModel: '',           // 与 dreamProvider 成对
-  dreamAllowDelete: false,
-  dreamMaxOps: 40,
-  dreamInputMaxChars: 60000,
-  sessionLookback: 8,
+  dreamAnalyzerProvider: '',        // 空 => 用 agentDefaultModel.currentSelection()
+  dreamAnalyzerModel: '',   // 与 dreamAnalyzerProvider 成对
+  dreamAllowDelete: true,
+  dreamInputMaxChars: 96000,
   tools: true,
   commands: true,
   ui: true,
   contextOrder: 850,
   maxContentBytes: 131072,  // 单条记忆正文上限
-  llmMaxTokens: 16384,      // dream 输出预算；max-tokens 截断时双倍重试一次
+  dreamAnalyzerMaxTokens: 8192, // Dream 分析单元的初始输出预算
 }
 ```
 
@@ -60,7 +55,7 @@ export function resolveProjectRoot(workspaceDir): string  // 向上找 .git（�
 export function defaultMemoryRoot(homeDir): string        // <homeDir>/cc-memory
 export function buildPaths({ memoryRoot, homeDir, workspaceDir }): Paths
 // Paths = { root, projectRoot, projectDir, memoryDir, indexFile, stateFile, lockFile,
-//           changelogFile, dreamsDir, pendingDir, userMemoryDir, userIndexFile }
+//           changelogFile, dreamsDir, pendingDir }
 ```
 所有路径均为绝对路径；`memoryDir` 必须位于 `root` 内。
 
@@ -112,17 +107,17 @@ export class MemoryStore {
     text: string, lines: number, bytes: number, truncated: boolean, overflow: boolean,
     maxLines: number, maxBytes: number
   }>                                              // 前 indexMaxLines 行且前 indexMaxBytes 字节；超出时截断
-  async listEntries(scope='project'): Promise<EntryMeta[]>
-  async readEntry(file, scope='project'): Promise<{
-    file, scope, frontmatter: {name,description,type,modified}, body: string, raw: string, bytes: number
+  async listEntries(): Promise<EntryMeta[]>
+  async readEntry(file): Promise<{
+    file, frontmatter: {name,description,type,modified}, body: string, raw: string, bytes: number
   }>
-  async saveEntry({ scope='project', name, type='user', description='', content }): Promise<SaveResult>
-  async updateEntry(file, { scope='project', content, description }): Promise<SaveResult>
-  async writeRawEntry(file, { scope='project', type, name, description, body }): Promise<SaveResult>
-  async writeIndex(text, scope='project'): Promise<IndexBudget>
-  async deleteEntry(file, scope='project'): Promise<{ deleted: boolean, file: string }>
-  async search(query, { scope='project', limit=20 } = {}): Promise<SearchHit[]>
-  async status(scope='project'): Promise<StoreStatus>
+  async saveEntry({ name, type='user', description='', content }): Promise<SaveResult>
+  async updateEntry(file, { content, description }): Promise<SaveResult>
+  async writeRawEntry(file, { type, name, description, body }): Promise<SaveResult>
+  async writeIndex(text): Promise<IndexBudget>
+  async deleteEntry(file): Promise<{ deleted: boolean, file: string }>
+  async search(query, { limit=20 } = {}): Promise<SearchHit[]>
+  async status(): Promise<StoreStatus>
   async writeChangelog(text): Promise<void>        // 追加到 .dream-log.md
   async listBackups(): Promise<{ name: string, at: number, files: number }[]>
 }
@@ -130,7 +125,7 @@ export class MemoryStore {
 // IndexBudget = { lines, bytes, maxLines, maxBytes, overflow, warning?: string }
 // SaveResult = { ok:true, file, name, type, created:boolean, description, index: IndexBudget, warning?: string }
 // SearchHit = { file, name, description, type, snippet }
-// StoreStatus = { dir, indexFile, index: IndexBudget, entries: EntryMeta[], userScope: {enabled, dir, entries} }
+// StoreStatus = { dir, indexFile, index: IndexBudget, entries: EntryMeta[] }
 ```
 规则：
 - 文件命名 `${type}_${slug(name)}.md`；slug = 小写、`[^a-z0-9]+`→`_`、去首尾 `_`，空则 `memory`。
@@ -139,10 +134,10 @@ export class MemoryStore {
 - 路径安全：file 只允许 `^[A-Za-z0-9._-]+\.md$`，不得含 `/`、`\`、`..`；resolve 后必须 `memoryDir` 内，否则抛 `code='PATH_ESCAPE'`。
 - 写后自动重建索引：若索引缺该条目则追加；更新时替换对应行；删除时移除行。
 - 索引超预算：写入仍成功，`warning` 说明「index is over budget (N lines/M bytes), merge or move details into topic files and rewrite index」。
-- 错误对象带 `code`：`INVALID_NAME`, `INVALID_TYPE`, `NOT_FOUND`, `PATH_ESCAPE`, `SCOPE_DISABLED`, `CONTENT_TOO_LARGE`。
+- 错误对象带 `code`：`INVALID_NAME`, `INVALID_TYPE`, `INVALID_SCOPE`, `NOT_FOUND`, `PATH_ESCAPE`, `CONTENT_TOO_LARGE`。
 - 所有文件操作原子写（临时文件 + rename），不跟随符号链接。
 - 不做网络/LLM 调用。
-- 需要支持 `scope='user'`：仅当 `config.userMemoryEnabled`；否则 saveEntry 抛 `SCOPE_DISABLED`，list/read 返回空/抛 NOT_FOUND。
+- 只有一个作用域（项目级，对齐 Claude Code 每个项目一份记忆）：所有方法仍保留 `scope` 形参作为唯一校验点，`normalizeScope()` 只接受 `'project'`/空，传 `'user'` 抛 `code='INVALID_SCOPE'`。
 
 ## `src/inject.js`（memory-core）
 
@@ -151,30 +146,29 @@ export function registerInjection(ctx, runtime): () => void
 ```
 - 对当前存活 agent（`ctx.agents?.list?.() ?? []`）与 `agent/created` 事件注册。
 - **缓存由本模块拥有**：`Map<sessionId, string>`；注册前 await `runtime.forAgent(agent)` 构建首版文本；`agent.ctx.systemPrompt.context({ name:'cc-memory', order: config.contextOrder, required:false, text: () => cache.get(agent.id) ?? '' })`；disposer 同时归 plugin effect 与 agent 生命周期（用 `ctx.effect` + Map 记录）。
-- 失效刷新：`runtime.onInvalidate(...)` 收到后重建该 agent 文本（异步，避免并发重入）；另加 30s 定时器兜底重建所有存活 agent 的缓存（context text 同步函数只能读缓存）。
+- 失效刷新：配置、规则、会话压缩或手动刷新时重建对应会话快照。注入函数同步读取快照。
 - 注：`agent/created` 是 serial 事件，可 await；构建失败时缓存空串并记录 console.warn，不要抛出。
 - 注入文本模板（英文为主，稳定、可缓存）：
 
 ```
 <system-reminder>
-Auto memory is enabled for this project. Memory directory: <memoryDir>
+Auto memory is enabled for this project (managed by the dsh-cc-dream-memory plugin).
 
 MEMORY.md is an index of durable notes written by you in earlier sessions. Topic files load only when you read them.
+Save with memory_save (new note) or memory_update (existing note); search with memory_search; read with memory_read. Skip anything the repository already records.
 
-Rules:
-- Save only durable knowledge that is NOT derivable from the codebase/git history or from CLAUDE.md/AGENTS.md.
-- Type "user": who the user is, preferences. "feedback": corrections and confirmed approaches. "project": ongoing work, goals, decisions not in code. "reference": where external information lives.
-- Do not save secrets, credentials, or content already in the repository.
-- Keep MEMORY.md index lines short (<160 chars); move details into topic files; merge duplicates and delete stale entries.
-- Use the memory_* tools to read and write memory.
+<instructions>…</instructions>    // MEMORY_INSTRUCTIONS
+<rules>…</rules>                  // 仅当用户写了 memory-rules.md
 
 <index>
-...MEMORY.md head...
+...MEMORY.md 原文（头部 maxLines/maxBytes）...
 </index>
-<budget-notice>index is over budget ...</budget-notice>   // 仅超限时
+<budget-notice>…</budget-notice>   // 仅超限或接近预算时
 </system-reminder>
 ```
 （中文用户也接受中文模板；二选一，保持稳定。）
+
+索引对齐 Claude Code：`<index>` 里是 `MEMORY.md` **原文**（手工行、损坏行都原样进上下文），插件不再按台账重渲染条目行，也不再藏起未核验笔记的简介。
 
 ## `src/tools.js`（memory-core）
 
@@ -191,15 +185,11 @@ export function registerTools(ctx, runtime): () => void
   async execute(args, exec) { ... return JsonValue }
 }
 ```
-工具集：
-1. `memory_save {name, type, description, content, scope?}` → saveEntry；超限 warning 放返回值。
-2. `memory_search {query, scope?, limit?}` → search。
-3. `memory_list {scope?}` → entries + budget（不含正文）。
-4. `memory_read {file, scope?}` → raw。
-5. `memory_update {file, content?, description?, scope?}` → updateEntry。
-6. `memory_delete {file, scope?, confirm:true}` → 若 config.dreamAllowDelete 为 false 返回错误对象 `{ok:false,error:'delete-disabled'}`（不抛）。
-7. `memory_status {}` → runtime 状态 + 用 `store.injectedIndex()` 现场生成的注入预览 + config 摘要（供调试/模型自查，不依赖 inject 缓存）。
-8. `memory_dream {dryRun?, reason?}` → 调用 `runtime.dream({agent, force:true, dryRun})`（由 Lead 在 runtime 上挂 `dream` 方法；若不存在返回 `{ok:false,error:'dream-unavailable'}`）。返回 run 摘要。
+工具集（v11 起固定四个；`memory_list`/`memory_delete`/`memory_dream`/`memory_status` 已移除，由 `/memory …` 命令承担）：
+1. `memory_save {name, type, description, content, basis?, evidence?, force?}` → saveEntry；type 与落盘共用 `normalizeType`；超限 warning 放返回值；回执带 `version` 与 `verification`（`recorded`：首轮能显示简介；`pending`：字节已落盘、台账未更新）。
+2. `memory_search {query, limit?, type?}` → `store.search(..., {currentOnly:true})`，只命中正文的当前部分；返回 `{ok,query,count,items}`。
+3. `memory_read {file}` → 当前正文（`currentBody`）+ `status`；旧值通过文件视图或 `/memory history` 显式查看，不会作为当前内容返回。
+4. `memory_update {file, content?, description?, name?, basis?, evidence?}` → updateEntry（改名走 renameEntry）；回执同样带 `version` 与 `verification`。
 - `exec.agent` 用于 `runtime.forAgent`。
 - 保存后调用 `runtime.invalidateInjection(exec.agent.id)`。
 
@@ -207,67 +197,63 @@ export function registerTools(ctx, runtime): () => void
 
 ```js
 export class DreamEngine {
-  constructor({ ctx, runtime, config })
-  // pctx 由 runtime 提供（含 paths/store/state/workspaceDir；agent 可能为 undefined，例如自动触发）
-  async run({ pctx, agent, force = false, dryRun = false, trigger = 'auto', signal, reason }): Promise<DreamRunResult>
-  // review 模式产出的提案审批后应用
-  async applyPending({ pctx, agent, plan, proposalPath }): Promise<{ applied: boolean, summary?: string, filesTouched?: number, error?: string }>
+  constructor({ runtime })
+  // pctx 由 runtime 提供（含 paths/store/state/workspaceDir）
+  // 运行与续跑见 src/dream-pipeline.js；分析结果写进副本，不直接改记忆
+  async pendingSwitch(pctx): Promise<null | { dir, createdAt, runId, summary, counts, files }>
+  async switchShadow({ pctx, agent }): Promise<{ ok: true, backupDir, counts } | { ok: false, error: 'conflict'|'no-changes'|'no-project', conflicts?: {file,reason}[] }>
+  async discardShadow({ pctx }): Promise<{ ok: boolean }>
+  async undoLastDream({ pctx, agent }): Promise<{ ok: true, batch, restored, trashed, backupDir } | { ok: false, error: 'no-project'|'no-undoable-batch'|'conflict', conflicts? }>
 }
-// DreamRunResult = { ran, skipped?, skipReason?, applied, mode:'apply'|'review', dryRun,
-//                    summary, operations, filesTouched, sessionsReviewed, proposalPath?,
-//                    backupDir?, error?, startedAt, finishedAt }
 ```
 职责：
-- 闸门（`force` 时只保留 enabled/lock）：enabled → lastDreamAt+minHours → sessionsSince≥minSessions → lastScanAt 节流 → 锁。
-- 锁：`pctx.paths.lockFile` 即 `<projectDir>/.consolidate-lock`（与 memory 目录平级），`open(path,'wx')` 写入 `{pid, startedAt}`；已存在且 mtime 在 `lockTtlMs` 内 → skip `lock`；过期则接管。失败/异常时把 mtime 回滚为上次 dream 时间（`utimes`）。
-- gather：调用 `gatherDreamInput()`。
-- LLM：`ctx.llm.stream({ provider, model, messages:[{role:'user', content:[{type:'text', text: prompt}]}], system: DREAM_SYSTEM_PROMPT, maxTokens: config.llmMaxTokens, signal, purpose:'cc-memory-dream' })`；收集 `text-delta`；`finish.reason.kind==='error'|'aborted'` 抛错。provider/model 来自 `ctx.get('agentDefaultModel')?.currentSelection?.()`，缺失或调用失败 → `{ran:false, skipReason:'llm-unavailable'}`（不抛）。
-- 解析：从文本中提取第一个 ```json 代码块或首个 `{` 到末个 `}`；`JSON.parse`；校验（见下）。
-- 校验（纯函数 `validateDreamPlan(plan, {config, existingFiles})`，单独导出便于测试）：
-  - `operations` 数组、≤ dreamMaxOps；
-  - op ∈ write/delete/index 之一；
-  - write/delete 的 `file` 必须匹配 `^[A-Za-z0-9._-]+\.md$` 且不属于保留文件（`MEMORY.md`, `.dream-log.md`）；
-  - delete 需 `config.dreamAllowDelete`，否则丢弃该操作并记入 `notes`；
-  - write 的 `content`/`body` ≤ config.maxContentBytes；
-  - `type` ∈ user|feedback|project|reference；
-  - 返回 `{ ok, plan: normalized, dropped: string[] }`。
-- 应用：先备份当前 memory 目录全部文件到 `pctx.paths.dreamsDir/<ts>/`；`dryRun` 时只写 `<dreamsDir>/<ts>/plan.json` 不应用；`mode==='review'` 时写 `pctx.paths.pendingDir/<ts>.json` + 返回 proposalPath；`apply` 时写文件、写索引、写 changelog（`pctx.paths.changelogFile`）、更新 state、清 sessions。
+- **副本**：Dream 只写 `.dreams/shadow/`（当前记忆的完整副本），与真实记忆逐文件比对得出 `added/changed/removed`；副本存在期间不再跑新的 Dream。
+- **切换**：先把当前记忆目录整体备份到 `.dreams/<ts>/memory/`，再写回、把副本里没有的笔记移入回收站、把副本的 `MEMORY.md` 写到 live 后 `refreshIndex`（`MOVED TO` 退休桩会保留），写 `meta.json`（`kind:'dream-switch'`、`counts`、`files`、`rewritten`、`created`、`removed`、`hashes`、`verifiedFiles`、`backupDir`）与 changelog。运行期间有人改过笔记 → 整次返回 `conflict`，记忆不动。
+- **撤销**：由 `listSwitches(paths)` 读取切换记录。只还原 `rewritten` 并把 `created` 移入回收站；若切换后被改过则整次返回 `conflict`。旧格式批次跳过。
+- **验证**：切换时把可核验笔记写进字段级台账；首轮索引始终取自 `MEMORY.md` 原文。
 - changelog 条目格式：
 ```
 ## 2026-11-06T23:10:00.000Z
-- trigger: auto|manual, sessions: 3, ops: 4 (write 3, delete 0, index 1), backup: .dreams/2026-11-06T23-10-00
+- switch: 4 files (added 1, changed 3, removed 0), backup: .dreams/2026-11-06T23-10-00
 - summary: ...
 ```
-- 幂等：失败后释放锁并回滚 mtime；下一轮重新整理。
+- 幂等：失败时写 `manifest.json`（`status:'failed'`）并释放锁；`resume` 只重跑未完成的单元。
 
 ## `src/dream-input.js`（dream-engine）
 
 ```js
-export async function gatherDreamInput({ ctx, store, config, workspaceDir, state }): Promise<{
-  memory: { index: string, files: {file,type,modified,description,body}[] },
-  sessions: { id, title?, at, excerpt }[],
-  chars: number, truncated: boolean
+export async function gatherDreamInput({ ctx, config, workspaceDir, state }): Promise<{
+  sessions: { id, at, lastAt, chunks: {text, firstSeq, lastSeq}[], baseSeq, maxSeq, chars }[],
+  droppedSessions: string[], deferredSessions: string[],
+  chars: number, truncated: boolean, skippedSessions: string[], errors: string[]
 }>
 ```
-- session 来源：优先 `state.snapshot().sessionsSince` 中的 id；不足 `sessionLookback` 时用 `ctx.get('sessionQuery')?.filterSessions([{kind:'cwd', values:[workspaceDir]}])` 补齐（取 header.createdAt 最新）。
-- 每个 session：`readSession(id)` → `events`，抽取 `user/message` 文本与 `assistant/message` 文本（`message.content` 里 `type==='text'` 的 `text`），按顺序合并，单 session ≤4000 字符；总字符 ≤ `dreamInputMaxChars`。
+- 只读会话，不读记忆：topic 文件正文由 `dream-pipeline.js` 的 `memoryPagesOf(store)` 读一次全量（返回 `{ pages, errors }`），读失败进 `errors`；有 errors 时这一轮不算完整覆盖，不出副本。
+- 会话来源：优先处理 `state.snapshot().sessionsSince` 中的会话，再从同一工作目录补充未处理的主线会话。
+- 每个会话通过 `readSession(id)` 读取。按水位取新事件，保留来源与顺序，再分为分析单元。总输入超出 `dreamInputMaxChars` 时，当前会话记入 `deferredSessions`。
 - 任何 session 读取失败跳过并记录。
 
-## `src/dream-prompt.js`（dream-engine）
+## `src/dream-pipeline.js` / `dream-run.js` / `dream-merge.js`（dream-engine）
 
-导出 `DREAM_SYSTEM_PROMPT` 与 `buildDreamPrompt(input)`；包含：
-- 标题 `Dream: Memory Consolidation`；
-- 四阶段 Orient/Gather/Consolidate/Prune；
-- 规则：合并重复、纠正矛盾、相对日期转绝对、不臆造、不得编辑 CLAUDE.md/AGENTS.md、索引一行一条且 <200 行/~25KB、细节下沉到 topic 文件；
-- 输出严格 JSON schema：
-```json
-{"summary":"...","operations":[
- {"op":"write","scope":"project","type":"user","name":"user_role","description":"...","body":"..."},
- {"op":"delete","scope":"project","file":"old.md","reason":"..."},
- {"op":"index","content":"- [user_role](user_role.md) — ...\n"}
-],"notes":"..."}
+```js
+export class DreamPipeline {
+  async run({ pctx, agent, force, trigger, reason, signal, noSessions, focus, runId, resume, inputId, inputRanges })
+  async start(options)          // 立即返回 { ok, started, runId, status:'running' }
+  async status(pctx, runId)     // manifest 摘要；无记录 { status:'none' }；未知 { ok:false, error:'unknown-run' }
+  async cancel(pctx, runId)
+  async resume(pctx, runId, options)
+  async settled(pctx, runId)    // 等待正在结束的运行，避免测试/退出竞态
+  async estimate(pctx, { noSessions, focus })
+}
+export function mergeClaims({ analyses, memoryPages, indexText, title })
+export function buildMemoryIndex(pages, title)
 ```
-- 只输出 JSON（可包在 ```json 代码块内），不要解释。
+- 输入规划：`gatherDreamInput({ unboundedSessions: true, unitChars: 24000 })`，每个会话按事件边界分块，不因调用数或长度上限静默丢弃。
+- 单元：`unitId = sha256(sessionId, firstSeq, lastSeq, text)`；`<dreamsDir>/<runId>/analysis/<session>/<unitId>.json` 按单元落盘；单次 max-tokens 截断时把该单元对半拆成两个单元重跑；`resume` 只补未完成单元。
+- 锁：`<projectDir>/.consolidate-lock` 记录 `{pid, startedAt, runId}`，运行中按进度 `utimes` 续期，`resume` 可接管同一 runId 的过期锁。
+- 合并：`mergeClaims` 只产出逐字保留的原有行、带引用（`^[session#locator, date]`）的新事实行和元数据/标题；唯一匹配的旧行被推翻时替换并把旧值写进 `## History`；对象/数量不一致、位置不唯一、低置信进 `plan.review`；页面里留着具体旧值时另写一行 `- CONFLICT: "<旧>" vs "<新>" — the sources disagree; a person has to pick one. ^[cite]`；`retire: [{file, target}]` 在目标存在且本轮未被改写时删页并留 `MOVED TO [[target]]` 索引桩；未提及的页面不动。索引为扁平列表（`- [名字](文件) — 说明`）。
+- 运行状态：`<runId>/manifest.json` 记录 `status`（running/ready/failed/cancelled/skipped）、`stage`、输入会话与单元区间、模型、用量、最近错误。
+- 收尾：合并 + 证据门 + 逐页核验 → 写入影子 store（`prepareShadow` / `applyShadowOperations`）→ `diffShadow` → `state.setShadowPending(...)` 并返回 `{ok:true, ran:true, ready:true, counts, files}`；无差异返回 `{ready:false, skipped:true, skipReason:'nothing-new'}`。
 
 ## `src/commands.js`（ui-commands）
 
@@ -275,10 +261,10 @@ export async function gatherDreamInput({ ctx, store, config, workspaceDir, state
 export function registerCommands(ctx, runtime): () => void
 export function parseCommandLine(rawInput): { verb, args }   // 纯函数，便于测试
 ```
-`/memory` 子命令：`json`、`list`、`show <file>`、`index`、`on`/`off`、`dream on|off`、`dream status`、`dream run [--dry-run]`、`dream apply`、`delete <file>`。`/remember [--type=..] [--scope=..] <text>`。
+`/memory` 子命令：`json`、`list`、`show <file>`、`index`、`on`/`off`、`dream on|off`、`dream status [runId]`、`dream cancel|resume [runId]`、`dream run [--focus]`、`dream switch`、`dream discard`、`dream undo`、`delete <file>`。`/remember [--type=..] [--scope=..] <text>`。
 - 返回 `{kind:'success', text}` 或 `{kind:'error', text}`；`json` 返回可被 `JSON.parse` 的文本。
 - 开关状态持久化：`/memory on|off` 与 `/memory dream on|off` 需要写回插件配置。用 `ctx.fiber.entry` + `ctx.get('configEditor')` 按 host-plugin.md 的方法改行 config；若 editor/entry 不可用，返回 error 说明「cannot persist」。改完提示「takes effect after plugin reload」。
-- `/memory dream run` 调用 `runtime.dream({agent, force:true, dryRun, trigger:'manual'})`；`apply` 调用 `runtime.applyPendingDream({agent})`（Lead 提供）。JSON 输出用于 UI。
+- `/memory dream run` 调用 `runtime.dream({agent, force:true, trigger:'manual', focus})`；`switch` 调 `runtime.switchDream({agent})`，`discard` 调 `runtime.discardDream({agent})`。JSON 输出用于 UI。
 
 ## `client.js`（ui-commands）
 
@@ -317,7 +303,7 @@ async function exec(line) {
   4. 文件列表：点击加载 → 显示/编辑（textarea）→ 保存（`/memory json` 不含正文，需用 existing command `/memory show <file>` 拿原文；保存用 `/memory` 的 JSON 无法传内容——因此 client 写文件时用 `ctx.remote.commands.execute` 调 `/memory save-file <file> <base64>`？）
   
   **简化**：UI 只读浏览 + 开关 + 手动 dream/dry-run + 历史日志；编辑通过 `/memory show <file>` 只读展示，并提供「复制到输入框」提示。若时间允许再加编辑（新增命令 `/memory write <file>` 走 `extraInput` 传文本，但 command 输入长度有限，故不做）。在交付说明中注明「编辑请在聊天中使用 memory_update 工具或 /memory 命令」。
-  5. Dream 卡片：状态（lastDreamAt/error/pendingProposal）、按钮「立即整理（dry-run）」「应用提案」、`.dream-log.md` 最近 20 行。
+  5. Dream 卡片：状态（lastDreamAt/error/是否有待切换副本）、按钮「Estimate the run」「Start the dream run」、副本就绪后的「Switch to it」「Discard」、`.dream-log.md` 最近 20 行。
 - 每次操作后重新拉 `/memory json`。
 - 不调用未挂载的 Remote；只用 `remote.commands`。
 - 组件不得抛错导致 slot 空白：所有 async 包 try/catch，错误显示为文本。
@@ -338,9 +324,14 @@ async function exec(line) {
 
 ## Lead 在 runtime 上提供的 dream 入口
 
-`MemoryRuntime` 会懒加载 `src/dream.js` 的 `DreamEngine`（动态 `import()`，避免循环依赖），并在 `src/runtime.js` 暴露：
+`MemoryRuntime` 直接使用 `DreamEngine` 与 `DreamPipeline`。后台启动统一经过 `startDream`。需要等待结果的调用方使用返回的 `done`。调度、执行和状态服务共用 `dreamReadiness`。
 ```js
-async dream({ agent, force, dryRun, trigger, reason }): Promise<DreamRunResult>
-async applyPendingDream({ agent }): Promise<{ applied, summary, error? }>
+async startDream(pctx, options)
+async dream({ pctx, agent, force, trigger, reason, focus, inputId, inputRanges }): Promise<DreamRunResult>
+async estimateDream(pctx, { focus }): Promise<{ estimatedTokens, limit, rough, inputId, ranges }>
+async pendingSwitch(pctx): Promise<null | { dir, createdAt, runId, counts, files }>
+async switchDream({ agent }): Promise<{ ok, backupDir?, counts?, error?, conflicts? }>
+async discardDream({ agent }): Promise<{ ok, error? }>
+async undoLastDream({ agent }): Promise<{ ok, batch?, restored?, trashed?, error?, conflicts? }>
 ```
-`tools.js` 与 `commands.js` 只调用这两个方法。
+`tools.js` 与 `commands.js` 只调用这些方法。

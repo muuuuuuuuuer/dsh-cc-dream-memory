@@ -8,9 +8,10 @@
  * modules, pointed at an os.tmpdir() memory root. `workingDirectory.ensure` is
  * mandatory: without it the runtime would fall back to process.cwd().
  */
+import { withCordis } from './helpers.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { loadModule, makeTempDir } from './helpers.mjs';
 
@@ -48,14 +49,14 @@ function makeAgent(id, { header } = {}) {
   const calls = [];
   const agent = {
     id,
-    ctx: {
+    ctx: withCordis({
       systemPrompt: {
         context(options) {
           calls.push(options);
           return () => {};
         },
       },
-    },
+    }),
     contextCalls: calls,
   };
   if (header !== undefined) agent.session = { header };
@@ -145,7 +146,7 @@ test('session mode freezes the first snapshot; memory writes do not change it', 
 
   const frozen = agentText(agent);
   assert.match(frozen, /<system-reminder>/, 'the first snapshot is injected');
-  assert.match(frozen, /Rules:/);
+  assert.match(frozen, /Auto memory is enabled for this project/);
   assert.doesNotMatch(frozen, /beta/, 'beta must not be present before it is saved');
 
   // Simulate a memory_save + runtime.invalidateInjection(sessionId) write flow.
@@ -186,22 +187,6 @@ test('session mode: saving rules (reason=rules) forces a rebuild with the new ru
 });
 
 // ---------------------------------------------------------------------------
-// 2. live mode keeps refreshing on ordinary writes
-// ---------------------------------------------------------------------------
-
-test('live mode: ordinary memory writes still refresh the injected text', async (t) => {
-  const h = await harness(t, { configOverrides: { injectionMode: 'live' } });
-  await seed(h.pctx.store, 'alpha', 'first note', 'alpha body');
-  const agent = await addReadyAgent(h.host, makeAgent('live-agent'));
-  await waitFor(() => /alpha/.test(agentText(agent)));
-  await seed(h.pctx.store, 'delta', 'live note', 'delta body');
-
-  h.runtime.invalidateInjection('live-agent');
-  await waitFor(() => /delta/.test(agentText(agent)));
-  assert.match(agentText(agent), /delta/, 'live mode must reflect writes immediately');
-});
-
-// ---------------------------------------------------------------------------
 // 3. compaction refreshes the frozen snapshot once
 // ---------------------------------------------------------------------------
 
@@ -219,14 +204,14 @@ test('a compaction session event refreshes the frozen snapshot', async (t) => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. injectSubagents switch
+// 4. subagentMemory policy
 // ---------------------------------------------------------------------------
 
-test('injectSubagents:false skips delegated sessions; true (default) injects them', async (t) => {
+test('subagentMemory:off skips delegated sessions; shared injects them', async (t) => {
   const parentSessionHeader = { parentSession: 'main-agent' };
   const subagentOriginHeader = { origin: 'subagent' };
 
-  const skipped = await harness(t, { configOverrides: { injectSubagents: false } });
+  const skipped = await harness(t, { configOverrides: { subagentMemory: 'off' } });
   const main = await addReadyAgent(skipped.host, makeAgent('main-agent'));
   const child = skipped.host.addAgent(makeAgent('child-agent', { header: parentSessionHeader }));
   const origin = skipped.host.addAgent(makeAgent('origin-agent', { header: subagentOriginHeader }));
@@ -235,16 +220,16 @@ test('injectSubagents:false skips delegated sessions; true (default) injects the
   assert.equal(child.contextCalls.length, 0, 'a parentSession child must not register an injection context');
   assert.equal(origin.contextCalls.length, 0, 'an origin:"subagent" session must not register an injection context');
 
-  const included = await harness(t, { configOverrides: { injectSubagents: true } });
+  const included = await harness(t, { configOverrides: { subagentMemory: 'shared' } });
   const childIncluded = included.host.addAgent(makeAgent('child-included', { header: parentSessionHeader }));
   const originIncluded = included.host.addAgent(makeAgent('origin-included', { header: subagentOriginHeader }));
-  await waitFor(() => childIncluded.contextCalls.length > 0 && originIncluded.contextCalls.length > 0);
-  assert.match(agentText(childIncluded), /<system-reminder>/, 'injectSubagents:true injects child sessions');
-  assert.match(agentText(originIncluded), /<system-reminder>/, 'injectSubagents:true injects origin:subagent sessions');
+  await waitFor(() => /<system-reminder>/.test(agentText(childIncluded)) && /<system-reminder>/.test(agentText(originIncluded)));
+  assert.match(agentText(childIncluded), /<system-reminder>/, 'shared injects child sessions');
+  assert.match(agentText(originIncluded), /<system-reminder>/, 'shared injects origin:subagent sessions');
 });
 
-test('a delegated session gets no auto recall when injectSubagents is off', async (t) => {
-  const h = await harness(t, { configOverrides: { injectSubagents: false } });
+test('a delegated session gets no auto recall when subagentMemory is off', async (t) => {
+  const h = await harness(t, { configOverrides: { subagentMemory: 'off' } });
   const hooked = (id, header) => {
     const agent = makeAgent(id, { header });
     agent.hooks = [];
@@ -281,9 +266,44 @@ test('default budget injects at most 200 lines / 25KB and adds a budget-notice',
   await waitFor(() => /<budget-notice>/.test(agentText(agent)));
   const text = agentText(agent);
   assert.match(text, /<budget-notice>/, 'the injected prompt must warn about the over-budget index');
-  assert.match(text, /index is over budget \(201 lines\//, 'budget notice must show the real index size');
+  assert.match(text, /MEMORY\.md is over its read limit \(201 lines \//, 'budget notice must show the real index size');
   assert.match(text, /<index>/, 'the index block is still injected (truncated)');
-  assert.doesNotMatch(text, /memory_100\.md/, 'the omitted middle must not be injected');
-  assert.match(text, /memory_200\.md/, 'the newest line stays visible');
+  assert.doesNotMatch(text, /memory_200\.md/, 'content past the read limit is not injected');
+  assert.match(text, /memory_0\.md/, 'the head of the index stays visible');
+  assert.match(text, /index truncated at the read limit/, 'the truncation marker is injected');
   assert.match(text, /memory_0\.md/, 'the oldest head line stays visible');
+});
+
+
+test('the first turn states that memory exists', async (t) => {
+  const h = await harness(t);
+  const agent = await addReadyAgent(h.host, makeAgent('instructions-agent'));
+  await waitFor(() => /<instructions>/.test(agentText(agent)));
+  const text = agentText(agent);
+  assert.match(text, /You have a persistent memory directory for this project\./, 'the model is told memory exists');
+  assert.match(text, /Do not save secrets, one-off tasks/, 'the save/skip rule travels with it');
+});
+
+test('v20: a subagent with private memory is injected with its own index', async (t) => {
+  const h = await harness(t, {
+    configOverrides: { subagentMemory: 'own', agentMemoryPresets: ['reviewer'] },
+  });
+  const child = makeAgent('child-agent', {
+    header: { id: 'child-agent', parentSession: 'main-session', origin: 'subagent', agentPreset: 'reviewer' },
+  });
+  const childContext = await h.runtime.forAgent(child);
+  await childContext.store.saveEntry({
+    name: 'reviewer checklist',
+    type: 'feedback',
+    description: 'private child note',
+    content: 'Check the patch carefully before approving it.',
+  });
+
+  h.host.addAgent(child);
+  await waitFor(() => /reviewer checklist/.test(agentText(child)));
+  assert.match(agentText(child), /reviewer checklist/, 'the subagent sees its own note');
+  assert.match(agentText(child), /private child note/, 'its description is in the private index');
+
+  const main = await addReadyAgent(h.host, makeAgent('main-session'));
+  assert.doesNotMatch(agentText(main), /reviewer checklist/, 'the main session never sees a private agent note');
 });

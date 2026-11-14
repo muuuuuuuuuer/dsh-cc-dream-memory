@@ -53,9 +53,6 @@ export function modules() {
       policy: await loadModule('../src/policy.js', {
         requireExports: ['POLICY_DEFAULTS', 'textSimilarity', 'entrySimilarity', 'detectConflict', 'evaluateWrite'],
       }),
-      pending: await loadModule('../src/pending-writes.js', {
-        requireExports: ['listPendingWrites', 'queuePendingWrite', 'approvePendingWrite', 'rejectPendingWrite'],
-      }),
     }))();
   }
   return modulesPromise;
@@ -116,6 +113,73 @@ export function fakeHost({ workspaceDir, plan = null, usage = null } = {}) {
   };
 }
 
+/**
+ * Give the fake host a transcript with these user messages, so a write can carry
+ * `basis: 'user-explicit'` and a verbatim `evidence` quote the host can verify.
+ */
+export function seedUserMessages(env, ...texts) {
+  const events = texts.map((text, index) => ({
+    type: 'user/message',
+    seq: index + 1,
+    time: Date.parse('2026-11-11T09:00:00Z') + index,
+    data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text }] },
+  }));
+  env.host.services.sessionQuery = {
+    filterSessions: async () => [],
+    readSession: async (id) => ({ session: { id }, events }),
+  };
+  return env;
+}
+
+/**
+ * Script one Dream for a runtime env: the transcripts the host returns and what
+ * the analyzer answers. `sessions` maps a session id to the user's messages.
+ * `claims`/`verify` are the analyzer reply for every unit, or pass
+ * `analyzer(prompt)` to answer per unit. Only analyzer calls are expected: Dream
+ * has no other model stage. Returns the list of analyzer prompts sent.
+ */
+export async function scriptDream(env, {
+  sessions = { s1: ['Deploy with make release.'] },
+  claims = [],
+  verify = [],
+  summary = 'scripted dream',
+  usage = null,
+  analyzer = null,
+} = {}) {
+  const { ANALYZER_SYSTEM_PROMPT } = await import('../src/dream-analyzer.js');
+  const prompts = [];
+  const eventsById = new Map(Object.entries(sessions).map(([id, texts]) => [id, texts.map((message, index) => ({
+    type: 'user/message',
+    seq: index + 1,
+    time: Date.parse('2026-11-12T09:00:00Z') + index,
+    data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: message }] },
+  }))]));
+  env.host.services.sessionQuery = {
+    filterSessions: async () => [],
+    readSession: async (id) => ({ session: { id, createdAt: '2026-11-12T09:00:00Z' }, events: eventsById.get(id) ?? [] }),
+  };
+  env.host.services.llm = {
+    stream(options) {
+      env.host.llmCalls.push(options);
+      if (options?.system !== ANALYZER_SYSTEM_PROMPT) throw new Error('Dream should only call the analyzer');
+      const prompt = (options.messages ?? []).flatMap((message) => message.content ?? []).map((part) => part.text ?? '').join('');
+      prompts.push(prompt);
+      const reply = typeof analyzer === 'function' ? analyzer(prompt) : { summary, claims, patches: [], verify };
+      const chunks = [{ type: 'text-delta', text: typeof reply === 'string' ? reply : JSON.stringify(reply) }];
+      if (usage) chunks.push({ type: 'usage', usage });
+      chunks.push({ type: 'finish', reason: { kind: 'stop' } });
+      return streamOf(chunks);
+    },
+  };
+  for (const id of Object.keys(sessions)) await env.pctx.state.ensureSession(id);
+  return prompts;
+}
+
+/** One analyzer claim quoting a user message verbatim. */
+export function claimOf(textValue, { target = '', quote = textValue, kind = 'project', confidence = 'high' } = {}) {
+  return { text: textValue, quote, kind, confidence, ...(target ? { target } : {}) };
+}
+
 export async function exists(file) {
   try {
     const { access } = await import('node:fs/promises');
@@ -135,7 +199,7 @@ export async function makeEnv(t, configOverrides = {}) {
   await mkdir(workspaceDir, { recursive: true });
   const config = mods.config.resolveConfig({ memoryRoot, ...configOverrides });
   const paths = mods.paths.buildPaths({ memoryRoot: config.memoryRoot, homeDir: path.join(tmp, 'home'), workspaceDir });
-  const store = new mods.store.MemoryStore({ paths, config });
+  const store = new mods.store.MemoryStore({ paths, getConfig: () => config });
   await store.ensure();
   const state = new mods.state.ProjectState(paths);
   await state.load();
@@ -180,7 +244,7 @@ export async function commandEnv(t, configOverrides = {}, llmOptions = {}) {
         return () => commandDefinitions.delete(definition.name);
       },
     },
-    get: () => undefined,
+    get: (name) => (name === 'commands' ? commandCtx.commands : undefined),
     on: () => () => {},
     effect: (factory) => (typeof factory === 'function' ? factory() : undefined),
   };
@@ -198,6 +262,9 @@ export async function commandEnv(t, configOverrides = {}, llmOptions = {}) {
 /** HTTP handler over a runtime env with a fixed token. */
 export async function httpEnv(t, configOverrides = {}, llmOptions = {}) {
   const env = await runtimeEnv(t, configOverrides, llmOptions);
+  // The page always names its live session; register one so request routing
+  // resolves it instead of treating the id as stale.
+  await env.runtime.forAgent({ id: 's1' });
   const token = 'v10-test-token-abcdef';
   const handler = env.mods.http.createHttpHandler({ runtime: env.runtime, token });
   const handle = typeof handler === 'function' ? handler : handler.handle.bind(handler);

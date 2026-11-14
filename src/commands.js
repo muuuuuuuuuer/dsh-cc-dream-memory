@@ -11,8 +11,11 @@
  */
 import fs from 'node:fs/promises';
 import { VERSION } from './meta.js';
-import { recordRead, recordWrite } from './metrics.js';
-import { createStatusService, subagentWriteBlocked } from './status.js';
+import { recordRead } from './metrics.js';
+import { createStatusService, recordUserConfirmedSave } from './status.js';
+import { ensureCurrentStatus } from './write-review.js';
+import { applyProposals } from './auto-extract.js';
+import { listProposals, readProposal, removeProposal } from './inbox.js';
 
 /** Root command names, also accepted by `parseCommandLine` with a leading slash. */
 const MEMORY_NAME = 'memory';
@@ -25,8 +28,8 @@ const MEMORY_TYPES = Object.freeze(['user', 'feedback', 'project', 'reference'])
 const TYPE_SET = new Set(MEMORY_TYPES);
 
 const MEMORY_HINT =
-  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|writes|approve <id>|reject <id>|refresh|live on|off|user on|off|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|dream on|off|dream status|dream estimate|dream history|dream undo|dream run [--dry-run] [--focus <text>]|dream apply|dream reject|dream preview|dream apply-ops <indexes>]';
-const REMEMBER_HINT = '[--type=user|feedback|project|reference] [--scope=project|user] <text>';
+  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|refresh|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|inbox list|inbox show <id>|inbox accept <id>|inbox discard <id>|dream on|off|dream status|dream estimate|dream history|dream undo|dream run [--focus <text>]|dream switch|dream discard]';
+const REMEMBER_HINT = '[--type=user|feedback|project|reference] <text>';
 
 function warn(scope, error) {
   // eslint-disable-next-line no-console
@@ -142,25 +145,23 @@ export function parseCommandLine(rawInput) {
 
 /**
  * Parse a `/remember` argument string into the note payload: optional
- * `--type=`/`--scope=` flags followed by the free-form text.
+ * `--type=` flag followed by the free-form text.
  *
  * The text is sliced from the original string so internal whitespace,
  * punctuation and newlines survive untouched.
  *
  * @param {unknown} rawInput
- * @returns {{type: string, scope: string, text: string}}
+ * @returns {{type: string, text: string}}
  */
 export function parseRememberInput(rawInput) {
   const raw = typeof rawInput === 'string' ? rawInput : '';
   const tokens = tokenize(raw);
   let type = 'user';
-  let scope = 'project';
   let index = 0;
   while (index < tokens.length) {
     const token = tokens[index].value;
-    const match = /^--(type|scope)(?:=(.*))?$/iu.exec(token);
+    const match = /^--(type)(?:=(.*))?$/iu.exec(token);
     if (match === null) break;
-    const key = match[1].toLowerCase();
     let value = match[2];
     if (value === undefined) {
       index += 1;
@@ -169,11 +170,10 @@ export function parseRememberInput(rawInput) {
     } else {
       index += 1;
     }
-    if (key === 'type') type = value.toLowerCase();
-    else scope = value.toLowerCase();
+    type = value.toLowerCase();
   }
   const text = raw.slice(tokens[index]?.start ?? raw.length).trim();
-  return { type, scope, text };
+  return { type, text };
 }
 
 /**
@@ -353,7 +353,8 @@ function normalizeEntry(entry) {
  * memory directory can never break the command surface.
  *
  * @param {import('@deepseek-ai/cordis').Context} ctx plugin context.
- * @param {{config: object, forAgent: Function, dream: Function, applyPendingDream: Function, applyLastPlan?: Function,
+ * @param {{config: object, forAgent: Function, dream: Function, switchDream?: Function, discardDream?: Function,
+ *   undoLastDream?: Function,
  *   setOverrides?: Function, overrides?: Function, rulesFor?: Function, invalidateInjection?: Function,
  *   invalidateAllInjections?: Function}} runtime
  * @returns {() => void} disposer that unregisters both commands.
@@ -366,17 +367,7 @@ export function registerCommands(ctx, runtime) {
   // `commands` is an optional service for this plugin: resolve it through the
   // optional accessor so a Harness build without it degrades to "no slash
   // commands" instead of keeping the whole plugin inactive.
-  const commandsService = (() => {
-    try {
-      if (ctx && typeof ctx.get === 'function') {
-        const service = ctx.get('commands');
-        if (service) return service;
-      }
-    } catch {
-      /* fall through to the property access */
-    }
-    return ctx?.commands;
-  })();
+  const commandsService = ctx.get('commands');
 
   /**
    * Persist one field change through the profile config editor.
@@ -408,9 +399,6 @@ export function registerCommands(ctx, runtime) {
 
   /** Resolve this agent's project context, or throw one readable error. */
   async function requireProject(invocation) {
-    if (!runtime || typeof runtime.forAgent !== 'function') {
-      throw new Error('memory runtime is unavailable in this profile');
-    }
     const pctx = await runtime.forAgent(invocation?.agent);
     if (!pctx || !pctx.store || !pctx.paths) {
       throw new Error('the memory directory is unavailable for this session');
@@ -426,7 +414,7 @@ export function registerCommands(ctx, runtime) {
       // Commands show the full effective config (dream gates included), while
       // the service payload keeps the narrower UI-facing config shape.
       const config =
-        runtime?.config && typeof runtime.config === 'object' ? runtime.config : payload.config ?? {};
+        runtime.config;
       return {
         ok: true,
         pctx,
@@ -436,24 +424,18 @@ export function registerCommands(ctx, runtime) {
         rules: payload.rules,
         index: payload.index,
         entries: Array.isArray(payload.entries) ? payload.entries : [],
-        userEntries: Array.isArray(payload.userScope?.entries) ? payload.userScope.entries : [],
         snapshot: payload.state && typeof payload.state === 'object' ? payload.state : {},
         changelogTail: typeof payload.changelogTail === 'string' ? payload.changelogTail : '',
         trashCount: Number(payload.trashCount) || 0,
         metrics: payload.metrics && typeof payload.metrics === 'object' ? payload.metrics : null,
-        pendingWrites:
-          payload.pendingWrites && typeof payload.pendingWrites === 'object'
-            ? payload.pendingWrites
-            : { count: 0, items: [] },
         readiness: payload.readiness ?? null,
+        inbox: payload.inbox && typeof payload.inbox === 'object' ? payload.inbox : { count: 0, items: [] },
         healthScore: Number.isFinite(Number(payload.healthScore)) ? Number(payload.healthScore) : null,
-        session: payload.session && typeof payload.session === 'object' ? payload.session : { live: false, mode: 'auto' },
         subagentPolicy:
           payload.subagentPolicy && typeof payload.subagentPolicy === 'object'
             ? payload.subagentPolicy
             : {
-                injectSubagents: config.injectSubagents !== false,
-                mode: config.subagentWriteMode === 'off' ? 'off' : 'shared',
+                mode: config.subagentMemory === 'shared' || config.subagentMemory === 'own' ? config.subagentMemory : 'off',
               },
         health: payload.health,
       };
@@ -471,15 +453,12 @@ export function registerCommands(ctx, runtime) {
       rules,
       index,
       entries,
-      userEntries,
       snapshot,
       changelogTail,
       trashCount,
       metrics,
-      pendingWrites,
       readiness,
       healthScore,
-      session,
       subagentPolicy,
     } = status;
     return {
@@ -492,24 +471,17 @@ export function registerCommands(ctx, runtime) {
         enabled: Boolean(config.enabled),
         autoMemoryEnabled: Boolean(config.autoMemoryEnabled),
         autoDreamEnabled: Boolean(config.autoDreamEnabled),
-        dreamMode: config.dreamMode === 'review' ? 'review' : 'apply',
-        minHours: Number(config.minHours) || 0,
+            minHours: Number(config.minHours) || 0,
         minSessions: Number(config.minSessions) || 0,
         indexMaxLines: Number(config.indexMaxLines) || 0,
         indexMaxBytes: Number(config.indexMaxBytes) || 0,
         dreamAllowDelete: Boolean(config.dreamAllowDelete),
-        userMemoryEnabled: Boolean(config.userMemoryEnabled),
         dreamMaxTotalTokens: Number(config.dreamMaxTotalTokens) || 0,
-        writeMode: config.writeMode === 'confirm' ? 'confirm' : 'auto',
         policyDuplicateThreshold: Number(config.policyDuplicateThreshold) || 0.82,
         policySuggestThreshold: Number(config.policySuggestThreshold) || 0.55,
-        pendingProposalTtlHours: Number(config.pendingProposalTtlHours) || 72,
-        dreamCostMode: config.dreamCostMode === 'review' || config.dreamCostMode === 'block' ? config.dreamCostMode : 'warn',
+            dreamCostMode: config.dreamCostMode === 'review' || config.dreamCostMode === 'block' ? config.dreamCostMode : 'warn',
         projectId: typeof config.projectId === 'string' ? config.projectId : '',
-        userIndexMaxLines: Number(config.userIndexMaxLines) || 30,
-        userIndexMaxBytes: Number(config.userIndexMaxBytes) || 4096,
-        compactionDigest: config.compactionDigest !== false,
-        subagentWriteMode: config.subagentWriteMode === 'off' ? 'off' : 'shared',
+        subagentMemory: config.subagentMemory === 'shared' || config.subagentMemory === 'own' ? config.subagentMemory : 'off',
       },
       index: {
         text: typeof index?.text === 'string' ? index.text : '',
@@ -519,14 +491,6 @@ export function registerCommands(ctx, runtime) {
         overflow: Boolean(index?.overflow),
       },
       entries: entries.map(normalizeEntry),
-      userScope: {
-        enabled: Boolean(config.userMemoryEnabled),
-        entries: userEntries.map(normalizeEntry),
-        budgets: {
-          maxLines: Number(config.userIndexMaxLines) || 0,
-          maxBytes: Number(config.userIndexMaxBytes) || 0,
-        },
-      },
       state: {
         lastDreamAt: Number(snapshot.lastDreamAt) || 0,
         lastDreamAttemptAt: Number(snapshot.lastDreamAttemptAt) || 0,
@@ -535,8 +499,9 @@ export function registerCommands(ctx, runtime) {
         lastDreamSessions: Number(snapshot.lastDreamSessions) || 0,
         lastDreamOps: Number(snapshot.lastDreamOps) || 0,
         lastDreamMode: typeof snapshot.lastDreamMode === 'string' ? snapshot.lastDreamMode : '',
-        lastPlanPath: typeof snapshot.lastPlanPath === 'string' ? snapshot.lastPlanPath : '',
-        pendingProposal: typeof snapshot.pendingProposal === 'string' ? snapshot.pendingProposal : '',
+            shadowPending: snapshot.shadowPending && typeof snapshot.shadowPending === 'object'
+      ? { dir: String(snapshot.shadowPending.dir ?? ''), files: Array.isArray(snapshot.shadowPending.files) ? snapshot.shadowPending.files.length : 0 }
+      : null,
         sessionsSince: Array.isArray(snapshot.sessionsSince) ? snapshot.sessionsSince.length : 0,
         counters:
           snapshot.counters && typeof snapshot.counters === 'object' ? { ...snapshot.counters } : {},
@@ -553,32 +518,15 @@ export function registerCommands(ctx, runtime) {
           }
         : { text: '', source: 'unavailable', projectPath: '', globalPath: '', maxChars: 0 },
       metrics: metrics && typeof metrics === 'object' ? metrics : null,
-      pendingWrites:
-        pendingWrites && typeof pendingWrites === 'object'
-          ? {
-              count: Number(pendingWrites.count) || 0,
-              items: (Array.isArray(pendingWrites.items) ? pendingWrites.items : []).map((item) => ({
-                id: typeof item?.id === 'string' ? item.id : '',
-                createdAt: Number(item?.createdAt) || 0,
-                reasons: Array.isArray(item?.reasons) ? item.reasons : [],
-                candidate: {
-                  name: typeof item?.candidate?.name === 'string' ? item.candidate.name : '',
-                  type: typeof item?.candidate?.type === 'string' ? item.candidate.type : '',
-                  description: typeof item?.candidate?.description === 'string' ? item.candidate.description : '',
-                },
-              })),
-            }
-          : { count: 0, items: [] },
       readiness: readiness && typeof readiness === 'object' ? readiness : null,
       healthScore: Number.isFinite(Number(healthScore)) ? Number(healthScore) : null,
-      session: session && typeof session === 'object' ? { live: session.live === true, mode: session.mode ?? 'auto' } : { live: false, mode: 'auto' },
       subagentPolicy:
         subagentPolicy && typeof subagentPolicy === 'object'
           ? {
-              injectSubagents: subagentPolicy.injectSubagents !== false,
-              mode: subagentPolicy.mode === 'off' ? 'off' : 'shared',
+              mode: subagentPolicy.mode === 'shared' || subagentPolicy.mode === 'own' ? subagentPolicy.mode : 'off',
+              agentMemoryPresets: Array.isArray(subagentPolicy.agentMemoryPresets) ? subagentPolicy.agentMemoryPresets : [],
             }
-          : { injectSubagents: true, mode: 'shared' },
+          : { mode: 'off', agentMemoryPresets: [] },
       changelogTail: typeof changelogTail === 'string' ? changelogTail : '',
     };
   }
@@ -587,7 +535,7 @@ export function registerCommands(ctx, runtime) {
   function invalidate(invocation) {
     try {
       const sessionId = invocation?.agent?.id;
-      if (typeof runtime?.invalidateInjection === 'function' && typeof sessionId === 'string') {
+      if (typeof sessionId === 'string') {
         runtime.invalidateInjection(sessionId);
       }
     } catch (error) {
@@ -602,12 +550,11 @@ export function registerCommands(ctx, runtime) {
 
   /**
    * v10: `/memory` write commands refuse delegated subagents when
-   * `subagentWriteMode:'off'`. Returns a failed CommandResult or null.
+   * `subagentMemory:'off'`. Returns a failed CommandResult or null.
    */
   function subagentGuard(invocation) {
-    const effective = runtime?.config && typeof runtime.config === 'object' ? runtime.config : {};
-    if (!subagentWriteBlocked(invocation?.agent, effective)) return null;
-    return fail('subagent-readonly: this subagent session cannot write memory (subagentWriteMode: off)');
+    if (runtime.canWriteMemory(invocation?.agent)) return null;
+    return fail('subagent-readonly: this subagent session cannot write memory under the current subagentMemory policy');
   }
 
   // -- /memory subcommands ---------------------------------------------------
@@ -615,16 +562,21 @@ export function registerCommands(ctx, runtime) {
   async function memoryStatus(invocation) {
     const status = await collectStatus(invocation);
     if (!status.ok) return fail(`cc-memory: ${status.error}`);
-    const { pctx, config, overrides, rules, index, entries, userEntries, snapshot, trashCount } = status;
-    const sessionView = status.session ?? { live: false, mode: 'auto' };
+    const { pctx, config, overrides, rules, index, entries, snapshot, trashCount } = status;
     const lines = [];
     lines.push(`cc-memory v${VERSION} — auto memory & dreaming`);
     lines.push(`project: ${pctx.paths.projectRoot || '(unknown)'}`);
     lines.push(`memory:  ${pctx.paths.memoryDir || '(unavailable)'}`);
     lines.push(
-      `plugin: ${config.enabled ? 'enabled' : 'disabled'}   auto memory: ${config.autoMemoryEnabled ? 'ON' : 'OFF'}   auto dream: ${config.autoDreamEnabled ? 'ON' : 'OFF'}   dream mode: ${config.dreamMode === 'review' ? 'review' : 'apply'}`,
+        `plugin: ${config.enabled ? 'enabled' : 'disabled'}   auto memory: ${config.autoMemoryEnabled ? 'ON' : 'OFF'}   auto dream: ${config.autoDreamEnabled ? 'ON' : 'OFF'}`,
     );
-    lines.push(`injection: ${config.injectionMode === 'live' ? 'live (refresh on change)' : 'session (injected once, frozen)'}   subagents: ${config.injectSubagents === false ? 'not injected' : 'injected'}`);
+    const recallMode = config.recallMode === 'off' ? 'off' : 'model';
+    lines.push(
+      `recall: ${recallMode} (select ≤${Number(config.recallMaxCandidates) || 0} candidates; attach ≤${Number(config.autoRecallMaxFiles) || 0})`,
+    );
+    lines.push(
+      `auto extract: ${config.autoExtract ? `inbox, every ${Number(config.autoExtractEveryTurns) || 1} turn(s)` : 'OFF'}   subagent memory: ${config.subagentMemory === 'off' ? 'OFF' : config.subagentMemory}${config.subagentMemory === 'own' && Array.isArray(config.agentMemoryPresets) && config.agentMemoryPresets.length > 0 ? ` (${config.agentMemoryPresets.join(', ')})` : ''}`,
+    );
     if (overrides && Object.keys(overrides).length > 0) {
       lines.push(`runtime overrides: ${JSON.stringify(overrides)}  (GLOBAL · applies to every project; use /memory plugin on|off to change)`);
     }
@@ -635,11 +587,7 @@ export function registerCommands(ctx, runtime) {
       `index: ${Number(index?.lines) || 0}/${Number(config.indexMaxLines) || 0} lines, ${formatBytes(index?.bytes)}/${formatBytes(config.indexMaxBytes)}${index?.overflow ? ' — OVER BUDGET (the injected text is truncated)' : ''}`,
     );
     lines.push(
-      `entries: ${entries.length}${config.userMemoryEnabled ? `   user entries: ${userEntries.length} (${Number(config.userIndexMaxLines) || 30} lines / ${formatBytes(Number(config.userIndexMaxBytes) || 4096)})` : '   user scope: disabled'}   trash: ${Number(trashCount) || 0} file(s)`,
-    );
-    const pendingView = status.pendingWrites ?? { count: 0, items: [] };
-    lines.push(
-      `write review: ${Number(pendingView.count) || 0} pending (writeMode: ${config.writeMode === 'confirm' ? 'confirm' : 'auto'})   session injection: ${sessionView.live ? 'live' : 'auto'}`,
+      `entries: ${entries.length}   trash: ${Number(trashCount) || 0} file(s)`,
     );
     if (Number.isFinite(Number(status.healthScore))) {
       lines.push(`memory health: ${Number(status.healthScore)}/100`);
@@ -665,20 +613,22 @@ export function registerCommands(ctx, runtime) {
     const policy = status.subagentPolicy;
     if (policy && typeof policy === 'object') {
       lines.push(
-        `subagent policy: inject ${policy.injectSubagents === false ? 'OFF' : 'ON'}   writes ${policy.mode === 'off' ? 'OFF (read-only)' : 'shared'}`,
+        `subagent memory: ${policy.mode === 'off' ? 'OFF' : policy.mode === 'own' ? 'own directory' : 'shared store'}${Array.isArray(policy.agentMemoryPresets) && policy.agentMemoryPresets.length > 0 ? ` (presets: ${policy.agentMemoryPresets.join(', ')})` : ''}`,
       );
     }
+    const inboxCount = Number(status.inbox?.count) || 0;
+    lines.push(
+      `inbox: ${inboxCount} pending${inboxCount > 0 ? ' (/memory inbox list to review)' : ''}   last extract: ${formatTime(snapshot.lastExtractAt || snapshot.lastExtractAttemptAt)}${snapshot.lastExtractReason ? ` (${snapshot.lastExtractReason}${Number(snapshot.lastExtractCount) > 0 ? `, ${snapshot.lastExtractCount} note(s)` : ''})` : ''}${snapshot.lastExtractError ? ` — ${truncate(snapshot.lastExtractError, 160)}` : ''}`,
+    );
     lines.push(
       `last dream: ${formatTime(snapshot.lastDreamAt)}${Number(snapshot.lastDreamAt) > 0 ? ` (${formatAge(snapshot.lastDreamAt)})` : ''}${Number(snapshot.lastDreamOps) > 0 ? `, ops: ${snapshot.lastDreamOps}` : ''}${typeof snapshot.lastDreamMode === 'string' && snapshot.lastDreamMode !== '' ? `, mode: ${snapshot.lastDreamMode}` : ''}`,
     );
     if (Number(snapshot.lastDreamSessions) > 0) {
       lines.push(`last dream sessions: ${snapshot.lastDreamSessions}`);
     }
-    if (typeof snapshot.pendingProposal === 'string' && snapshot.pendingProposal !== '') {
-      lines.push(`pending proposal: ${snapshot.pendingProposal} (apply with /memory dream apply, discard with /memory dream reject)`);
-    }
-    if (typeof snapshot.lastPlanPath === 'string' && snapshot.lastPlanPath !== '') {
-      lines.push(`last dry-run plan: ${snapshot.lastPlanPath} (apply with /memory dream apply)`);
+    if (snapshot.shadowPending && typeof snapshot.shadowPending === 'object') {
+      const files = Array.isArray(snapshot.shadowPending.files) ? snapshot.shadowPending.files.length : 0;
+      lines.push(`pending dream result: ${files} file(s) to switch to (switch with /memory dream switch, discard with /memory dream discard)`);
     }
     if (typeof snapshot.lastDreamSummary === 'string' && snapshot.lastDreamSummary !== '') {
       lines.push(`last summary: ${truncate(snapshot.lastDreamSummary, 400)}`);
@@ -693,11 +643,12 @@ export function registerCommands(ctx, runtime) {
     }
     lines.push('');
     lines.push(
-      'Commands: /memory json | list | show <file> | index | metrics | writes | approve <id> | reject <id>',
+      'Commands: /memory json | list | show <file> | index | metrics | search <query> | history <file>',
     );
-    lines.push('          /memory refresh | live on|off | user on|off | on | off | plugin on|off | rules [reset] | delete <file>');
+    lines.push('          /memory refresh | on | off | plugin on|off | rules [reset] | delete <file>');
     lines.push('          /memory backups | trash | restore <backup|trash> <id> [file]');
-    lines.push('          /memory dream on|off|status|run [--dry-run]|apply|reject|preview|apply-ops <indexes>');
+    lines.push('          /memory inbox list | show <id> | accept <id> | discard <id>');
+    lines.push('          /memory dream on|off|status|run|switch|discard|undo');
     return ok(lines.join('\n'));
   }
 
@@ -710,7 +661,7 @@ export function registerCommands(ctx, runtime) {
   async function memoryList(invocation) {
     const status = await collectStatus(invocation);
     if (!status.ok) return fail(`cc-memory: ${status.error}`);
-    const { config, entries, userEntries, snapshot } = status;
+    const { config, entries, snapshot } = status;
     const lines = [];
     lines.push(`MEMORY.md — ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`);
     if (entries.length === 0) {
@@ -723,18 +674,6 @@ export function registerCommands(ctx, runtime) {
           `- ${entry.file}  [${entry.type}] ${entry.name}${description}  (${formatBytes(entry.bytes)}${Number(entry.lines) > 0 ? `, ${entry.lines} lines` : ''})${via}`,
         );
       }
-    }
-    if (config.userMemoryEnabled) {
-      lines.push('');
-      lines.push(`user scope — ${userEntries.length} ${userEntries.length === 1 ? 'entry' : 'entries'}`);
-      if (userEntries.length === 0) lines.push('(no user memories yet)');
-      for (const entry of sortedEntries(userEntries)) {
-        const via = entry.via ? `  · via ${entry.via}` : '';
-        lines.push(`- ${entry.file}  [${entry.type}] ${entry.name}${via}`);
-      }
-    } else {
-      lines.push('');
-      lines.push('user scope is disabled (userMemoryEnabled: false)');
     }
     const index = status.index;
     lines.push('');
@@ -751,16 +690,12 @@ export function registerCommands(ctx, runtime) {
     const { flags, positional } = splitFlags(args);
     const file = positional[0];
     if (typeof file !== 'string' || file === '') {
-      return fail('usage: /memory show <file> [--scope=project|user]');
+      return fail('usage: /memory show <file>');
     }
-    const scope = String(flags.scope ?? 'project').toLowerCase() === 'user' ? 'user' : 'project';
     const status = await collectStatus(invocation);
     if (!status.ok) return fail(`cc-memory: ${status.error}`);
-    if (scope === 'user' && !status.config.userMemoryEnabled) {
-      return fail('user scope is disabled (set userMemoryEnabled: true in the plugin config)');
-    }
     try {
-      const entry = await service.file(status.pctx, file, scope);
+      const entry = await service.file(status.pctx, file);
       const raw = typeof entry?.raw === 'string' ? entry.raw : '';
       // Effect metrics: a successful `/memory show` counts as one read.
       await recordRead(status.pctx.paths, entry?.file ?? file);
@@ -857,9 +792,6 @@ export function registerCommands(ctx, runtime) {
   async function memoryPlugin(invocation, args) {
     const value = String(args?.[0] ?? '').toLowerCase();
     if (value !== 'on' && value !== 'off') return fail('usage: /memory plugin on|off');
-    if (!runtime || typeof runtime.setOverrides !== 'function') {
-      return fail('runtime switch overrides are unavailable in this build');
-    }
     let toggled;
     try {
       toggled = await service.toggle(runtime, { enabled: value === 'on' });
@@ -900,15 +832,14 @@ export function registerCommands(ctx, runtime) {
           existed = false;
         }
         try {
-          await service.resetRules(status.pctx, layer.scope, { source: 'command:/memory rules reset' });
+          await service.saveRules(status.pctx, layer.scope, '', { source: 'command:/memory rules reset' });
           if (existed) removed += 1;
         } catch (error) {
           if (existed) warn(`rules reset ${layer.scope}`, error);
         }
       }
       try {
-        if (typeof runtime?.invalidateAllInjections === 'function') runtime.invalidateAllInjections();
-        else invalidate(invocation);
+        runtime.invalidateAllInjections();
       } catch (error) {
         warn('invalidateAllInjections', error);
       }
@@ -942,23 +873,19 @@ export function registerCommands(ctx, runtime) {
     const { flags, positional } = splitFlags(args);
     const file = positional[0];
     if (typeof file !== 'string' || file === '') {
-      return fail('usage: /memory delete <file> [--scope=project|user]');
+      return fail('usage: /memory delete <file>');
     }
-    const scope = String(flags.scope ?? 'project').toLowerCase() === 'user' ? 'user' : 'project';
     const status = await collectStatus(invocation);
     if (!status.ok) return fail(`cc-memory: ${status.error}`);
-    if (scope === 'user' && !status.config.userMemoryEnabled) {
-      return fail('user scope is disabled (set userMemoryEnabled: true in the plugin config)');
-    }
     try {
       // Soft delete: the shared service moves the file into the project trash
       // instead of destroying it, so a mistaken `/memory delete` stays recoverable.
-      const result = await service.deleteFile(status.pctx, file, scope);
+      const result = await service.deleteFile(status.pctx, file);
       invalidate(invocation);
       const target = typeof result.trashPath === 'string' && result.trashPath !== ''
         ? ` -> ${result.trashPath}`
         : '';
-      return ok(`trashed ${scope} memory file ${file}${target}`);
+      return ok(`trashed memory file ${file}${target}`);
     } catch (error) {
       const code = typeof error?.code === 'string' ? error.code : '';
       if (code === 'delete-disabled') {
@@ -974,7 +901,7 @@ export function registerCommands(ctx, runtime) {
   async function memoryDream(invocation, args) {
     const { flags, positional } = splitFlags(args);
     const sub = (positional[0] ?? 'status').toLowerCase();
-    if (['run', 'apply', 'reject', 'apply-ops', 'undo'].includes(sub)) {
+    if (['run', 'switch', 'discard', 'undo'].includes(sub)) {
       const blocked = subagentGuard(invocation);
       if (blocked) return blocked;
     }
@@ -991,11 +918,8 @@ export function registerCommands(ctx, runtime) {
       if (items.length === 0) return ok('no dream batches yet');
       const lines = [`dream history — ${items.length} batch(es)`];
       for (const item of items) {
-        const when = Number(item.appliedAt) > 0 ? formatTime(item.appliedAt) : formatTime(item.at);
-        lines.push(
-          `- ${item.ts}  ${when}  ${item.undoable ? 'undoable' : item.hasMeta ? 'read-only' : 'legacy (no meta)'}`,
-        );
-        if (item.kind !== '') lines.push(`  kind: ${item.kind}   ops: ${Number(item.ops) || 0}`);
+        const mark = item.undoable ? 'undoable' : item.undone ? 'undone' : 'kept';
+        lines.push(`- ${item.ts}  ${formatTime(item.appliedAt)}  ${mark}   files: ${Number(item.ops) || 0}`);
         if (item.summary) lines.push(`  ${truncate(item.summary, 160)}`);
         if (Array.isArray(item.files) && item.files.length > 0) {
           lines.push(`  files: ${item.files.slice(0, 6).join(', ')}${item.files.length > 6 ? ' …' : ''}`);
@@ -1039,7 +963,7 @@ export function registerCommands(ctx, runtime) {
         return ok(`Dream rough input estimate: ${estimate.estimatedTokens} tokens\nConfigured token limit: ${estimate.limit > 0 ? estimate.limit : 'unlimited'} (${estimate.costMode})\nActual total usage can be higher; this estimate is not a spending cap. No model was called and no memory was changed.`);
       } catch (error) { return fail(`dream estimate: ${errorText(error)}`); }
     }
-    if (sub === 'status') {
+    if (sub === 'status' && !positional[1] && typeof flags.run !== 'string') {
       const status = await collectStatus(invocation);
       if (!status.ok) return fail(`cc-memory: ${status.error}`);
       const { config, snapshot } = status;
@@ -1048,7 +972,7 @@ export function registerCommands(ctx, runtime) {
       const lines = [];
       lines.push('dream status');
       lines.push(
-        `auto dream: ${config.autoDreamEnabled ? 'ON' : 'OFF'}   mode: ${config.dreamMode === 'review' ? 'review' : 'apply'}   delete allowed: ${config.dreamAllowDelete ? 'yes' : 'no'}`,
+        `auto dream: ${config.autoDreamEnabled ? 'ON' : 'OFF'}   delete allowed: ${config.dreamAllowDelete ? 'yes' : 'no'}`,
       );
       lines.push(
         `gates: last dream >= ${config.minHours}h ago, >= ${config.minSessions} sessions since, scan throttle ${Math.round((Number(config.scanThrottleMs) || 0) / 60000)}m`,
@@ -1067,25 +991,33 @@ export function registerCommands(ctx, runtime) {
       if (typeof snapshot.lastDreamSummary === 'string' && snapshot.lastDreamSummary !== '') {
         lines.push(`last summary: ${truncate(snapshot.lastDreamSummary, 400)}`);
       }
-      if (typeof snapshot.pendingProposal === 'string' && snapshot.pendingProposal !== '') {
-        lines.push(`pending proposal: ${snapshot.pendingProposal} (apply with /memory dream apply, discard with /memory dream reject)`);
+      if (snapshot.shadowPending && typeof snapshot.shadowPending === 'object') {
+        const waiting = Array.isArray(snapshot.shadowPending.files) ? snapshot.shadowPending.files.length : 0;
+        lines.push(`pending dream result: ${waiting} file(s) (switch with /memory dream switch, discard with /memory dream discard)`);
       } else {
-        lines.push('pending proposal: none');
-      }
-      if (typeof snapshot.lastPlanPath === 'string' && snapshot.lastPlanPath !== '') {
-        lines.push(`last dry-run plan: ${snapshot.lastPlanPath} (apply with /memory dream apply)`);
-      } else {
-        lines.push('last dry-run plan: none');
+        lines.push('pending dream result: none');
       }
       if (typeof snapshot.lastError === 'string' && snapshot.lastError !== '') {
         lines.push(`last error: ${snapshot.lastError}`);
       }
+      const runs = Array.isArray(status.payload?.dreamRuns) ? status.payload.dreamRuns : [];
+      if (runs.length > 0) {
+        const latest = runs[0];
+        lines.push('');
+        lines.push(`latest run: ${latest.runId} — ${latest.status}${latest.stage ? ` at ${latest.stage}` : ''}`);
+        lines.push(
+          `  units: ${latest.counts?.done ?? 0}/${latest.input?.expectedUnits ?? 0} done, ${latest.counts?.failed ?? 0} failed, ${latest.counts?.pending ?? 0} pending`,
+        );
+        if (latest.error) lines.push(`  error: ${truncate(latest.error, 240)}`);
+      }
       lines.push('');
-      lines.push('Run /memory dream run [--dry-run] [--focus <text>] to consolidate now, or /memory dream apply to apply a review-mode proposal.');
+      lines.push('Run /memory dream run [--focus <text>] to consolidate now; a finished run waits until you switch to it or discard it.');
+      lines.push('Long runs can be checked with /memory dream status <runId>, stopped with /memory dream cancel, and continued with /memory dream resume <runId>.');
       return ok(lines.join('\n'));
     }
     if (sub === 'run') {
-      const dryRun = flags['dry-run'] === true || flags.dryrun === true || flags.dry === true;
+      // `--wait` blocks until the run finishes; otherwise it runs in the background.
+      const wait = flags.wait === true;
       const status = await collectStatus(invocation);
       if (!status.ok) return fail(`cc-memory: ${status.error}`);
       let response;
@@ -1093,7 +1025,7 @@ export function registerCommands(ctx, runtime) {
         response = await service.dream(status.pctx, {
           agent: invocation.agent,
           sessionId: invocation?.agent?.id,
-          action: dryRun ? 'dry-run' : 'run',
+          action: wait ? 'run' : 'start',
           trigger: 'manual',
           focus: typeof flags.focus === 'string' ? flags.focus : '',
         });
@@ -1102,94 +1034,79 @@ export function registerCommands(ctx, runtime) {
       }
       if (!response.ok) return fail(`dream run: ${response.message || response.error}`);
       invalidate(invocation);
-      return ok(formatDreamRun(response.result, dryRun));
+      if (wait) return ok(formatDreamRun(response.result));
+      const started = response.result ?? {};
+      if (started.started !== true && started.reused !== true) {
+        return fail(`dream run: ${started.message || started.error || 'could not start'}`);
+      }
+      const runId = String(started.runId ?? '');
+      return ok(
+        [
+          `dream run ${started.reused === true ? 'already running' : 'started'}: ${runId}`,
+          `progress:  /memory dream status ${runId}`,
+          `stop:      /memory dream cancel ${runId}`,
+          `continue:  /memory dream resume ${runId}`,
+          'the run continues in the background; each finished unit is saved, so stopping loses no completed work.',
+        ].join('\n'),
+      );
     }
-    if (sub === 'apply') {
+    if (sub === 'cancel' || sub === 'resume' || sub === 'status') {
       const status = await collectStatus(invocation);
       if (!status.ok) return fail(`cc-memory: ${status.error}`);
-      const { snapshot } = status;
-      const pending = typeof snapshot.pendingProposal === 'string' ? snapshot.pendingProposal : '';
-      const lastPlan = typeof snapshot.lastPlanPath === 'string' ? snapshot.lastPlanPath : '';
+      const runId = positional[1] ?? (typeof flags.run === 'string' ? flags.run : '');
+      const action = sub === 'cancel' ? 'cancel' : sub === 'resume' ? 'resume' : 'status';
       let response;
-      let source;
-      if (pending !== '') {
-        source = 'pending proposal';
-        try {
-          response = await service.dream(status.pctx, { agent: invocation.agent, action: 'apply-pending' });
-        } catch (error) {
-          return fail(`dream apply: ${errorText(error)}`);
-        }
-      } else if (lastPlan !== '') {
-        source = 'last dry-run plan';
-        try {
-          response = await service.dream(status.pctx, { agent: invocation.agent, action: 'apply-last' });
-        } catch (error) {
-          return fail(`dream apply: ${errorText(error)}`);
-        }
-      } else {
-        return fail(
-          'nothing to apply: no pending proposal and no dry-run plan. Run /memory dream run --dry-run first.',
-        );
+      try {
+        response = await service.dream(status.pctx, { agent: invocation.agent, action, runId });
+      } catch (error) {
+        return fail(`dream ${action}: ${errorText(error)}`);
       }
-      if (!response.ok) return fail(`dream apply: ${response.message || response.error}`);
-      invalidate(invocation);
-      return ok(formatDreamApply(response.result, source));
+      if (!response.ok) return fail(`dream ${action}: ${response.message || response.error}`);
+      if (action === 'cancel') {
+        const result = response.result ?? {};
+        return result.cancelled === true
+          ? ok(`dream run ${result.runId} is stopping; finished units stay saved, so it can be resumed.`)
+          : fail(`no running dream run${runId ? ` ${runId}` : ''} to cancel`);
+      }
+      if (action === 'resume') {
+        const result = response.result ?? {};
+        if (result.started !== true) return fail(`dream resume: ${result.message || result.error || 'could not resume'}`);
+        invalidate(invocation);
+        return ok([
+          `dream run ${result.runId} resumed${result.reused === true ? ' (was already running)' : ''}`,
+          `progress:  /memory dream status ${result.runId}`,
+        ].join('\n'));
+      }
+      return ok(formatDreamRunStatus(response.result));
     }
-    if (sub === 'reject') {
+    if (sub === 'switch') {
       const status = await collectStatus(invocation);
       if (!status.ok) return fail(`cc-memory: ${status.error}`);
       let response;
       try {
-        response = await service.dream(status.pctx, { agent: invocation.agent, action: 'reject' });
+        response = await service.dream(status.pctx, { agent: invocation.agent, action: 'switch' });
       } catch (error) {
-        return fail(`dream reject: ${errorText(error)}`);
+        return fail(`dream switch: ${errorText(error)}`);
       }
-      if (!response.ok) return fail(`dream reject: ${response.message || response.error}`);
+      if (!response.ok) return fail(`dream switch: ${response.message || response.error}`);
       invalidate(invocation);
-      const rejected = response.result ?? {};
-      if (rejected.rejected === true) {
-        return ok(`rejected and removed the pending dream proposal: ${rejected.proposalPath}`);
-      }
-      return fail('no pending proposal to reject');
+      return ok(formatDreamSwitch(response.result));
     }
-    if (sub === 'preview') {
+    if (sub === 'discard') {
       const status = await collectStatus(invocation);
       if (!status.ok) return fail(`cc-memory: ${status.error}`);
       let response;
       try {
-        response = await service.dream(status.pctx, { agent: invocation.agent, action: 'preview' });
+        response = await service.dream(status.pctx, { agent: invocation.agent, action: 'discard' });
       } catch (error) {
-        return fail(`dream preview: ${errorText(error)}`);
+        return fail(`dream discard: ${errorText(error)}`);
       }
-      if (!response.ok) return fail(`dream preview: ${response.message || response.error}`);
-      return ok(formatDreamPreview(response.result));
+      if (!response.ok) return fail(`dream discard: ${response.message || response.error}`);
+      const result = response.result ?? {};
+      if (result.discarded === true) return ok('discarded the dream result; memory is unchanged');
+      return fail(`dream discard: ${result.reason || result.error || 'nothing to discard'}`);
     }
-    if (sub === 'apply-ops') {
-      const rawIndexes =
-        positional.slice(1).join(',') ||
-        (typeof flags.indexes === 'string' ? flags.indexes : '');
-      if (String(rawIndexes).trim() === '') {
-        return fail(
-          'usage: /memory dream apply-ops <indexes>  (comma-separated operation numbers, e.g. 0,2,3; see /memory dream preview)',
-        );
-      }
-      const status = await collectStatus(invocation);
-      if (!status.ok) return fail(`cc-memory: ${status.error}`);
-      let response;
-      try {
-        response = await service.dream(status.pctx, {
-          agent: invocation.agent,
-          action: 'apply-ops',
-          indexes: rawIndexes,
-        });
-      } catch (error) {
-        return fail(`dream apply-ops: ${errorText(error)}`);
-      }
-      if (!response.ok) return fail(`dream apply-ops: ${response.message || response.error}`);
-      invalidate(invocation);
-      return ok(formatDreamApply(response.result, 'selected operations'));
-    }
-    return fail('usage: /memory dream on|off|status|run [--dry-run]|apply|reject|preview|apply-ops <indexes>');
+
   }
 
   // -- /memory backups | trash | restore -------------------------------------
@@ -1272,135 +1189,22 @@ export function registerCommands(ctx, runtime) {
     return ok(lines.join('\n'));
   }
 
-  // -- v9: write review queue + session controls -----------------------------
-
-  /** `/memory writes`: list the writes waiting for human review. */
-  async function memoryWrites(invocation) {
-    const status = await collectStatus(invocation);
-    if (!status.ok) return fail(`cc-memory: ${status.error}`);
-    const pending = status.pendingWrites ?? { count: 0, items: [] };
-    if ((Number(pending.count) || 0) === 0) {
-      return ok('no pending writes — every memory write was applied automatically');
-    }
-    const lines = [`pending writes — ${Number(pending.count)}`];
-    for (const item of pending.items.slice(0, 40)) {
-      lines.push(
-        `- ${item.id}  [${item.candidate?.type || '?'}] ${item.candidate?.name || '(unnamed)'}  ${formatTime(item.createdAt)}`,
-      );
-      if (item.candidate?.description) lines.push(`  ${truncate(item.candidate.description, 120)}`);
-      if (Array.isArray(item.reasons) && item.reasons.length > 0) {
-        lines.push(`  reasons: ${item.reasons.join('; ')}`);
-      }
-    }
-    if (pending.items.length > 40) lines.push(`… ${pending.items.length - 40} more`);
-    lines.push('');
-    lines.push('Approve: /memory approve <id>   Reject: /memory reject <id> [reason]');
-    return ok(lines.join('\n'));
-  }
-
-  async function memoryApprove(invocation, args) {
-    const blocked = subagentGuard(invocation);
-    if (blocked) return blocked;
-    const { positional } = splitFlags(args);
-    const id = positional[0];
-    if (typeof id !== 'string' || id === '') return fail('usage: /memory approve <id>');
-    const status = await collectStatus(invocation);
-    if (!status.ok) return fail(`cc-memory: ${status.error}`);
-    try {
-      const result = await service.approveWrite(status.pctx, id, { sessionId: invocation?.agent?.id });
-      invalidate(invocation);
-      return ok(`approved pending write ${result.id} → ${result.file}`);
-    } catch (error) {
-      return fail(`memory approve ${id}: ${errorText(error)}`);
-    }
-  }
-
-  async function memoryReject(invocation, args) {
-    const blocked = subagentGuard(invocation);
-    if (blocked) return blocked;
-    const { positional } = splitFlags(args);
-    const id = positional[0];
-    if (typeof id !== 'string' || id === '') return fail('usage: /memory reject <id> [reason]');
-    const reason = positional.slice(1).join(' ');
-    const status = await collectStatus(invocation);
-    if (!status.ok) return fail(`cc-memory: ${status.error}`);
-    try {
-      const result = await service.rejectWrite(status.pctx, id, reason);
-      const target = typeof result.path === 'string' && result.path !== '' ? ` → ${result.path}` : '';
-      return ok(`rejected pending write ${result.id}${reason !== '' ? ` (${reason})` : ''}${target}`);
-    } catch (error) {
-      return fail(`memory reject ${id}: ${errorText(error)}`);
-    }
-  }
+  // -- session controls -------------------------------------------------------
 
   /** `/memory refresh`: rebuild this session's injected memory text immediately. */
   async function memoryRefresh(invocation) {
     const sessionId = invocation?.agent?.id;
     if (typeof sessionId !== 'string' || sessionId === '') return fail('memory refresh: no live session id');
-    if (typeof runtime?.refreshSession !== 'function') {
-      return fail('memory refresh: this host build cannot refresh a session injection');
-    }
     try {
-      const result = await runtime.refreshSession(sessionId);
-      if (typeof runtime.drain === 'function') {
-        try {
-          await runtime.drain();
-        } catch (error) {
-          warn('drain', error);
-        }
-      }
-      const live =
-        typeof runtime.sessionMode === 'function' ? runtime.sessionMode(sessionId) === 'live' : result?.live === true;
-      const text =
-        typeof runtime.getInjectedText === 'function'
-          ? String(runtime.getInjectedText(sessionId) ?? '')
-          : '';
-      const lines = [`injection refreshed (${live ? 'live' : 'auto'} mode) — ${text.length} chars`];
+      runtime.refreshSession(sessionId);
+      await runtime.drain();
+      const text = String(runtime.getInjectedText?.(sessionId) ?? '');
+      const lines = [`injection refreshed — ${text.length} chars`];
       if (text !== '') lines.push('', truncate(text, 800));
       return ok(lines.join('\n'));
     } catch (error) {
       return fail(`memory refresh: ${errorText(error)}`);
     }
-  }
-
-  /** `/memory live on|off`: per-session live injection mode. */
-  async function memoryLive(invocation, args) {
-    const value = String(args?.[0] ?? '').toLowerCase();
-    if (value !== 'on' && value !== 'off') return fail('usage: /memory live on|off');
-    const sessionId = invocation?.agent?.id;
-    if (typeof sessionId !== 'string' || sessionId === '') return fail('memory live: no live session id');
-    if (typeof runtime?.setSessionMode !== 'function') {
-      return fail('memory live: this host build cannot switch the session injection mode');
-    }
-    try {
-      const mode = runtime.setSessionMode(sessionId, value === 'on' ? 'live' : 'auto');
-      const detail =
-        mode === 'live'
-          ? 'refreshes on every memory change'
-          : 'follows the plugin injectionMode setting';
-      return ok(`this session's injection mode: ${mode} (${detail})`);
-    } catch (error) {
-      return fail(`memory live ${value}: ${errorText(error)}`);
-    }
-  }
-
-  /** `/memory user on|off`: global runtime override for the user memory space. */
-  async function memoryUser(invocation, args) {
-    const value = String(args?.[0] ?? '').toLowerCase();
-    if (value !== 'on' && value !== 'off') return fail('usage: /memory user on|off');
-    let toggled;
-    try {
-      toggled = await service.toggle(runtime, { userMemoryEnabled: value === 'on' });
-    } catch (error) {
-      return fail(`memory user ${value}: ${errorText(error)}`);
-    }
-    invalidate(invocation);
-    const effective = Boolean(runtime?.config?.userMemoryEnabled ?? toggled?.config?.userMemoryEnabled);
-    const maxLines = Number(runtime?.config?.userIndexMaxLines) || 30;
-    const maxBytes = Number(runtime?.config?.userIndexMaxBytes) || 4096;
-    return ok(
-      `user memory ${effective ? 'ON' : 'OFF'} (runtime override; applies to every project). Budget: ${maxLines} lines / ${formatBytes(maxBytes)}`,
-    );
   }
 
   // -- v10: search / edit / merge / history / import / export ----------------
@@ -1448,7 +1252,7 @@ export function registerCommands(ctx, runtime) {
     const status = await collectStatus(invocation);
     if (!status.ok) return fail(`cc-memory: ${status.error}`);
     const input = { file };
-    for (const key of ['name', 'type', 'description', 'content', 'scope']) {
+    for (const key of ['name', 'type', 'description', 'content']) {
       if (typeof flags[key] === 'string') input[key] = flags[key];
     }
     let result;
@@ -1588,35 +1392,45 @@ export function registerCommands(ctx, runtime) {
     if (type === '') {
       return fail(`unknown memory type "${parsed.type}"; use one of ${MEMORY_TYPES.join(', ')}`);
     }
-    const scope = parsed.scope === 'user' ? 'user' : 'project';
     let pctx;
     try {
       pctx = await requireProject(invocation);
     } catch (error) {
       return fail(`remember: ${errorText(error)}`);
     }
-    const config = runtime.config && typeof runtime.config === 'object' ? runtime.config : {};
-    if (scope === 'user' && !config.userMemoryEnabled) {
-      return fail('user scope is disabled (set userMemoryEnabled: true in the plugin config)');
-    }
+    const config = runtime.config;
     const name = deriveName(parsed.text);
     const description = firstLine(parsed.text);
     try {
       const saved = await pctx.store.saveEntry({
-        scope,
         name,
         type,
         description,
-        content: parsed.text,
+        // The human typed this themselves, so it is the current value without a
+        // model-authored status line or an evidence gate.
+        content: ensureCurrentStatus(parsed.text),
         source: { sessionId: invocation?.agent?.id, via: 'command:/remember' },
       });
       invalidate(invocation);
-      if (typeof saved?.file === 'string' && saved.file !== '') {
-        // Effect metrics: every saved note counts as one write.
-        await recordWrite(pctx.paths, saved.file);
-      }
-      const lines = [`saved ${scope} memory: ${typeof saved?.file === 'string' ? saved.file : name}`];
+      const verification = typeof saved?.file === 'string' && saved.file !== ''
+        // The user typed this note themselves, so the saved bytes are the
+        // confirmed value: count the write and mark it verified, which keeps the
+        // note's summary in the next session's first-turn index.
+        ? await recordUserConfirmedSave({
+          store: pctx.store,
+          paths: pctx.paths,
+          file: saved.file,
+          entry: saved,
+        })
+        : 'pending';
+      const lines = [`saved memory: ${typeof saved?.file === 'string' ? saved.file : name}`];
       lines.push(`type: ${typeof saved?.type === 'string' ? saved.type : type}   name: ${typeof saved?.name === 'string' ? saved.name : name}`);
+      if (typeof saved?.version === 'string' && saved.version !== '') lines.push(`version: ${saved.version}`);
+      lines.push(
+        verification === 'recorded'
+          ? 'verification: current (first-turn summary available)'
+          : 'verification: pending (saved; first-turn index will show the name only until the next write)',
+      );
       if (saved?.index?.warning) lines.push(`warning: ${saved.index.warning}`);
       if (Array.isArray(saved?.warnings)) {
         for (const warning of saved.warnings) lines.push(`warning: ${warning}`);
@@ -1628,6 +1442,55 @@ export function registerCommands(ctx, runtime) {
     } catch (error) {
       return fail(`remember: ${errorText(error)}`);
     }
+  }
+
+  /**
+   * `/memory inbox` — review proposals staged by the optional auto-extractor.
+   * Accepting replays the proposal through the regular `memory_save` gates so
+   * evidence, duplicate checks, secret scanning and index budgets still apply.
+   */
+  async function memoryInbox(invocation, args) {
+    const pctx = await requireProject(invocation);
+    const action = (args[0] ?? 'list').toLowerCase();
+    if (action === 'list' || action === '') {
+      const records = await listProposals(pctx.paths);
+      if (records.length === 0) return ok('inbox: empty');
+      const lines = [`inbox: ${records.length} pending`];
+      for (const record of records) {
+        lines.push(`- ${record.id}  ${record.createdAt}  ${record.sessionId}`);
+        for (const item of record.items) lines.push(`  [${item.type}] ${item.name} — ${item.description ?? ''}`);
+      }
+      lines.push('usage: /memory inbox accept <id> | show <id> | discard <id>');
+      return ok(lines.join('\n'));
+    }
+    const id = args[1];
+    if (action === 'show') {
+      if (!id) return fail('usage: /memory inbox show <id>');
+      const record = await readProposal(pctx.paths, id);
+      return ok(JSON.stringify(record, null, 2));
+    }
+    if (action === 'discard') {
+      if (!id) return fail('usage: /memory inbox discard <id>');
+      await removeProposal(pctx.paths, id);
+      return ok(`inbox: discarded ${id}`);
+    }
+    if (action === 'accept') {
+      if (!id) return fail('usage: /memory inbox accept <id>');
+      const record = await readProposal(pctx.paths, id);
+      const results = await applyProposals({
+        runtime,
+        items: record.items,
+        sessionId: record.sessionId,
+        agent: invocation.agent ?? { id: record.sessionId },
+      });
+      const written = results.filter((item) => item.ok).length;
+      const failed = results.filter((item) => !item.ok);
+      if (failed.length === 0) await removeProposal(pctx.paths, id);
+      const lines = [`inbox: accepted ${written}/${results.length} from ${id}`];
+      for (const item of failed) lines.push(`- failed ${item.name}: ${item.message ?? item.error ?? 'unknown'}`);
+      return failed.length === 0 ? ok(lines.join('\n')) : fail(lines.join('\n'));
+    }
+    return fail(`unknown inbox action "${action}". usage: /memory inbox list|show <id>|accept <id>|discard <id>`);
   }
 
   // -- dispatch --------------------------------------------------------------
@@ -1643,14 +1506,14 @@ export function registerCommands(ctx, runtime) {
           return ok(
             [
               `usage: /memory ${MEMORY_HINT}`,
-              '       /dream run [--dry-run] [--focus <text>]|status|apply|history|undo   (short alias for /memory dream …)',
-              '       /memory dream on|off|status|history|undo|run [--dry-run]|apply|reject|preview|apply-ops <indexes>',
+              '       /dream run [--focus <text>]|status|switch|discard|history|undo   (short alias for /memory dream …)',
+              '       /memory dream on|off|status|history|undo|run|switch|discard',
               '       /memory backups | trash | restore <backup|trash> <id> [file]',
               '       /memory metrics   (injections, reads, writes, searches, dream acceptance, 7-day trend, quality, last cost)',
               '       /memory search <query> | show <file> | history <file> | edit <file> | merge <file1> <file2> [...]',
               '       /memory import <path> | export <path>   (Claude Code memory interoperability)',
-              '       /memory writes | approve <id> | reject <id> [reason]   (write-review queue)',
-              '       /memory refresh | live on|off | user on|off',
+              '       /memory inbox list | show <id> | accept <id> | discard <id>   (review auto-extracted proposals)',
+              '       /memory refresh',
               '       /memory rules [reset]',
               `       /remember ${REMEMBER_HINT}`,
               '       /memory on|off toggles autoMemoryEnabled; /memory plugin on|off toggles the plugin at runtime (override, no reload).',
@@ -1678,24 +1541,16 @@ export function registerCommands(ctx, runtime) {
           return await memoryImport(invocation, args);
         case 'export':
           return await memoryExport(invocation, args);
-        case 'writes':
-          return await memoryWrites(invocation);
-        case 'approve':
-          return await memoryApprove(invocation, args);
-        case 'reject':
-          return await memoryReject(invocation, args);
         case 'refresh':
           return await memoryRefresh(invocation);
-        case 'live':
-          return await memoryLive(invocation, args);
-        case 'user':
-          return await memoryUser(invocation, args);
         case 'backups':
           return await memoryBackups(invocation);
         case 'trash':
           return await memoryTrash(invocation);
         case 'restore':
           return await memoryRestore(invocation, args);
+        case 'inbox':
+          return await memoryInbox(invocation, args);
         case 'on':
           return await memoryToggle(invocation, 'autoMemoryEnabled', true, 'auto memory');
         case 'off':
@@ -1746,15 +1601,15 @@ export function registerCommands(ctx, runtime) {
   });
   register({
     name: REMEMBER_NAME,
-    description: 'Save one durable memory note for this project (/remember [--type=..] [--scope=..] text).',
+    description: 'Save one durable memory note for this project (/remember [--type=..] text).',
     input: { hint: REMEMBER_HINT },
     handler: handleRemember,
   });
   register({
     name: 'dream',
     // Short human entry point for the same feature the Memory page calls Dream.
-    description: 'Dream: consolidate memory now (/dream run [--dry-run] [--focus <text>] | status | apply | history | undo).',
-    input: { hint: 'run [--dry-run]|status|apply|history|undo' },
+    description: 'Dream: consolidate memory now (/dream status [runId] | run [--wait] | cancel [runId] | resume [runId] | switch | discard | history | undo).',
+    input: { hint: 'run|status|switch|discard|history|undo' },
     handler: (invocation) =>
       handleMemory({ ...invocation, rawInput: `dream ${String(invocation?.rawInput ?? '')}`.trimEnd() }),
   });
@@ -1774,83 +1629,90 @@ export function registerCommands(ctx, runtime) {
 // Dream result rendering
 // ---------------------------------------------------------------------------
 
+/** Render one resumable-run summary as chat text. */
+function formatDreamRunStatus(run) {
+  if (!run || typeof run !== 'object') return 'no dream run recorded';
+  if (run.ok === false) return `dream status: ${run.error ?? 'unavailable'}${run.message ? ` — ${run.message}` : ''}`;
+  if (run.status === 'none') return 'no dream runs recorded yet; start one with /memory dream run';
+  const lines = [];
+  lines.push(`dream run ${run.runId || '(unknown)'} — ${run.status || 'unknown'}${run.stage ? ` at ${run.stage}` : ''}`);
+  const counts = run.counts && typeof run.counts === 'object' ? run.counts : {};
+  const expected = Number(run.input?.expectedUnits) || 0;
+  lines.push(`units: ${Number(counts.done) || 0}/${expected} done, ${Number(counts.failed) || 0} failed, ${Number(counts.pending) || 0} pending`);
+  if (run.coverageComplete === true) lines.push('coverage: complete');
+  if (run.coverageComplete === false) lines.push('coverage: incomplete — apply stays blocked until every unit finishes');
+  if (run.planPath) lines.push(`plan: ${run.planPath}${run.status === 'review' ? ' (apply with /memory dream apply)' : ''}`);
+  if (run.blockedReason) lines.push(`blocked: ${truncate(run.blockedReason, 300)}`);
+  if (run.error) lines.push(`error: ${truncate(run.error, 300)}`);
+  if (run.skipReason) lines.push(`skipped: ${run.skipReason}`);
+  const sessions = Array.isArray(run.sessions) ? run.sessions : [];
+  for (const session of sessions.slice(0, 5)) {
+    lines.push(`- ${session.id}: ${session.done}/${session.units} unit(s)${session.failed ? `, ${session.failed} failed` : ''}`);
+  }
+  const pending = Array.isArray(run.pendingUnits) ? run.pendingUnits : [];
+  if (pending.length > 0) {
+    lines.push(`pending units: ${pending.slice(0, 5).map((unit) => `${unit.sessionId}#${unit.firstSeq ?? '?'}-${unit.lastSeq ?? '?'}`).join(', ')}${pending.length > 5 ? ' …' : ''}`);
+  }
+  const errors = Array.isArray(run.errors) ? run.errors : [];
+  for (const item of errors.slice(0, 3)) {
+    lines.push(`failed unit ${item.sessionId ?? '?'}/${item.unitId ?? '?'}: ${truncate(String(item.error ?? ''), 200)}`);
+  }
+  if (run.status === 'running') {
+    lines.push(`stop: /memory dream cancel ${run.runId}`);
+  } else if (['failed', 'cancelled', 'blocked', 'ready'].includes(run.status)) {
+    lines.push(`continue: /memory dream resume ${run.runId}`);
+  }
+  return lines.join('\n');
+}
+
 /** Render one `DreamRunResult` as chat text. */
-function formatDreamRun(result, dryRun) {
+function formatDreamRun(result) {
   if (!result || typeof result !== 'object') return 'dream run: the engine returned no result';
   const lines = [];
-  lines.push(`dream run${dryRun ? ' (dry-run)' : ''}`);
+  lines.push('dream run');
   if (Number.isFinite(result.estimatedTokens)) lines.push(`rough input estimate: ${result.estimatedTokens} tokens (actual total can be higher)`);
   if (result.ran === false) {
     lines.push(`skipped: ${result.skipReason ?? 'unknown reason'}`);
     if (result.error) lines.push(`error: ${errorText(result.error)}`);
     return lines.join('\n');
   }
-  lines.push(`mode: ${result.mode === 'review' ? 'review' : 'apply'}   applied: ${result.applied ? 'yes' : 'no'}`);
   lines.push(`sessions reviewed: ${Number(result.sessionsReviewed) || 0}`);
-  const operations = Array.isArray(result.operations) ? result.operations : [];
-  const operationCount = Array.isArray(result.operations)
-    ? result.operations.length
-    : Number(result.operations) || 0;
-  lines.push(`operations: ${operationCount}`);
-  for (const operation of operations.slice(0, 40)) {
-    const op = operation && typeof operation === 'object' ? operation : {};
-    const target = op.file ?? op.name ?? '';
-    const prefix = String(op.op ?? 'op');
-    lines.push(`  - ${prefix}${target ? ` ${target}` : ''}${op.reason ? ` (${truncate(op.reason, 100)})` : ''}`);
-  }
-  if (operations.length > 40) lines.push(`  … ${operations.length - 40} more`);
-  const touched = Array.isArray(result.filesTouched) ? result.filesTouched.length : result.filesTouched;
-  if (touched !== undefined) lines.push(`files touched: ${touched}`);
   if (result.summary) lines.push(`summary: ${String(result.summary)}`);
-  if (result.proposalPath) lines.push(`proposal: ${result.proposalPath}`);
-  if (result.backupDir) lines.push(`backup: ${result.backupDir}`);
+  const counts = result.counts && typeof result.counts === 'object' ? result.counts : null;
+  if (counts) {
+    lines.push(`result: +${Number(counts.added) || 0} added, ~${Number(counts.changed) || 0} changed, -${Number(counts.removed) || 0} removed`);
+  }
+  const files = Array.isArray(result.files) ? result.files : [];
+  for (const item of files.slice(0, 40)) {
+    const file = item && typeof item === 'object' ? item : {};
+    lines.push(`  - ${String(file.action ?? 'changed')} ${file.file ?? ''}`);
+  }
+  if (files.length > 40) lines.push(`  … ${files.length - 40} more`);
+  if (result.shadowDir) lines.push(`result kept in: ${result.shadowDir} (switch with /memory dream switch, discard with /memory dream discard)`);
   if (result.error) lines.push(`error: ${errorText(result.error)}`);
   if (Array.isArray(result.warnings)) for (const warning of result.warnings) lines.push(`warning: ${truncate(warning, 500)}`);
-  if (Array.isArray(result.dropped) && result.dropped.length > 0) lines.push(`dropped operations (review required): ${result.dropped.join('; ')}`);
-  if (dryRun) lines.push('dry-run: no memory file was changed; review with /memory dream preview, then /memory dream apply.');
   return lines.join('\n');
 }
 
-/** Render one `applyPendingDream`/`applyLastPlan` result as chat text. */
-function formatDreamApply(result, source = '') {
-  if (!result || typeof result !== 'object') return 'dream apply: the engine returned no result';
+/** Render one `switchShadow` result as chat text. */
+function formatDreamSwitch(result) {
+  if (!result || typeof result !== 'object') return 'dream switch: the engine returned no result';
   const lines = [];
-  lines.push(`dream apply${source !== '' ? ` (${source})` : ''}: ${result.applied === true ? 'applied' : 'not applied'}`);
-  if (result.rolledBack === true) lines.push('rolled back: yes (memory was restored from the pre-dream backup)');
-  if (typeof result.mode === 'string' && result.mode !== '') lines.push(`mode: ${result.mode}`);
-  const operations = Array.isArray(result.operations) ? result.operations : [];
-  if (operations.length > 0) lines.push(`operations: ${operations.length}`);
-  if (result.summary) lines.push(`summary: ${String(result.summary)}`);
-  if (result.error) lines.push(`error: ${errorText(result.error)}`);
-  if (result.applied === true) lines.push('The applied plan is now part of memory and its pending state was cleared.');
-  return lines.join('\n');
-}
-
-/** Render one `runtime.previewPlan` result as chat text. */
-function formatDreamPreview(result) {
-  if (!result || typeof result !== 'object') return 'dream preview: the engine returned no plan';
-  const lines = ['dream preview (no memory file was changed)'];
-  if (typeof result.path === 'string' && result.path !== '') lines.push(`plan: ${result.path}`);
-  if (result.summary) lines.push(`summary: ${truncate(String(result.summary), 400)}`);
-  const ops = Array.isArray(result.ops) ? result.ops : [];
-  lines.push(`operations: ${ops.length}`);
-  for (const operation of ops.slice(0, 40)) {
-    const op = operation && typeof operation === 'object' ? operation : {};
-    const target = typeof op.file === 'string' && op.file !== '' ? ` ${op.file}` : '';
-    const changed = op.changed === false ? 'unchanged' : 'changed';
-    lines.push(`  [${op.index ?? '?'}] ${String(op.op ?? 'op')}${target} (${changed})`);
-    for (const item of (Array.isArray(op.evidence) ? op.evidence : []).slice(0, 3)) {
-      const quote = typeof item === 'string' ? item : item?.quote;
-      if (typeof quote === 'string' && quote !== '') lines.push(`      quote: "${truncate(quote, 120)}"`);
+  if (result.switched !== true) {
+    lines.push(`dream switch: not switched (${errorText(result.error || result.reason || 'unknown')})`);
+    if (Array.isArray(result.conflicts) && result.conflicts.length > 0) {
+      lines.push('memory changed while the dream ran, so nothing was replaced:');
+      for (const item of result.conflicts.slice(0, 10)) {
+        lines.push(`  - ${item.file}: ${item.reason}`);
+      }
+      lines.push('Run /memory dream run again to rebuild the result from the current notes.');
     }
-    for (const line of (Array.isArray(op.removedLines) ? op.removedLines : []).slice(0, 20)) lines.push(`      removed line ${line.line}: ${truncate(line.text, 300)}`);
+    return lines.join('\n');
   }
-  if (ops.length > 40) lines.push(`  … ${ops.length - 40} more`);
-  const truncated = Array.isArray(result.truncatedFiles) ? result.truncatedFiles : [];
-  if (truncated.length > 0) lines.push(`truncated input files (protected from rewrite): ${truncated.join(', ')}`);
-  const dropped = Array.isArray(result.dropped) ? result.dropped : [];
-  if (dropped.length > 0) lines.push(`dropped operations: ${dropped.slice(0, 5).join('; ')}`);
-  lines.push('');
-  lines.push('Apply selected: /memory dream apply-ops <indexes>  (comma-separated operation numbers)');
+  const counts = result.counts && typeof result.counts === 'object' ? result.counts : {};
+  lines.push('memory switched to the dream result');
+  lines.push(`added: ${Number(counts.added) || 0}   changed: ${Number(counts.changed) || 0}   removed: ${Number(counts.removed) || 0}`);
+  if (result.backupDir) lines.push(`backup: ${result.backupDir}`);
+  lines.push('undo with /memory dream undo');
   return lines.join('\n');
 }

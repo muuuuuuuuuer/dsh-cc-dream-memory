@@ -4,6 +4,7 @@
  * Contract: docs/superpowers/specs/2026-11-07-v8-metrics-cost-contract.md 搂1-搂3.
  * Every test uses os.tmpdir(); no LLM is invoked.
  */
+import { withCordis } from './helpers.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
@@ -78,7 +79,7 @@ async function makeEnv(t, configOverrides = {}) {
   await mkdir(workspaceDir, { recursive: true });
   const config = mods.config.resolveConfig({ memoryRoot, ...configOverrides });
   const paths = mods.paths.buildPaths({ memoryRoot: config.memoryRoot, homeDir: path.join(tmp, 'home'), workspaceDir });
-  const store = new mods.store.MemoryStore({ paths, config });
+  const store = new mods.store.MemoryStore({ paths, getConfig: () => config });
   await store.ensure();
   const state = new mods.state.ProjectState(paths);
   await state.load();
@@ -358,7 +359,7 @@ test('v8 metrics: /memory metrics and /memory json expose the summary', async (t
         return () => definitions.delete(definition.name);
       },
     },
-    get: () => undefined,
+    get: (name) => (name === 'commands' ? commandCtx.commands : undefined),
     on: () => () => {},
     effect: (factory) => (typeof factory === 'function' ? factory() : undefined),
   };
@@ -391,14 +392,14 @@ test('v8 metrics: /memory metrics and /memory json expose the summary', async (t
 test('v8 metrics: memory tools record read/save/search events', async (t) => {
   const env = await runtimeEnv(t);
   const definitions = new Map();
-  const toolCtx = {
+  const toolCtx = withCordis({
     tools: {
       register(definition) {
         definitions.set(definition.name, definition);
         return () => {};
       },
     },
-  };
+  });
   const dispose = env.mods.tools.registerTools(toolCtx, env.runtime);
   t.after(() => {
     if (typeof dispose === 'function') dispose();
@@ -408,7 +409,7 @@ test('v8 metrics: memory tools record read/save/search events', async (t) => {
   // v9 policy: short bodies are queued for review; force the write so the
   // metrics wiring is what this test exercises.
   const saved = await definitions.get('memory_save').execute(
-    { name: 'metrics tool note', type: 'user', description: 'd', content: 'body', force: true },
+    { name: 'metrics tool note', type: 'project', description: 'd', content: 'body', force: true },
     exec,
   );
   assert.equal(saved.ok, true, JSON.stringify(saved));
@@ -431,14 +432,14 @@ test('v8 metrics: building a non-empty injection records one injection (runtime.
   const contextCalls = [];
   const agent = {
     id: 'agent-inject',
-    ctx: {
+    ctx: withCordis({
       systemPrompt: {
         context(options) {
           contextCalls.push(options);
           return () => {};
         },
       },
-    },
+    }),
   };
   env.host.services.agents = { list: () => [agent], get: (id) => (id === agent.id ? agent : undefined) };
   env.host.services.tools = { register: () => () => {} };

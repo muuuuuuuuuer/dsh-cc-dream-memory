@@ -1,9 +1,10 @@
 /**
- * v9 P0: in-session instant refresh (live/auto session mode, manual refresh).
+ * v9 P0: manual refresh of the frozen session snapshot.
  *
  * Contract: docs/superpowers/specs/2026-11-07-v9-p0-contract.md §3.
  * Fake host + real runtime/store/inject in os.tmpdir(); no LLM.
  */
+import { withCordis } from './helpers.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
@@ -71,14 +72,14 @@ function makeAgent(id) {
   return {
     id,
     contextCalls: calls,
-    ctx: {
+    ctx: withCordis({
       systemPrompt: {
         context(options) {
           calls.push(options);
           return () => {};
         },
       },
-    },
+    }),
   };
 }
 
@@ -151,21 +152,9 @@ async function seedWithRefresh(env, name, body, marker) {
 // Session mode API + manual refresh
 // ---------------------------------------------------------------------------
 
-test('v9 refresh: setSessionMode/sessionMode/refreshSession session API', async (t) => {
+test('v9 refresh: refreshSession invalidates one session with reason "manual"', async (t) => {
   const env = await injectionEnv(t);
   const runtime = env.runtime;
-
-  assert.equal(typeof runtime.setSessionMode, 'function');
-  assert.equal(typeof runtime.sessionMode, 'function');
-  assert.equal(typeof runtime.refreshSession, 'function');
-  assert.equal(runtime.sessionMode('session-agent'), 'auto', 'sessions start in auto mode');
-
-  await runtime.setSessionMode('session-agent', 'live');
-  assert.equal(runtime.sessionMode('session-agent'), 'live');
-  await runtime.setSessionMode('session-agent', 'auto');
-  assert.equal(runtime.sessionMode('session-agent'), 'auto');
-  await runtime.setSessionMode('session-agent', 'bogus');
-  assert.equal(runtime.sessionMode('session-agent'), 'auto', 'an invalid session mode does not stick');
 
   const invalidations = [];
   runtime.onInvalidate((info) => invalidations.push(info));
@@ -177,30 +166,11 @@ test('v9 refresh: setSessionMode/sessionMode/refreshSession session API', async 
 });
 
 // ---------------------------------------------------------------------------
-// live sessions refresh after memory_save
-// ---------------------------------------------------------------------------
-
-test('v9 refresh: a live session refreshes its injection after memory_save', async (t) => {
-  const env = await injectionEnv(t);
-  const { definitions } = await withTools(env, t);
-  await seedWithRefresh(env, 'alpha', 'alpha body', 'alpha');
-
-  await env.runtime.setSessionMode(env.agent.id, 'live');
-  const saved = await definitions.get('memory_save').execute(
-    { name: 'beta', type: 'user', description: 'live refresh note', content: 'beta body from a live session' },
-    { agent: env.agent, sessionId: env.agent.id },
-  );
-  assert.equal(saved.ok, true, JSON.stringify(saved));
-  await waitFor(() => /beta/.test(agentText(env.agent)));
-  assert.match(agentText(env.agent), /beta/, 'live mode must pick up the write immediately');
-});
-
-// ---------------------------------------------------------------------------
 // manual refresh overrides the frozen (session-mode) snapshot
 // ---------------------------------------------------------------------------
 
 test('v9 refresh: refreshSession (manual) rebuilds a frozen snapshot', async (t) => {
-  const env = await injectionEnv(t); // config injectionMode defaults to session (frozen)
+  const env = await injectionEnv(t);
   await seedWithRefresh(env, 'alpha', 'alpha body', 'alpha');
   const frozen = agentText(env.agent);
 
@@ -215,7 +185,7 @@ test('v9 refresh: refreshSession (manual) rebuilds a frozen snapshot', async (t)
 });
 
 // ---------------------------------------------------------------------------
-// memory_refresh tool + /memory refresh + /memory live commands
+// memory_refresh tool + /memory refresh
 // ---------------------------------------------------------------------------
 
 test('v9 refresh: memory_refresh is no longer a model tool; manual refresh still rebuilds', async (t) => {
@@ -231,7 +201,7 @@ test('v9 refresh: memory_refresh is no longer a model tool; manual refresh still
   assert.match(agentText(env.agent), /delta/, 'a manual refresh rebuilds the frozen snapshot');
 });
 
-test('v9 refresh: /memory refresh and /memory live on|off commands', async (t) => {
+test('v9 refresh: /memory refresh rebuilds the snapshot', async (t) => {
   const env = await injectionEnv(t);
   const definitions = new Map();
   const commandCtx = {
@@ -241,7 +211,7 @@ test('v9 refresh: /memory refresh and /memory live on|off commands', async (t) =
         return () => definitions.delete(definition.name);
       },
     },
-    get: () => undefined,
+    get: (name) => (name === 'commands' ? commandCtx.commands : undefined),
     on: () => () => {},
     effect: (factory) => (typeof factory === 'function' ? factory() : undefined),
   };
@@ -260,25 +230,4 @@ test('v9 refresh: /memory refresh and /memory live on|off commands', async (t) =
   assert.equal(refresh.kind, 'success', refresh.text);
   assert.match(refresh.text, /epsilon|refresh/i);
   await waitFor(() => /epsilon/.test(agentText(env.agent)));
-
-  const liveOn = await invoke('live on');
-  assert.equal(liveOn.kind, 'success', liveOn.text);
-  assert.equal(env.runtime.sessionMode(env.agent.id), 'live');
-  assert.match(liveOn.text, /live/i);
-
-  const liveOff = await invoke('live off');
-  assert.equal(liveOff.kind, 'success', liveOff.text);
-  assert.equal(env.runtime.sessionMode(env.agent.id), 'auto');
-});
-
-test('v9 refresh: status exposes the per-session live flag', async (t) => {
-  const env = await injectionEnv(t);
-  const service = env.mods.status.createStatusService(env.runtime);
-  let status = await service.status(env.pctx, { sessionId: env.agent.id });
-  assert.ok(status.session, 'status must expose a session block');
-  assert.equal(status.session.live, false);
-
-  await env.runtime.setSessionMode(env.agent.id, 'live');
-  status = await service.status(env.pctx, { sessionId: env.agent.id });
-  assert.equal(status.session.live, true, 'status.session.live reflects the session mode');
 });

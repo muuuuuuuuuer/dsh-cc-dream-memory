@@ -42,7 +42,7 @@ async function newStore(t, configOverrides = {}) {
   const memoryRoot = path.join(tmp, 'memory-root');
   const config = resolveConfig({ memoryRoot, ...configOverrides });
   const paths = buildPaths({ memoryRoot: config.memoryRoot, homeDir: home, workspaceDir });
-  const store = new MemoryStore({ paths, config });
+  const store = new MemoryStore({ paths, getConfig: () => config });
   await store.ensure();
   return { store, paths, config, tmp, workspaceDir };
 }
@@ -80,7 +80,7 @@ test('ensure() does not clobber an existing MEMORY.md', async (t) => {
   const { MemoryStore } = await deps();
   const { paths, config } = await newStore(t);
   await writeFile(paths.indexFile, '- [kept](user_kept.md) — kept line\n', 'utf8');
-  const reopened = new MemoryStore({ paths, config });
+  const reopened = new MemoryStore({ paths, getConfig: () => config });
   await reopened.ensure();
   assert.match(await reopened.indexText(), /kept line/);
 });
@@ -194,33 +194,6 @@ test('saving the same name twice overwrites instead of duplicating', async (t) =
   assert.match((await store.readEntry('user_role.md')).body, /version two/);
 });
 
-test('deleteEntry() removes the file and its index line', async (t) => {
-  const { store, paths } = await newStore(t);
-  await store.saveEntry({ name: 'role', type: 'user', description: 'Who the user is', content: 'Prefers TypeScript.' });
-  await store.saveEntry({ name: 'other', type: 'project', description: 'Other', content: 'Other body.' });
-
-  const deleted = await store.deleteEntry('user_role.md');
-  assert.equal(deleted.deleted, true);
-  assert.equal(deleted.file, 'user_role.md');
-  assert.equal(await fileExists(workspaceFile(paths, 'user_role.md')), false);
-  const indexText = await store.indexText();
-  assert.doesNotMatch(indexText, /user_role\.md/);
-  assert.match(indexText, /project_other\.md/);
-  assert.equal((await store.listEntries()).length, 1);
-});
-
-test('deleteEntry() on a missing entry reports NOT_FOUND', async (t) => {
-  const { store } = await newStore(t);
-  let result;
-  try {
-    result = await store.deleteEntry('missing.md');
-  } catch (error) {
-    assert.equal(error.code, 'NOT_FOUND', `unexpected error code ${error.code}`);
-    return;
-  }
-  assert.equal(result.deleted, false, 'missing delete must be a no-op or NOT_FOUND');
-});
-
 test('readEntry()/updateEntry() on a missing entry report NOT_FOUND', async (t) => {
   const { store } = await newStore(t);
   await assertRejectsWithCode(store.readEntry('missing.md'), 'NOT_FOUND');
@@ -275,7 +248,7 @@ test('index over the line budget still saves, warns, and truncates injection', a
     assert.equal(last.ok, true, 'saving over budget must still succeed');
   }
   assert.equal(last.index.overflow, true, 'save result must report the overflow');
-  assert.match(String(last.warning ?? ''), /over budget/i, 'save result must carry an over-budget warning');
+  assert.match(String(last.warning ?? ''), /over its read limit/i, 'save result must carry an over-budget warning');
 
   const fullLines = splitLines(await store.indexText());
   assert.equal(fullLines.length, 5, 'the index file keeps all lines');
@@ -297,7 +270,7 @@ test('index over the byte budget truncates injected text by bytes', async (t) =>
   });
   assert.equal(result.ok, true);
   assert.equal(result.index.overflow, true);
-  assert.match(String(result.warning ?? ''), /over budget/i);
+  assert.match(String(result.warning ?? ''), /over its read limit/i);
 
   const injected = await store.injectedIndex();
   assert.equal(injected.maxBytes, 256);
@@ -320,7 +293,7 @@ test('writeIndex() rewrites the index and reports its budget', async (t) => {
 
   const over = await store.writeIndex(`- [x](user_x.md) — ${'y'.repeat(40_000)}\n`);
   assert.equal(over.overflow, true);
-  assert.match(String(over.warning ?? ''), /over budget/i);
+  assert.match(String(over.warning ?? ''), /over its read limit/i);
 });
 
 test('path escapes are rejected with PATH_ESCAPE and never touch the disk', async (t) => {
@@ -332,7 +305,7 @@ test('path escapes are rejected with PATH_ESCAPE and never touch the disk', asyn
       'PATH_ESCAPE',
     );
     await assertRejectsWithCode(store.updateEntry(evil, { content: 'x' }), 'PATH_ESCAPE');
-    await assertRejectsWithCode(store.deleteEntry(evil), 'PATH_ESCAPE');
+    await assertRejectsWithCode(store.trashEntry(evil), 'PATH_ESCAPE');
   }
   // Absolute paths outside the memory dir are rejected too.
   const absoluteEvil = path.join(tmp, 'outside.md');
@@ -345,47 +318,19 @@ test('path escapes are rejected with PATH_ESCAPE and never touch the disk', asyn
   assert.equal(await fileExists(path.join(paths.projectDir, 'outside.md')), false);
 });
 
-test('user scope is disabled by default', async (t) => {
+test('the user scope is gone: memory lives in this project only', async (t) => {
   const { store } = await newStore(t);
   await assertRejectsWithCode(
     store.saveEntry({ scope: 'user', name: 'pref', type: 'feedback', description: 'Pref', content: 'likes tabs' }),
-    'SCOPE_DISABLED',
+    'INVALID_SCOPE',
   );
-  assert.deepEqual(await store.listEntries('user'), []);
+  await assertRejectsWithCode(store.listEntries('user'), 'INVALID_SCOPE');
   await assert.rejects(store.readEntry('feedback_pref.md', 'user'), (error) => {
-    assert.ok(['NOT_FOUND', 'SCOPE_DISABLED'].includes(error.code), `unexpected error code ${error.code}`);
+    assert.equal(error.code, 'INVALID_SCOPE', `unexpected error code ${error.code}`);
     return true;
   });
   const status = await store.status();
-  assert.equal(status.userScope.enabled, false);
-});
-
-test('user scope stores entries beside the project scope when enabled', async (t) => {
-  const { store, paths } = await newStore(t, { userMemoryEnabled: true });
-  await store.saveEntry({ name: 'project-note', type: 'project', description: 'Project note', content: 'project body' });
-  const userResult = await store.saveEntry({
-    scope: 'user',
-    name: 'pref',
-    type: 'feedback',
-    description: 'User preference',
-    content: 'likes tabs',
-  });
-  assert.equal(userResult.ok, true);
-  assert.equal(userResult.file, 'feedback_pref.md');
-  assert.equal(await fileExists(path.join(paths.userMemoryDir, 'feedback_pref.md')), true, 'user file lives in userMemoryDir');
-  assert.equal(await fileExists(workspaceFile(paths, 'feedback_pref.md')), false, 'user file must not live in project memoryDir');
-
-  const userEntries = await store.listEntries('user');
-  assert.equal(userEntries.length, 1);
-  assert.equal(userEntries[0].file, 'feedback_pref.md');
-  const read = await store.readEntry('feedback_pref.md', 'user');
-  assert.equal(read.scope, 'user');
-  assert.equal(read.frontmatter.name, 'pref');
-  assert.match(read.body, /likes tabs/);
-
-  assert.match(await readFile(paths.userIndexFile, 'utf8'), /feedback_pref\.md/);
-  assert.doesNotMatch(await store.indexText(), /feedback_pref\.md/, 'project index must not include user-scope entries');
-  assert.match(await store.indexText(), /project_project_note\.md/);
+  assert.equal('userScope' in status, false, 'status reports no user scope');
 });
 
 test('invalid type and oversized content are rejected with coded errors', async (t) => {
@@ -449,7 +394,7 @@ test('search() finds matches in names and bodies', async (t) => {
   assert.equal(hits[0].file, 'project_storage.md');
   assert.equal(hits[0].name, 'storage');
   assert.equal(hits[0].type, 'project');
-  assert.equal(typeof hits[0].snippet, 'string');
+  assert.equal(typeof hits[0].snippets[0], 'string');
 
   const caseInsensitive = await store.search('SQLITE');
   assert.equal(caseInsensitive.length, 1, 'search is case-insensitive');
@@ -472,10 +417,7 @@ test('status() summarizes the project store', async (t) => {
   assert.equal(status.index.maxLines, config.indexMaxLines);
   assert.equal(Array.isArray(status.entries), true);
   assert.equal(status.entries.length, 1);
-  assert.equal(typeof status.userScope, 'object');
-  assert.equal(status.userScope.enabled, false);
-  assert.equal(typeof status.userScope.dir, 'string');
-  assert.deepEqual(status.userScope.entries, []);
+  assert.equal(typeof status.userScope, 'undefined');
 });
 
 test('writeChangelog() appends to .dream-log.md', async (t) => {

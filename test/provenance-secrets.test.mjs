@@ -11,11 +11,13 @@
  *
  * Real store/state/runtime in os.tmpdir(); no LLM is called.
  */
+import { withCordis } from './helpers.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { loadModule, makeTempDir } from './helpers.mjs';
+import { claimOf, runtimeEnv as pipelineEnv, scriptDream } from './v10-helpers.mjs';
 
 // ---------------------------------------------------------------------------
 // Modules / fixtures
@@ -77,7 +79,7 @@ async function makeEnv(t, configOverrides = {}) {
   await mkdir(workspaceDir, { recursive: true });
   const config = mods.config.resolveConfig({ memoryRoot, ...configOverrides });
   const paths = mods.paths.buildPaths({ memoryRoot: config.memoryRoot, homeDir: path.join(tmp, 'home'), workspaceDir });
-  const store = new mods.store.MemoryStore({ paths, config });
+  const store = new mods.store.MemoryStore({ paths, getConfig: () => config });
   await store.ensure();
   return { mods, tmp, memoryRoot, workspaceDir, config, paths, store };
 }
@@ -191,14 +193,14 @@ test('v7 provenance: store writes created/source_session/via, update keeps creat
 test('v7 provenance: memory_save/memory_update tools attribute via tool:memory_*', async (t) => {
   const env = await runtimeEnv(t);
   const definitions = new Map();
-  const toolCtx = {
+  const toolCtx = withCordis({
     tools: {
       register(definition) {
         definitions.set(definition.name, definition);
         return () => {};
       },
     },
-  };
+  });
   const dispose = env.mods.tools.registerTools(toolCtx, env.runtime);
   t.after(() => {
     if (typeof dispose === 'function') dispose();
@@ -209,7 +211,7 @@ test('v7 provenance: memory_save/memory_update tools attribute via tool:memory_*
   // v9 write policy queues short/low-confidence bodies; force a real write so
   // the provenance attribution is what this test exercises.
   const saved = await save.execute(
-    { name: 'tool note', type: 'user', description: 'tool note', content: 'tool body', force: true },
+    { name: 'tool note', type: 'project', description: 'tool note', content: 'tool body', force: true },
     { agent: { id: 'agent-1' }, sessionId: 'sess-tool' },
   );
   assert.equal(saved.ok, true, JSON.stringify(saved));
@@ -257,7 +259,7 @@ test('v7 provenance: /remember attributes command:/remember', async (t) => {
         return () => definitions.delete(definition.name);
       },
     },
-    get: () => undefined,
+    get: (name) => (name === 'commands' ? commandCtx.commands : undefined),
     on: () => () => {},
     effect: (factory) => (typeof factory === 'function' ? factory() : undefined),
   };
@@ -281,19 +283,39 @@ test('v7 provenance: /remember attributes command:/remember', async (t) => {
 });
 
 test('v7 provenance: dream-applied writes are attributed via:dream', async (t) => {
-  const env = await runtimeEnv(t);
-  await writePlan(env, planWithWrite({ file: 'user_dream_prov.md', body: 'dream attributed body' }));
-  const result = await env.runtime.applyPlanOperations(env.pctx, { indexes: [0] });
-  assert.equal(result.applied, true, JSON.stringify(result));
+  const env = await pipelineEnv(t);
+  const { prepareShadow, applyShadowOperations, shadowPathsOf, shadowDirOf } = await import('../src/dream-shadow.js');
+  const { shadowStore, base } = await prepareShadow({ store: env.pctx.store, paths: env.pctx.paths, config: env.config });
+  await applyShadowOperations({
+    shadowStore,
+    operations: [{
+      op: 'write',
+      scope: 'project',
+      type: 'user',
+      name: 'dream note',
+      description: 'written by a dream',
+      file: 'user_dream_prov.md',
+      body: 'dream attributed body',
+    }],
+  });
+  await env.pctx.state.setShadowPending({
+    dir: shadowDirOf(env.pctx.paths),
+    createdAt: Date.now(),
+    runId: 'run-prov',
+    summary: 'one page',
+    base,
+    files: [{ file: 'user_dream_prov.md', action: 'added' }],
+    counts: { added: 1, changed: 0, removed: 0 },
+    sessions: [],
+    verifiedFiles: [],
+  });
+  const result = await env.runtime.switchDream({ pctx: env.pctx });
+  assert.equal(result.ok, true, JSON.stringify(result));
   const read = await env.pctx.store.readEntry('user_dream_prov.md');
   assert.equal(read.frontmatter.via, 'dream');
   assert.equal(read.frontmatter.source_session, '', 'dream writes carry no session attribution');
+  assert.ok(shadowPathsOf(env.pctx.paths).memoryDir);
 });
-
-// ---------------------------------------------------------------------------
-// Secret scanning: pure module
-// ---------------------------------------------------------------------------
-
 test('v7 secrets: scanSecrets detects the documented shapes with <=12 char excerpts', async (t) => {
   await makeEnv(t); // ensure the module cache is warm / temp dir cleanup registered
   const { scanSecrets, secretScanMode, secretWarnings, EXCERPT_CHARS, SECRET_DETECTED } = (await modules()).secrets;
@@ -393,15 +415,15 @@ test('v7 secrets: warn mode writes warn-level matches, deny-level keys always re
 });
 
 test('v7 secrets: memory tools surface deny/warn results without leaking the secret', async (t) => {
-  const denyEnv = await runtimeEnv(t, { secretScan: 'deny' });
+  const denyEnv = await pipelineEnv(t, { secretScan: 'deny' });
   const denyDefs = new Map();
   const denyDispose = denyEnv.mods.tools.registerTools(
-    { tools: { register: (definition) => (denyDefs.set(definition.name, definition), () => {}) } },
+    withCordis({ tools: { register: (definition) => (denyDefs.set(definition.name, definition), () => {}) } }),
     denyEnv.runtime,
   );
   t.after(() => denyDispose?.());
   const denied = await denyDefs.get('memory_save').execute(
-    { name: 'secret tool note', type: 'user', description: 'd', content: `key ${AWS_KEY}` },
+    { name: 'secret tool note', type: 'project', description: 'd', content: `key ${AWS_KEY}` },
     { agent: { id: 'agent-1' }, sessionId: 'sess-1' },
   );
   assert.equal(denied.ok, false);
@@ -409,15 +431,15 @@ test('v7 secrets: memory tools surface deny/warn results without leaking the sec
   assert.equal(JSON.stringify(denied).includes(AWS_KEY), false, 'the full secret must never be echoed');
   assert.deepEqual(await denyEnv.pctx.store.listEntries(), []);
 
-  const warnEnv = await runtimeEnv(t, { secretScan: 'warn' });
+  const warnEnv = await pipelineEnv(t, { secretScan: 'warn' });
   const warnDefs = new Map();
   const warnDispose = warnEnv.mods.tools.registerTools(
-    { tools: { register: (definition) => (warnDefs.set(definition.name, definition), () => {}) } },
+    withCordis({ tools: { register: (definition) => (warnDefs.set(definition.name, definition), () => {}) } }),
     warnEnv.runtime,
   );
   t.after(() => warnDispose?.());
   const warned = await warnDefs.get('memory_save').execute(
-    { name: 'warn tool note', type: 'user', description: 'd', content: `config: ${WARN_SECRET}` },
+    { name: 'warn tool note', type: 'project', description: 'd', content: `config: ${WARN_SECRET}` },
     { agent: { id: 'agent-1' }, sessionId: 'sess-1' },
   );
   assert.equal(warned.ok, true, JSON.stringify(warned));
@@ -427,7 +449,7 @@ test('v7 secrets: memory tools surface deny/warn results without leaking the sec
 
   // A deny-level key is refused even in warn mode (v11 severity model).
   const refused = await warnDefs.get('memory_save').execute(
-    { name: 'warn deny tool note', type: 'user', description: 'd', content: `key ${AWS_KEY}` },
+    { name: 'warn deny tool note', type: 'project', description: 'd', content: `key ${AWS_KEY}` },
     { agent: { id: 'agent-1' }, sessionId: 'sess-1' },
   );
   assert.equal(refused.ok, false, JSON.stringify(refused));
@@ -435,34 +457,24 @@ test('v7 secrets: memory tools surface deny/warn results without leaking the sec
   assert.equal(JSON.stringify(refused).includes(AWS_KEY), false);
 });
 
-test('v7 secrets: dream writes are dropped on deny and warned on warn', async (t) => {
-  const denied = await runtimeEnv(t, { secretScan: 'deny' });
-  await writePlan(denied, planWithWrite({ file: 'user_dream_secret.md', body: `dream key ${AWS_KEY}` }));
-  const deniedResult = await denied.runtime.applyPlanOperations(denied.pctx, { indexes: [0] });
-  assert.equal(deniedResult.applied, false, JSON.stringify(deniedResult));
-  assert.ok(Array.isArray(deniedResult.dropped));
-  assert.match(deniedResult.dropped.join(' '), /secret/i);
-  assert.equal(await exists(path.join(denied.pctx.paths.memoryDir, 'user_dream_secret.md')), false);
+test('v7 secrets: a dream stops on a deny-level secret and warns on a warn-level one', async (t) => {
+  const denied = await pipelineEnv(t, { secretScan: 'deny' });
+  await scriptDream(denied, {
+    sessions: { s1: [`Rotate the key ${AWS_KEY} tomorrow.`] },
+    claims: [claimOf(`Rotate the key ${AWS_KEY} tomorrow.`)],
+  });
+  const deniedResult = await denied.runtime.dream({ pctx: denied.pctx, force: true, trigger: 'manual' });
+  assert.equal(deniedResult.ready, false, JSON.stringify(deniedResult).slice(0, 300));
+  assert.match(String(deniedResult.error), /secret scan refused/);
+  assert.equal(await exists(path.join(denied.pctx.paths.memoryDir, 'rotate-the-key.md')), false);
+  assert.equal((await denied.pctx.state.snapshot()).shadowPending, null, 'no copy is offered when a secret blocked it');
 
-  const warned = await runtimeEnv(t, { secretScan: 'warn' });
-  await writePlan(warned, planWithWrite({ file: 'user_dream_secret.md', body: `dream config ${WARN_SECRET}` }));
-  const warnedResult = await warned.runtime.applyPlanOperations(warned.pctx, { indexes: [0] });
-  assert.equal(warnedResult.applied, true, JSON.stringify(warnedResult));
-  assert.ok(Array.isArray(warnedResult.warnings) && warnedResult.warnings.length > 0);
-  assert.match(warnedResult.warnings.join(' '), /secret-scan/);
-  assert.equal(await exists(path.join(warned.pctx.paths.memoryDir, 'user_dream_secret.md')), true);
-
-  // A deny-level key is dropped even in warn mode.
-  const warnedDeny = await runtimeEnv(t, { secretScan: 'warn' });
-  await writePlan(warnedDeny, planWithWrite({ file: 'user_dream_deny.md', body: `dream key ${AWS_KEY}` }));
-  const warnedDenyResult = await warnedDeny.runtime.applyPlanOperations(warnedDeny.pctx, { indexes: [0] });
-  assert.equal(warnedDenyResult.applied, false, JSON.stringify(warnedDenyResult));
-  assert.match(warnedDenyResult.dropped.join(' '), /secret/i);
-  assert.equal(await exists(path.join(warnedDeny.pctx.paths.memoryDir, 'user_dream_deny.md')), false);
-
-  const off = await runtimeEnv(t, { secretScan: 'off' });
-  await writePlan(off, planWithWrite({ file: 'user_dream_secret.md', body: `dream key ${AWS_KEY}` }));
-  const offResult = await off.runtime.applyPlanOperations(off.pctx, { indexes: [0] });
-  assert.equal(offResult.applied, true, JSON.stringify(offResult));
-  assert.equal(offResult.warnings, undefined);
+  const warned = await pipelineEnv(t, { secretScan: 'warn' });
+  await scriptDream(warned, {
+    sessions: { s1: [`The config keeps ${WARN_SECRET} for now.`] },
+    claims: [claimOf(`The config keeps ${WARN_SECRET} for now.`)],
+  });
+  const warnedResult = await warned.runtime.dream({ pctx: warned.pctx, force: true, trigger: 'manual' });
+  assert.equal(warnedResult.ready, true, JSON.stringify(warnedResult).slice(0, 300));
+  assert.match((warnedResult.warnings || []).join(' '), /secret-scan/);
 });

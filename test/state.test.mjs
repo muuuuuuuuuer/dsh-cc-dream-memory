@@ -126,6 +126,25 @@ test('dream lifecycle markers update the snapshot', async (t) => {
   assert.equal(failed.counters.failures, 1);
 });
 
+test('extract lifecycle markers update the snapshot', async (t) => {
+  const { state } = await newState(t);
+  await state.markExtractStart('auto');
+  const started = state.snapshot();
+  assert.ok(started.lastExtractAttemptAt > 0);
+  assert.equal(started.lastExtractTrigger, 'auto');
+
+  await state.markExtractResult({ ok: true, count: 2, reason: 'inbox', trigger: 'auto' });
+  const done = state.snapshot();
+  assert.ok(done.lastExtractAt > 0);
+  assert.equal(done.lastExtractCount, 2);
+  assert.equal(done.lastExtractReason, 'inbox');
+
+  await state.markExtractResult({ ok: false, count: 0, reason: 'timeout', trigger: 'auto' });
+  const failed = state.snapshot();
+  assert.equal(failed.lastExtractReason, 'timeout');
+  assert.equal(failed.lastExtractError, '');
+});
+
 test('snapshot() is a defensive copy', async (t) => {
   const { state } = await newState(t);
   const snapshot = state.snapshot();
@@ -135,12 +154,14 @@ test('snapshot() is a defensive copy', async (t) => {
   assert.equal(state.snapshot().counters.dreams, 0);
 });
 
-test('pending proposal helpers persist and clear the proposal path', async (t) => {
+test('a pending dream copy persists until the human settles it', async (t) => {
   const { state, paths } = await newState(t);
-  await state.setPendingProposal('C:/data/.pending/2026-11-06.json');
-  assert.equal(state.snapshot().pendingProposal, 'C:/data/.pending/2026-11-06.json');
+  const pending = { dir: 'C:/data/.dreams/shadow', createdAt: '2026-11-13T10:00:00.000Z', runId: 'run-1', counts: { added: 1, changed: 0, removed: 0 } };
+  await state.setShadowPending(pending);
+  assert.deepEqual(state.snapshot().shadowPending, pending);
   const onDisk = JSON.parse(await readFile(paths.stateFile, 'utf8'));
-  assert.equal(onDisk.pendingProposal, 'C:/data/.pending/2026-11-06.json');
-  await state.clearPendingProposal();
-  assert.equal(state.snapshot().pendingProposal, '');
+  assert.deepEqual(onDisk.shadowPending, pending);
+  assert.equal(onDisk.lastDreamMode, 'shadow');
+  await state.clearShadowPending();
+  assert.equal(state.snapshot().shadowPending, null);
 });

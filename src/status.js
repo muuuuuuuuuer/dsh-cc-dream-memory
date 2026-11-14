@@ -18,6 +18,11 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { VERSION, buildHealth } from './meta.js';
+import { buildIdentity } from './build-id.js';
+import { dreamReadiness, memoryHealth } from './readiness.js';
+import { exportClaudeMemory, importClaudeMemory } from './import-export.js';
+import { listRunManifests, summarizeRun } from './dream-run.js';
+import { listSwitches } from './dream.js';
 import { NEVER_READ_LIMIT, metricsSummary, metricsTrend, readMetrics, recordWrite } from './metrics.js';
 import {
   SECRET_DETECTED,
@@ -26,8 +31,19 @@ import {
   secretScanMode,
   secretWarnings,
 } from './secrets.js';
-import { approvePendingWrite, listPendingWrites, rejectPendingWrite } from './pending-writes.js';
-import { MEMORY_TYPES, slugify } from './store.js';
+import { MEMORY_TYPES, entryVersion, normalizeScope } from './store.js';
+import { memoryHash } from './write-review.js';
+import { isCurrentPage } from './memory-body.js';
+import { applyProposals } from './auto-extract.js';
+import { listProposals, readProposal, removeProposal } from './inbox.js';
+import { matchesRecord, readLedger, recordVerifiedEntry } from './verification-ledger.js';
+
+/**
+ * Version of the data contract between this backend and client.js. The page
+ * compares it with its own and says so when the running backend is older
+ * (the host keeps imported modules until it restarts).
+ */
+export const UI_API = 4;
 
 /** Changelog tail length used by the UI. */
 export const DEFAULT_LOG_LINES = 40;
@@ -39,27 +55,28 @@ export const CONFIG_FIELDS = Object.freeze([
   'enabled',
   'autoMemoryEnabled',
   'autoDreamEnabled',
-  'dreamMode',
+  'dreamAnalyzerModel',
+  'dreamAnalyzerConcurrency',
   'indexMaxLines',
   'indexMaxBytes',
+  'autoRecallMaxFiles',
+  'autoRecallMaxChars',
+  'recallMode',
+  'recallModel',
+  'autoExtract',
+  'autoExtractEveryTurns',
+  'autoExtractMaxItems',
+  'subagentMemory',
+  'agentMemoryPresets',
   'dreamAllowDelete',
-  'userMemoryEnabled',
-  'injectionMode',
-  'injectSubagents',
   'rulesMaxChars',
   'dreamMaxTotalTokens',
-  'writeMode',
   'policyDuplicateThreshold',
   'policySuggestThreshold',
-  'pendingProposalTtlHours',
   'dreamCostMode',
   'projectId',
-  'userIndexMaxLines',
-  'userIndexMaxBytes',
   'keepHistory',
   'historyMaxPerFile',
-  'compactionDigest',
-  'subagentWriteMode',
 ]);
 
 /** State fields the UI needs. */
@@ -70,13 +87,18 @@ export const STATE_FIELDS = Object.freeze([
   'lastDreamSessions',
   'lastDreamOps',
   'lastDreamMode',
-  'lastPlanPath',
-  'pendingProposal',
+  'shadowPending',
   'lastError',
   'consecutiveFailures',
   'lastDreamDurationMs',
   'lastDreamCostExceeded',
   'lastDreamUsage',
+  'lastExtractAt',
+  'lastExtractAttemptAt',
+  'lastExtractCount',
+  'lastExtractReason',
+  'lastExtractError',
+  'lastExtractTrigger',
   'counters',
   'sessionsSince',
 ]);
@@ -86,7 +108,7 @@ export const TOGGLE_FIELDS = Object.freeze([
   'enabled',
   'autoMemoryEnabled',
   'autoDreamEnabled',
-  'userMemoryEnabled',
+  'autoExtract',
 ]);
 
 /** Error codes that are caller mistakes (HTTP maps them to 400). */
@@ -125,10 +147,6 @@ function lossless(value) {
   } catch {
     return null;
   }
-}
-
-function normalizeScope(scope) {
-  return scope === 'user' ? 'user' : 'project';
 }
 
 /**
@@ -180,112 +198,97 @@ function buildMetricsView(summary) {
   };
 }
 
-/** Cached dynamic import of the dream-engine readiness module (may not exist yet). */
-let readinessModulePromise = null;
-function loadReadinessModule() {
-  if (readinessModulePromise === null) {
-    readinessModulePromise = import('./readiness.js').catch(() => null);
-  }
-  return readinessModulePromise;
-}
-
-/** Cached dynamic import of the Claude Code import/export module (v10). */
-let importExportModulePromise = null;
-function loadImportExportModule() {
-  if (importExportModulePromise === null) {
-    importExportModulePromise = import('./import-export.js').catch(() => null);
-  }
-  return importExportModulePromise;
-}
-
 /**
- * Is this agent a delegated subagent? v9/v10 rely on the session header the
- * Host attaches to child sessions; every access is defensive because tests and
- * older Host builds may use a partial agent shape.
- * @param {object|undefined} agent
- * @returns {boolean}
+ * Record a save the user made deliberately: a `/remember` command, a panel
+ * save, or an `/memory edit`. All three mean "the user looked at these exact
+ * bytes and committed them", so they share one post-save step — count the write
+ * and mark the bytes verified, which is what lets a later session show the
+ * note's summary in its first-turn index. Model-inferred writes keep going
+ * through the pending-write review instead. Both records are best-effort: a
+ * note that is written but not recorded is still listed by name.
+ * @param {{store:object, paths?:object, scope?:string, file?:string,
+ *   entry?:{name?:string, description?:string, bodyHash?:string}}} [options]
+ * @returns {Promise<'recorded'|'pending'>} whether this exact version is in the
+ *   ledger now; `pending` means the bytes are on disk but the index will only
+ *   show the name until the next write
  */
-export function isSubagentAgent(agent) {
-  if (!agent || typeof agent !== 'object') return false;
-  const session = agent.session;
-  const header = session && typeof session === 'object' ? session.header : undefined;
-  if (header && typeof header === 'object') {
-    if (typeof header.parentSession === 'string' && header.parentSession !== '') return true;
-    if (header.origin === 'subagent') return true;
+export async function recordUserConfirmedSave({ store, paths, scope = 'project', file, entry } = {}) {
+  if (typeof file !== 'string' || file === '') return 'pending';
+  try {
+    await recordWrite(paths, file);
+  } catch {
+    /* metrics are best-effort */
   }
-  if (session && typeof session === 'object' && session.origin === 'subagent') return true;
-  return agent.origin === 'subagent';
+  if (!entry || typeof entry.bodyHash !== 'string' || entry.bodyHash === '') return 'pending';
+  try {
+    const record = await recordVerifiedEntry({
+      store,
+      scope,
+      file,
+      name: entry.name ?? '',
+      description: entry.description ?? '',
+      bodyHash: entry.bodyHash,
+    });
+    return record ? 'recorded' : 'pending';
+  } catch {
+    /* a note that is written but not recorded stays listed by name */
+    return 'pending';
+  }
 }
 
 /**
- * Should a write be refused because this is a read-only subagent?
- * @param {object|undefined} agent
- * @param {object} config resolved plugin config
- * @returns {boolean}
+ * Trust facts for the UI, per entry: the explicit `STATUS:` marker, whether the
+ * page is current, whether the host ledger verified exactly this content (or
+ * verified an older version). Read-only; an unreadable page reports as
+ * unverified.
+ * @returns {Promise<object[]>}
  */
-export function subagentWriteBlocked(agent, config) {
-  const mode = config && typeof config === 'object' ? config.subagentWriteMode : undefined;
-  return mode === 'off' && isSubagentAgent(agent);
+export async function annotateTrust(store, entries, { scope = 'project' } = {}) {
+  const list = Array.isArray(entries) ? entries : [];
+  const ledger = await readLedger(store, scope);
+  const out = [];
+  for (const entry of list) {
+    let body = null;
+    try {
+      const read = await store.readEntry(entry.file, scope);
+      body = typeof read?.body === 'string' ? read.body : '';
+    } catch {
+      body = null;
+    }
+    const marker = /^\s*STATUS:\s*([a-z-]+)/imu.exec(body ?? '');
+    const record = ledger.entries[entry.file];
+    const trusted = body !== null
+      && matchesRecord(record, { name: entry.name, description: entry.description, body });
+    out.push({
+      ...entry,
+      status: marker ? marker[1].toLowerCase() : '',
+      current: body === null ? true : isCurrentPage(body),
+      verified: trusted ? { date: String(record.date ?? ''), source: String(record.source ?? '') } : null,
+      verifiedOutdated: Boolean(record) && !trusted,
+    });
+  }
+  return out;
 }
 
 /**
- * Compact pending-write view shared by `/status`, `GET /pending-writes` and the
- * commands/UI. `includeContent` adds the candidate body (needed by nothing that
- * only lists; approve reads the record itself).
- * @param {object[]} records `listPendingWrites()` output
- * @param {{limit?:number, includeContent?:boolean}} [options]
- * @returns {{count:number, items:object[]}}
- */
-export function pendingWritesView(records, options = {}) {
-  const list = Array.isArray(records) ? records : [];
-  const limitValue = Number(options.limit);
-  const limit = Number.isFinite(limitValue) && limitValue > 0 ? Math.trunc(limitValue) : 50;
-  const includeContent = options.includeContent === true;
-  const items = list.slice(0, limit).map((record) => ({
-    id: record.id,
-    createdAt: record.createdAt,
-    reasons: Array.isArray(record.reasons) ? record.reasons : [],
-    candidate: {
-      name: record.candidate?.name ?? '',
-      type: record.candidate?.type ?? '',
-      description: record.candidate?.description ?? '',
-      ...(includeContent
-        ? { content: record.candidate?.content ?? '', scope: record.candidate?.scope ?? 'project' }
-        : {}),
-    },
-    source: typeof record.source === 'string'
-      ? record.source
-      : record.source && typeof record.source === 'object'
-        ? { ...record.source }
-        : '',
-  }));
-  return { count: list.length, items };
-}
-
-/**
- * Dream readiness from the dream-engine readiness module, when installed.
+ * Dream readiness (gates and next eligible time).
  * @returns {Promise<object|null>}
  */
 export async function readinessFor(pctx, config) {
-  const module = await loadReadinessModule();
-  if (!module || typeof module.dreamReadiness !== 'function') return null;
   try {
-    return lossless(await module.dreamReadiness(pctx, { config, now: Date.now() }));
+    return lossless(await dreamReadiness(pctx, { config, now: Date.now() }));
   } catch {
     return null;
   }
 }
 
 /**
- * Memory health (score/dimensions/suggestions) from the readiness module, when
- * installed.
+ * Memory health (score/dimensions/suggestions).
  * @returns {Promise<object|null>}
  */
 export async function memoryHealthFor(pctx, config) {
-  const module = await loadReadinessModule();
-  if (!module || typeof module.memoryHealth !== 'function') return null;
   try {
-    return lossless(await module.memoryHealth(pctx, { config }));
+    return lossless(await memoryHealth(pctx, { config }));
   } catch {
     return null;
   }
@@ -404,44 +407,18 @@ export async function listBatches(baseDir) {
   return items;
 }
 
-/**
- * Normalize operation indexes from an array, a comma string or a whitespace
- * string. Returns `undefined` for invalid input.
- * @param {unknown} value
- * @returns {number[]|undefined}
- */
-export function normalizeIndexes(value) {
-  const raw = Array.isArray(value)
-    ? value
-    : typeof value === 'string'
-      ? value.split(/[\s,]+/u).filter((item) => item !== '')
-      : undefined;
-  if (!Array.isArray(raw)) return undefined;
-  const seen = new Set();
-  const indexes = [];
-  for (const item of raw) {
-    const number = Number(item);
-    if (!Number.isInteger(number) || number < 0) return undefined;
-    if (!seen.has(number)) {
-      seen.add(number);
-      indexes.push(number);
-    }
-  }
-  return indexes.length > 0 ? indexes : undefined;
-}
 
 /**
  * Build the status service for one runtime.
- * @param {object} runtime `MemoryRuntime` (or a minimal object with the same
- *   methods); every method degrades to a coded error instead of crashing.
+ * @param {object} runtime `MemoryRuntime`.
  * @returns {{status:Function, file:Function, rules:Function, saveRules:Function,
- *   resetRules:Function, toggle:Function, dream:Function, deleteFile:Function,
+ *   toggle:Function, dream:Function, deleteFile:Function,
  *   backups:Function, trash:Function, restore:Function}}
  */
 export function createStatusService(runtime) {
-  const rt = runtime && typeof runtime === 'object' ? runtime : {};
+  const rt = runtime;
 
-  const configOf = () => (rt.config && typeof rt.config === 'object' ? rt.config : {});
+  const configOf = () => rt.config;
 
   function requireStore(pctx) {
     const store = pctx?.store;
@@ -452,33 +429,15 @@ export function createStatusService(runtime) {
   }
 
   function overridesOf() {
-    try {
-      if (typeof rt.overrides === 'function') {
-        const value = rt.overrides();
-        if (value && typeof value === 'object' && !Array.isArray(value)) return { ...value };
-      }
-    } catch {
-      /* fall through to an empty override set */
-    }
-    return {};
+    return { ...rt.overrides() };
   }
 
   function invalidate(pctx, reason) {
-    try {
-      if (typeof rt.invalidateInjection === 'function') {
-        rt.invalidateInjection(pctx?.sessionId ?? '', reason);
-      }
-    } catch {
-      /* cache invalidation is best-effort */
-    }
+    rt.invalidateInjection(pctx?.sessionId ?? '', reason);
   }
 
   function invalidateAll(reason) {
-    try {
-      if (typeof rt.invalidateAllInjections === 'function') rt.invalidateAllInjections(reason);
-    } catch {
-      /* cache invalidation is best-effort */
-    }
+    rt.invalidateAllInjections(reason);
   }
 
   /** Scan rules text and enforce the v11 secret-severity policy. */
@@ -567,6 +526,9 @@ export function createStatusService(runtime) {
       type: options.type,
       limit: 200,
       offset: 0,
+      // Browsing the current value is the default; `history: true` is the
+      // explicit way to look at what a page used to say.
+      currentOnly: options.history !== true,
     });
     return { items: all.slice(offset, offset + limit), total: all.length, limit, offset };
   }
@@ -584,8 +546,14 @@ export function createStatusService(runtime) {
     const store = requireStore(pctx);
     const scope = normalizeScope(input.scope);
     const file = typeof input.file === 'string' ? input.file.trim() : '';
+    const expectedHash = typeof input.expectedHash === 'string' ? input.expectedHash.trim() : '';
     const source = { via: 'api:edit', sessionId: typeof pctx?.sessionId === 'string' ? pctx.sessionId : '' };
     if (file === '') {
+      // A client that submits a baseline is editing a page that existed when it
+      // opened the editor. Recreating it here would undo the delete or rename.
+      if (expectedHash !== '') {
+        throw coded('stale-write', 'the memory file no longer exists; reload the list before creating it');
+      }
       const name = typeof input.name === 'string' ? input.name.trim() : '';
       if (name === '') throw coded('invalid-name', 'a memory name is required to create a file');
       const type = MEMORY_TYPES.includes(input.type) ? input.type : 'user';
@@ -598,14 +566,24 @@ export function createStatusService(runtime) {
         source,
       });
       const entry = await store.readEntry(result.file, scope);
-      try {
-        await recordWrite(pctx?.paths, result.file);
-      } catch {
-        /* metrics are best-effort */
-      }
+      const verification = await recordUserConfirmedSave({
+        store,
+        paths: pctx?.paths,
+        scope,
+        file: result.file,
+        entry: result,
+      });
       invalidate(pctx, 'edit');
       invalidateAll('edit');
-      return { ok: true, file: result.file, entry, created: result.created === true };
+      return {
+        ok: true,
+        file: result.file,
+        entry,
+        created: result.created === true,
+        version: result.version,
+        expectedHash: memoryHash(entry.raw),
+        verification,
+      };
     }
     let existing = null;
     try {
@@ -613,6 +591,12 @@ export function createStatusService(runtime) {
     } catch (error) {
       if (error?.code !== 'NOT_FOUND') throw error;
       existing = null;
+    }
+    if (existing === null) {
+      throw coded('stale-write', `memory file not found: ${file}; reload the list before saving`);
+    }
+    if (expectedHash === '') {
+      throw coded('stale-write', `re-read ${file} before saving; an edit baseline is required`);
     }
     const name =
       typeof input.name === 'string' && input.name.trim() !== ''
@@ -636,16 +620,29 @@ export function createStatusService(runtime) {
       description,
       body: content,
       source,
+      // The store compares this under its write lock, so a page changed in
+      // another window fails here instead of overwriting the newer text.
+      expectedHash,
     });
     const entry = await store.readEntry(result.file, scope);
-    try {
-      await recordWrite(pctx?.paths, result.file);
-    } catch {
-      /* metrics are best-effort */
-    }
+    const verification = await recordUserConfirmedSave({
+      store,
+      paths: pctx?.paths,
+      scope,
+      file: result.file,
+      entry: result,
+    });
     invalidate(pctx, 'edit');
     invalidateAll('edit');
-    return { ok: true, file: result.file, entry, created: result.created === true };
+    return {
+      ok: true,
+      file: result.file,
+      entry,
+      created: result.created === true,
+      version: result.version,
+      expectedHash: memoryHash(entry.raw),
+      verification,
+    };
   }
 
   /**
@@ -706,14 +703,11 @@ export function createStatusService(runtime) {
         if (error?.code !== 'NOT_FOUND') throw error;
       }
     }
-    let reconciled = { missing: [], dangling: [] };
-    if (typeof store.reconcileIndex === 'function') {
-      const audit = await store.reconcileIndex(scope);
-      reconciled = {
-        missing: Array.isArray(audit?.appended) ? audit.appended : [],
-        dangling: Array.isArray(audit?.removed) ? audit.removed : [],
-      };
-    }
+    const audit = await store.reconcileIndex(scope);
+    const reconciled = {
+      missing: Array.isArray(audit?.appended) ? audit.appended : [],
+      dangling: Array.isArray(audit?.removed) ? audit.removed : [],
+    };
     try {
       await recordWrite(pctx?.paths, result.file);
     } catch {
@@ -755,154 +749,34 @@ export function createStatusService(runtime) {
     } catch {
       /* no changelog yet */
     }
-    const planRefs = [];
-    try {
-      const names = await fs.readdir(pctx.paths.dreamsDir);
-      for (const name of names) {
-        const batchDir = path.join(pctx.paths.dreamsDir, name);
-        let info;
-        try {
-          info = await fs.stat(batchDir);
-        } catch {
-          continue;
-        }
-        if (!info.isDirectory()) continue;
-        let meta = null;
-        try {
-          const parsed = JSON.parse(await fs.readFile(path.join(batchDir, 'meta.json'), 'utf8'));
-          if (parsed && typeof parsed === 'object') meta = parsed;
-        } catch {
-          meta = null;
-        }
-        let files = Array.isArray(meta?.files) ? meta.files.filter((item) => typeof item === 'string') : null;
-        if (files === null) {
-          try {
-            files = (await fs.readdir(batchDir)).filter((name2) => name2.endsWith('.md'));
-          } catch {
-            files = [];
-          }
-        }
-        if (!files.includes(target)) continue;
-        planRefs.push({
-          type: 'dream',
-          id: name,
-          ts: typeof meta?.ts === 'string' ? meta.ts : name,
-          kind: typeof meta?.kind === 'string' ? meta.kind : '',
-          appliedAt: Number(meta?.appliedAt) || 0,
-          ops: Number(meta?.ops) || 0,
-        });
-      }
-    } catch {
-      /* no dream batches */
-    }
-    try {
-      const records = await listPendingWrites(pctx.paths);
-      for (const record of records) {
-        const candidate = record.candidate;
-        if (!candidate || typeof candidate.name !== 'string' || candidate.name === '') continue;
-        const type = MEMORY_TYPES.includes(candidate.type) ? candidate.type : 'user';
-        if (`${type}_${slugify(candidate.name)}.md` === target) {
-          planRefs.push({
-            type: 'pending',
-            id: record.id,
-            createdAt: record.createdAt,
-            reasons: record.reasons,
-          });
-        }
-      }
-    } catch {
-      /* pending queue unavailable */
-    }
-    planRefs.sort((left, right) => {
-      const leftAt = Number(left.appliedAt || left.createdAt || 0);
-      const rightAt = Number(right.appliedAt || right.createdAt || 0);
-      return rightAt - leftAt;
-    });
+    const planRefs = (await listSwitches(pctx.paths))
+      .filter((meta) => Array.isArray(meta.files) && meta.files.includes(target))
+      .map((meta) => ({ type: 'dream', id: meta.batch, appliedAt: Number(meta.appliedAt) || 0, ops: meta.files.length }));
     return { ok: true, file: target, provenance, changelog: changelog.slice(-20), planRefs };
   }
 
   /**
-   * Dream batches (newest first) from `<projectDir>/.dreams/`. Old batches
-   * without `meta.json` are listed read-only (`undoable:false`).
+   * Dream switches (newest first). Only the newest one not undone yet can be
+   * undone, because undo always reverts that one.
    * @param {object} pctx
    */
   async function dreamHistory(pctx) {
-    const dir = pctx?.paths?.dreamsDir;
-    if (typeof dir !== 'string' || dir === '') return { ok: true, items: [] };
-    let names;
-    try {
-      names = await fs.readdir(dir);
-    } catch (error) {
-      if (error?.code === 'ENOENT') return { ok: true, items: [] };
-      throw error;
-    }
-    const items = [];
-    for (const name of names) {
-      const batchDir = path.join(dir, name);
-      let info;
-      try {
-        info = await fs.stat(batchDir);
-      } catch {
-        continue;
-      }
-      if (!info.isDirectory()) continue;
-      let meta = null;
-      try {
-        const parsed = JSON.parse(await fs.readFile(path.join(batchDir, 'meta.json'), 'utf8'));
-        if (parsed && typeof parsed === 'object') meta = parsed;
-      } catch {
-        meta = null;
-      }
-      let files = Array.isArray(meta?.files) ? meta.files.filter((item) => typeof item === 'string') : null;
-      if (files === null) {
-        try {
-          files = (await fs.readdir(batchDir)).filter((file) => file.endsWith('.md'));
-        } catch {
-          files = [];
-        }
-      }
-      const kind = typeof meta?.kind === 'string' ? meta.kind : '';
-      const appliedAt = Number(meta?.appliedAt) || 0;
-      // v11: alignment with dream.js — only batches with a non-empty `hashes`
-      // map can be undone safely (old-format batches are listed read-only).
-      const hashes = meta?.hashes && typeof meta.hashes === 'object' && !Array.isArray(meta.hashes)
-        ? meta.hashes
-        : null;
-      const applied =
-        meta !== null &&
-        Number.isFinite(appliedAt) &&
-        appliedAt > 0 &&
-        (kind === 'apply' || kind === 'apply-ops') &&
-        hashes !== null &&
-        Object.keys(hashes).length > 0;
-
-      items.push({
-        ts: name,
-        at: backupTimestamp(name) || info.mtimeMs,
-        kind,
-        appliedAt,
-        ops: Number(meta?.ops) || 0,
-        summary: typeof meta?.summary === 'string' ? meta.summary : '',
-        files,
-        // An already-undone batch stays listed but cannot be undone again.
-        undoable: applied && meta?.undone !== true,
-        undone: meta?.undone === true,
-        hasMeta: meta !== null,
-        durationMs: Number(meta?.durationMs) || 0,
-        inputChars: Number(meta?.inputChars) || 0,
-        outputChars: Number(meta?.outputChars) || 0,
-        usage: meta?.usage && typeof meta.usage === 'object' ? { ...meta.usage } : null,
-      });
-    }
-    items.sort(
-      (left, right) => right.appliedAt - left.appliedAt || right.at - left.at || right.ts.localeCompare(left.ts),
-    );
+    const switches = await listSwitches(pctx.paths);
+    const target = switches.find((meta) => meta.undone !== true);
+    const items = switches.map((meta) => ({
+      ts: meta.batch,
+      appliedAt: Number(meta.appliedAt) || 0,
+      summary: typeof meta.summary === 'string' ? meta.summary : '',
+      files: Array.isArray(meta.files) ? meta.files : [],
+      ops: Array.isArray(meta.files) ? meta.files.length : 0,
+      undoable: meta === target,
+      undone: meta.undone === true,
+    }));
     return { ok: true, items };
   }
 
   /**
-   * Import a Claude Code memory directory through `src/import-export.js`
-   * (dynamic import; older builds answer `not-ready`).
+   * Import a Claude Code memory directory through `src/import-export.js`.
    * @param {object} pctx
    * @param {{sourceDir?:string,path?:string}} [request]
    */
@@ -910,11 +784,7 @@ export function createStatusService(runtime) {
     const store = requireStore(pctx);
     const sourceDir = String(request?.sourceDir ?? request?.path ?? '').trim();
     if (sourceDir === '') throw coded('invalid-path', 'a source directory path is required');
-    const module = await loadImportExportModule();
-    if (!module || typeof module.importClaudeMemory !== 'function') {
-      throw coded('not-ready', 'Claude Code memory import is not available in this build');
-    }
-    const result = await module.importClaudeMemory({ paths: pctx.paths, sourceDir, store });
+    const result = await importClaudeMemory({ paths: pctx.paths, sourceDir, store });
     if (result && result.ok === false) {
       throw coded(
         typeof result.error === 'string' ? result.error : 'import-failed',
@@ -941,7 +811,7 @@ export function createStatusService(runtime) {
 
   /**
    * Export this project's memory into a Claude Code layout through
-   * `src/import-export.js` (dynamic import; older builds answer `not-ready`).
+   * `src/import-export.js`.
    * @param {object} pctx
    * @param {{targetDir?:string,path?:string}} [request]
    */
@@ -949,11 +819,7 @@ export function createStatusService(runtime) {
     const store = requireStore(pctx);
     const targetDir = String(request?.targetDir ?? request?.path ?? '').trim();
     if (targetDir === '') throw coded('invalid-path', 'a target directory path is required');
-    const module = await loadImportExportModule();
-    if (!module || typeof module.exportClaudeMemory !== 'function') {
-      throw coded('not-ready', 'Claude Code memory export is not available in this build');
-    }
-    const result = await module.exportClaudeMemory({ paths: pctx.paths, targetDir, store });
+    const result = await exportClaudeMemory({ paths: pctx.paths, targetDir, store });
     if (result && result.ok === false) {
       throw coded(
         typeof result.error === 'string' ? result.error : 'export-failed',
@@ -971,22 +837,41 @@ export function createStatusService(runtime) {
     };
   }
 
-  /** Per-session injection mode view (`live` when the session override is on). */
-  function sessionView(pctx, sessionId) {
-    const id = typeof sessionId === 'string' && sessionId !== ''
-      ? sessionId
-      : typeof pctx?.sessionId === 'string'
-        ? pctx.sessionId
-        : typeof pctx?.agent?.id === 'string'
-          ? pctx.agent.id
-          : '';
-    let live = false;
+  /**
+   * One inbox proposal → the shape the panel renders. `items` is carried whole
+   * (the user needs the proposed text before accepting) and `count` saves the
+   * client from recomputing it.
+   */
+  function inboxSummary(record) {
+    const items = Array.isArray(record?.items) ? record.items : [];
+    return {
+      id: String(record?.id ?? ''),
+      createdAt: Number(record?.createdAt) || 0,
+      sessionId: String(record?.sessionId ?? ''),
+      cwd: String(record?.cwd ?? ''),
+      trigger: String(record?.trigger ?? ''),
+      model: String(record?.model ?? ''),
+      status: String(record?.status ?? 'pending'),
+      count: items.length,
+      // The dock polls /status every 60s; keep the payload bounded. The full
+      // note body stays on disk and is available through `/memory inbox show`.
+      items: items.slice(0, 20).map((item) => ({
+        name: String(item?.name ?? ''),
+        type: String(item?.type ?? ''),
+        description: String(item?.description ?? ''),
+        content: String(item?.content ?? '').slice(0, 400),
+      })),
+    };
+  }
+
+  /** Proposals the v20 extractor staged; an unreadable inbox is simply empty. */
+  async function inboxSnapshot(pctx) {
     try {
-      if (typeof rt.sessionMode === 'function') live = rt.sessionMode(id) === 'live';
+      const records = await listProposals(pctx?.paths);
+      return { count: records.length, items: records.map(inboxSummary) };
     } catch {
-      live = false;
+      return { count: 0, items: [] };
     }
-    return { live, mode: live ? 'live' : 'auto' };
   }
 
   /**
@@ -999,38 +884,9 @@ export function createStatusService(runtime) {
     const store = requireStore(pctx);
     const index = await store.injectedIndex('project');
     const entries = await store.listEntries('project');
-    let userEntries = [];
-    let userUsage = {
-      lines: 0,
-      bytes: 0,
-      truncated: false,
-      overflow: false,
-      maxLines: Number(config.userIndexMaxLines) || 30,
-      maxBytes: Number(config.userIndexMaxBytes) || 4096,
-    };
-    if (config.userMemoryEnabled === true) {
-      try {
-        userEntries = await store.listEntries('user');
-      } catch {
-        userEntries = [];
-      }
-      try {
-        const injectedUser = await store.injectedIndex('user');
-        userUsage = {
-          lines: injectedUser.lines,
-          bytes: injectedUser.bytes,
-          truncated: injectedUser.truncated,
-          overflow: injectedUser.overflow,
-          maxLines: injectedUser.maxLines,
-          maxBytes: injectedUser.maxBytes,
-        };
-      } catch {
-        /* keep the empty usage shape */
-      }
-    }
     let trashCount = 0;
     try {
-      trashCount = typeof store.countTrash === 'function' ? await store.countTrash() : 0;
+      trashCount = await store.countTrash();
     } catch {
       trashCount = 0;
     }
@@ -1039,29 +895,49 @@ export function createStatusService(runtime) {
     const metricsValue = await metricsForEntries(pctx, entries);
     const health = await buildHealth({ runtime: rt, projectContext: pctx, rules: rulesValue });
     const snapshot =
-      pctx?.state && typeof pctx.state.snapshot === 'function' ? pctx.state.snapshot() : {};
+      pctx?.state?.snapshot() ?? {};
 
-    // v9: pending-write queue, dream readiness / memory health (defensive: the
-    // readiness module may not be installed yet) and per-session live mode.
-    let pendingWrites = { count: 0, items: [] };
-    try {
-      pendingWrites = pendingWritesView(await listPendingWrites(pctx?.paths), { limit: 50 });
-    } catch {
-      pendingWrites = { count: 0, items: [] };
-    }
+    const stateView = pick(snapshot, STATE_FIELDS);
     const readiness = await readinessFor(pctx, config);
     const memoryHealth = await memoryHealthFor(pctx, config);
-    const session = sessionView(pctx, options?.sessionId);
     const healthValue = health && typeof health === 'object' ? { ...health } : health;
     if (healthValue && memoryHealth) healthValue.memoryHealth = memoryHealth;
     // v10: 7-day daily trend rides along with the metrics view (the UI renders
     // it; `GET /metrics?days=N` returns the same trend for other windows).
     const metricsTrendValue = metricsTrend(await readMetrics(pctx?.paths), { days: DEFAULT_TREND_DAYS });
     const metricsView = { ...metricsValue, trend: metricsTrendValue };
+    const inboxValue = await inboxSnapshot(pctx);
+
+    // Per-entry trust (ledger, STATUS).
+    let trustedEntries = entries;
+    try {
+      trustedEntries = await annotateTrust(store, entries, { scope: 'project' });
+    } catch {
+      /* trust facts are optional; the plain entries still describe the store */
+    }
+
+    // Phase 2: resumable Dream runs (newest five) so a stopped run is visible
+    // and can be continued from the panel or `/dream status`.
+    let dreamRuns = [];
+    try {
+      const manifests = await listRunManifests(pctx?.paths, 5);
+      const live = new Set(await rt.liveDreamRunIds());
+      dreamRuns = manifests.map((entry) => summarizeRun(entry.manifest, { running: live.has(entry.manifest?.runId) }));
+    } catch {
+      dreamRuns = [];
+    }
 
     return {
       ok: true,
       version: VERSION,
+      uiApi: UI_API,
+      build: buildIdentity(),
+      capabilities: {
+        dreamPipeline: 'v2',
+        dreamRuns: true,
+        claimMerge: true,
+        explicitSaveLedger: true,
+      },
       project: {
         projectRoot: String(pctx?.paths?.projectRoot ?? ''),
         memoryDir: String(pctx?.paths?.memoryDir ?? ''),
@@ -1078,28 +954,24 @@ export function createStatusService(runtime) {
         maxLines: index.maxLines,
         maxBytes: index.maxBytes,
       },
-      entries,
-      userScope: {
-        enabled: config.userMemoryEnabled === true,
-        entries: userEntries,
-        budgets: {
-          maxLines: Number(config.userIndexMaxLines) || 0,
-          maxBytes: Number(config.userIndexMaxBytes) || 0,
-        },
-        usage: userUsage,
+      injection: {
+        recallMode: typeof config.recallMode === 'string' ? config.recallMode : 'model',
+        autoExtract: config.autoExtract === true,
+        subagentMemory: config.subagentMemory === 'shared' || config.subagentMemory === 'own' ? config.subagentMemory : 'off',
       },
-      state: pick(snapshot, STATE_FIELDS),
+      entries: trustedEntries,
+      inbox: inboxValue,
+      state: stateView,
+      dreamRuns,
       changelogTail,
       trashCount,
       rules: rulesValue,
       metrics: metricsView,
-      pendingWrites,
       readiness,
       healthScore: memoryHealth && Number.isFinite(Number(memoryHealth.score)) ? Number(memoryHealth.score) : null,
-      session,
       subagentPolicy: {
-        injectSubagents: config.injectSubagents !== false,
-        mode: config.subagentWriteMode === 'off' ? 'off' : 'shared',
+        mode: config.subagentMemory === 'shared' || config.subagentMemory === 'own' ? config.subagentMemory : 'off',
+        agentMemoryPresets: Array.isArray(config.agentMemoryPresets) ? config.agentMemoryPresets : [],
       },
       health: healthValue,
     };
@@ -1111,22 +983,29 @@ export function createStatusService(runtime) {
     if (typeof file !== 'string' || file.trim() === '') {
       throw coded('invalid-file', 'a memory file name is required');
     }
-    return store.readEntry(file.trim(), normalizeScope(scope));
+    const entry = await store.readEntry(file.trim(), normalizeScope(scope));
+    return {
+      ...entry,
+      // `version` labels the content in receipts; `expectedHash` is the token an
+      // editor sends back so the store can refuse a stale overwrite.
+      version: entryVersion({
+        name: entry.frontmatter?.name ?? '',
+        description: entry.frontmatter?.description ?? '',
+        body: entry.body ?? '',
+      }),
+      expectedHash: memoryHash(entry.raw),
+    };
   }
 
   /** The rules actually injected for this project. */
   function rules(pctx) {
-    try {
-      if (typeof rt.rulesFor === 'function') return normalizeRules(rt.rulesFor(pctx), pctx);
-    } catch {
-      /* fall through to the unavailable shape */
-    }
-    return normalizeRules(undefined, pctx);
+    return normalizeRules(rt.rulesFor(pctx), pctx);
   }
 
   /**
-   * Persist one rules override. `deny` secret scanning refuses the write with
-   * code `SECRET_DETECTED`; `warn` returns the rules plus a `warnings` array.
+   * Persist one rules override; empty text removes it. `deny` secret scanning
+   * refuses the write with code `SECRET_DETECTED`; `warn` returns the rules plus a
+   * `warnings` array.
    */
   async function saveRules(pctx, scope, text, options = {}) {
     const targetScope = scope === undefined || scope === null ? 'project' : String(scope).toLowerCase();
@@ -1135,26 +1014,10 @@ export function createStatusService(runtime) {
     }
     const value = typeof text === 'string' ? text : '';
     const warnings = scanRulesText(value);
-    if (typeof rt.saveRules !== 'function') {
-      throw coded('unavailable', 'this runtime cannot persist rules');
-    }
     const updated = await rt.saveRules(pctx, targetScope, value, { source: options?.source || 'api' });
     const normalized = normalizeRules(updated, pctx);
     if (warnings.length > 0) normalized.warnings = warnings;
     return normalized;
-  }
-
-  /** Remove one rules override and return the effective rules. */
-  async function resetRules(pctx, scope, options = {}) {
-    const targetScope = scope === undefined || scope === null ? 'project' : String(scope).toLowerCase();
-    if (targetScope !== 'project' && targetScope !== 'global') {
-      throw coded('invalid-scope', `rules scope must be "project" or "global": ${String(scope)}`);
-    }
-    if (typeof rt.resetRules !== 'function') {
-      throw coded('unavailable', 'this runtime cannot reset rules');
-    }
-    const updated = await rt.resetRules(pctx, targetScope, { source: options?.source || 'api' });
-    return normalizeRules(updated, pctx);
   }
 
   /**
@@ -1164,9 +1027,6 @@ export function createStatusService(runtime) {
    */
   async function toggle(targetRuntime, patch) {
     const target = targetRuntime && typeof targetRuntime === 'object' ? targetRuntime : rt;
-    if (typeof target.setOverrides !== 'function') {
-      throw coded('unavailable', 'runtime overrides are unavailable in this build');
-    }
     const clean = {};
     for (const key of TOGGLE_FIELDS) {
       if (patch && typeof patch[key] === 'boolean') clean[key] = patch[key];
@@ -1175,110 +1035,66 @@ export function createStatusService(runtime) {
       throw coded('no-toggle-field', `patch must set one of ${TOGGLE_FIELDS.join(', ')}`);
     }
     const overrides = await target.setOverrides(clean);
-    const config = target.config && typeof target.config === 'object' ? target.config : {};
-    return { overrides, config: pick(config, TOGGLE_FIELDS) };
+    return { overrides, config: pick(target.config, TOGGLE_FIELDS) };
   }
 
   /**
-   * Dispatch one dream action. Returns `{ok:true, result}` on success and
-   * `{ok:false, error:'not-ready'}` when the v7 dream-engine methods are not
-   * installed yet, so new endpoints/commands never crash an older build.
+   * Dispatch one dream action. `start` launches a background run and returns
+   * its id; `run` launches the same way and waits for the result.
    * @param {object} pctx
-   * @param {{agent?:object,sessionId?:string,action?:string,indexes?:unknown,
-   *   trigger?:string,reason?:string}} [options]
+   * @param {{agent?:object,sessionId?:string,action?:string,runId?:string,
+   *   trigger?:string,reason?:string,focus?:string,noSessions?:boolean,
+   *   inputId?:string,inputRanges?:Array}} [options]
    */
   async function dream(pctx, options = {}) {
-    const action = String(options.action ?? 'run').toLowerCase();
+    const action = String(options.action ?? 'start').toLowerCase();
     const agent = options.agent ?? pctx?.agent;
-    if (action === 'estimate') {
-      if (typeof rt.estimateDream !== 'function') return { ok: false, error: 'not-ready', message: 'Dream cost preview is unavailable' };
-      return { ok: true, result: lossless(await rt.estimateDream(pctx, { focus: options.focus ?? '' })) };
+    const runId = String(options.runId ?? '');
+    const launch = {
+      agent,
+      sessionId: options.sessionId,
+      force: true,
+      trigger: options.trigger || 'manual',
+      reason: options.reason || '',
+      focus: typeof options.focus === 'string' ? options.focus : '',
+      noSessions: options.noSessions === true,
+      // v23: an estimate hands back an id and the ranges it priced; starting
+      // with them keeps the confirmed scope even if sessions move meanwhile.
+      inputId: typeof options.inputId === 'string' ? options.inputId : '',
+      inputRanges: Array.isArray(options.inputRanges) ? options.inputRanges : null,
+    };
+    /** A started run's `done` promise stays in-process. */
+    const launched = ({ done, ...info }) => ({ ok: true, result: lossless(info) });
+    switch (action) {
+      case 'estimate':
+        return { ok: true, result: lossless(await rt.estimateDream(pctx, { focus: launch.focus })) };
+      case 'start':
+      case 'run': {
+        const started = await rt.startDream(pctx, launch);
+        if (action === 'run' && started.done) return { ok: true, result: lossless(await started.done) };
+        return launched(started);
+      }
+      case 'status':
+        return { ok: true, result: lossless(await rt.dreamRun(pctx, runId)) };
+      case 'cancel':
+        return { ok: true, result: lossless(await rt.cancelDreamRun(pctx, runId)) };
+      case 'resume':
+        return launched(await rt.resumeDreamRun(pctx, runId, { agent, sessionId: options.sessionId }));
+      case 'switch': {
+        const result = await rt.switchDream({ pctx, agent });
+        if (result?.switched === true) invalidateAll('dream-switch');
+        return { ok: true, result: lossless(result) };
+      }
+      case 'discard':
+        return { ok: true, result: lossless(await rt.discardDream({ pctx, agent })) };
+      case 'undo': {
+        const result = await rt.undoLastDream(pctx, { agent });
+        invalidateAll('dream-undo');
+        return { ok: true, result: lossless(result) };
+      }
+      default:
+        throw coded('unknown-action', `unknown dream action: ${action}`);
     }
-    if (action === 'preview') {
-      if (typeof rt.previewPlan !== 'function') {
-        return {
-          ok: false,
-          error: 'not-ready',
-          message: 'dream plan preview is not available in this build yet (waiting for the dream engine)',
-        };
-      }
-      return { ok: true, result: lossless(await rt.previewPlan(pctx)) };
-    }
-    if (action === 'apply-ops' || action === 'apply-operations') {
-      if (typeof rt.applyPlanOperations !== 'function') {
-        return {
-          ok: false,
-          error: 'not-ready',
-          message: 'per-operation apply is not available in this build yet (waiting for the dream engine)',
-        };
-      }
-      const indexes = normalizeIndexes(options.indexes);
-      if (indexes === undefined) {
-        throw coded('invalid-indexes', 'indexes must be a non-empty array of operation numbers');
-      }
-      return { ok: true, result: lossless(await rt.applyPlanOperations(pctx, { indexes, agent })) };
-    }
-    if (action === 'run' || action === 'dry-run') {
-      if (typeof rt.dream !== 'function') {
-        return { ok: false, error: 'dream-unavailable', message: 'this runtime has no dream engine' };
-      }
-      const result = await rt.dream({
-        pctx,
-        agent,
-        force: true,
-        dryRun: action === 'dry-run',
-        trigger: options.trigger || 'manual',
-        reason: options.reason || '',
-        focus: typeof options.focus === 'string' ? options.focus : '',
-      });
-      return { ok: true, result: lossless(result) };
-    }
-    if (action === 'apply-last') {
-      if (typeof rt.applyLastPlan !== 'function') {
-        return { ok: false, error: 'dream-unavailable', message: 'this host build cannot apply a dry-run plan' };
-      }
-      return { ok: true, result: lossless(await rt.applyLastPlan({ pctx, agent })) };
-    }
-    if (action === 'apply-pending') {
-      if (typeof rt.applyPendingDream !== 'function') {
-        return { ok: false, error: 'dream-unavailable', message: 'this host build cannot apply a pending proposal' };
-      }
-      return { ok: true, result: lossless(await rt.applyPendingDream({ pctx, agent })) };
-    }
-    if (action === 'reject') {
-      const pending =
-        pctx?.state && typeof pctx.state.snapshot === 'function'
-          ? String(pctx.state.snapshot().pendingProposal ?? '')
-          : '';
-      if (pending === '') {
-        return { ok: true, result: { rejected: false, reason: 'no-pending-proposal' } };
-      }
-      try {
-        await fs.unlink(pending);
-      } catch (error) {
-        if (error?.code !== 'ENOENT') throw error;
-      }
-      try {
-        if (typeof pctx?.state?.clearPendingProposal === 'function') await pctx.state.clearPendingProposal();
-      } catch {
-        /* the proposal file is gone; state cleanup is best-effort */
-      }
-      invalidateAll('dream-reject');
-      return { ok: true, result: { rejected: true, proposalPath: pending } };
-    }
-    if (action === 'undo') {
-      if (typeof rt.undoLastDream !== 'function') {
-        return {
-          ok: false,
-          error: 'not-ready',
-          message: 'dream undo is not available in this build yet (waiting for the dream engine)',
-        };
-      }
-      const result = await rt.undoLastDream(pctx, { agent });
-      invalidateAll('dream-undo');
-      return { ok: true, result: lossless(result) };
-    }
-    throw coded('unknown-action', `unknown dream action: ${action}`);
   }
 
   /** Soft-delete one memory file (still gated by `dreamAllowDelete`). */
@@ -1289,9 +1105,6 @@ export function createStatusService(runtime) {
     }
     if (configOf().dreamAllowDelete !== true) {
       throw coded('delete-disabled', 'set dreamAllowDelete: true to delete memories (moves them to trash)');
-    }
-    if (typeof store.trashEntry !== 'function') {
-      throw coded('unavailable', 'this store build cannot trash files');
     }
     const result = await store.trashEntry(file.trim(), {
       scope: normalizeScope(scope),
@@ -1387,20 +1200,17 @@ export function createStatusService(runtime) {
       }
       restored.push(name);
     }
-    let reconciled = { missing: [], dangling: [] };
-    if (typeof store.reconcileIndex === 'function') {
-      const result = await store.reconcileIndex('project');
-      reconciled = {
-        missing: Array.isArray(result?.appended) ? result.appended : [],
-        dangling: Array.isArray(result?.removed) ? result.removed : [],
-      };
-    }
+    const audit = await store.reconcileIndex('project');
+    const reconciled = {
+      missing: Array.isArray(audit?.appended) ? audit.appended : [],
+      dangling: Array.isArray(audit?.removed) ? audit.removed : [],
+    };
     const changelog = [
       `## ${new Date().toISOString()}`,
       `- restore: kind=${kind} id=${id} files=${restored.length}${requestedFile === '' ? '' : ` file=${requestedFile}`}`,
     ].join('\n');
     try {
-      if (typeof store.writeChangelog === 'function') await store.writeChangelog(changelog);
+      await store.writeChangelog(changelog);
     } catch {
       /* the restore already happened; the audit line is best-effort */
     }
@@ -1408,52 +1218,53 @@ export function createStatusService(runtime) {
     return { restored, reconciled };
   }
 
-  /** Pending-write queue summary (v9 write-review flow). */
-  async function pendingWrites(pctx) {
-    requireStore(pctx);
-    const records = await listPendingWrites(pctx?.paths);
-    return pendingWritesView(records, { limit: 100 });
-  }
-
   /**
-   * Approve one queued write: write it through the store (normal provenance,
-   * secret scan, index upkeep and metrics) and report the final file.
+   * List, accept, or discard automatic-extraction proposals. Accepting reuses
+   * the normal `memory_save` gates (duplicate/secret/budget/evidence) instead
+   * of writing files directly, so an accepted proposal is indistinguishable
+   * from a model-authored note.
    * @param {object} pctx
-   * @param {string} id pending-write id
-   * @param {{sessionId?:string}} [options]
+   * @param {{action?:'list'|'accept'|'discard',id?:string,agent?:object}} [request]
    */
-  async function approveWrite(pctx, id, options = {}) {
-    const store = requireStore(pctx);
-    const sessionId =
-      typeof options?.sessionId === 'string' && options.sessionId !== ''
-        ? options.sessionId
-        : typeof pctx?.sessionId === 'string'
-          ? pctx.sessionId
-          : '';
-    const result = await approvePendingWrite(pctx?.paths, id, {
-      store,
-      source: { sessionId, via: 'tool:memory_save' },
-    });
-    try {
-      await recordWrite(pctx?.paths, result.file);
-    } catch {
-      /* metrics are best-effort */
+  async function inbox(pctx, request = {}) {
+    const action = String(request?.action ?? 'list').toLowerCase();
+    const paths = pctx?.paths ?? {};
+    if (action === 'list') {
+      const snapshot = await inboxSnapshot(pctx);
+      return { ok: true, ...snapshot };
     }
-    invalidate(pctx, 'pending-approve');
-    invalidateAll('pending-approve');
-    return { written: true, id: result.id, file: result.file };
-  }
-
-  /**
-   * Reject one queued write: archive it under `.pending/expired/`.
-   * @param {object} pctx
-   * @param {string} id pending-write id
-   * @param {string} [reason]
-   */
-  async function rejectWrite(pctx, id, reason = '') {
-    requireStore(pctx);
-    const result = await rejectPendingWrite(pctx?.paths, id, typeof reason === 'string' ? reason : '');
-    return { rejected: true, id: result.id, path: result.path };
+    const id = safeComponent(request?.id, 'proposal id');
+    if (action === 'discard') {
+      const removed = await removeProposal(paths, id);
+      if (!removed) throw coded('not-found', `unknown inbox proposal: ${id}`);
+      invalidateAll('inbox');
+      return { ok: true, id, discarded: true };
+    }
+    if (action === 'accept') {
+      const record = await readProposal(paths, id);
+      const items = Array.isArray(record?.items) ? record.items : [];
+      const agent = request?.agent ?? pctx?.agent ?? { id: record.sessionId };
+      const results = await applyProposals({
+        runtime: rt,
+        items,
+        sessionId: record.sessionId,
+        agent,
+      });
+      const applied = results.filter((item) => item && item.ok === true).length;
+      const ok = items.length > 0 && applied === results.length;
+      if (ok) {
+        await removeProposal(paths, id);
+        invalidateAll('inbox');
+      }
+      return {
+        ok,
+        id,
+        applied,
+        failed: results.length - applied,
+        results,
+      };
+    }
+    throw coded('unknown-action', `unknown inbox action: ${action}`);
   }
 
   return {
@@ -1461,8 +1272,8 @@ export function createStatusService(runtime) {
     file,
     rules,
     saveRules,
-    resetRules,
     toggle,
+    inbox,
     dream,
     deleteFile,
     backups,
@@ -1477,8 +1288,5 @@ export function createStatusService(runtime) {
     dreamHistory,
     importMemory,
     exportMemory,
-    pendingWrites,
-    approveWrite,
-    rejectWrite,
   };
 }

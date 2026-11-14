@@ -1,7 +1,6 @@
 /**
  * Dream gathering is a pure read: a dry run must not change which sessions count
- * as pending or processed. Reading progress travels in the plan (`reads`) and is
- * only written when a plan is applied.
+ * as pending or processed. Every session arrives as ordered chunks.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -24,6 +23,7 @@ const reply = (seq, text) => ({
   data: { message: { content: [{ type: 'text', text }] } },
 });
 const record = (id, createdAt = 1) => ({ header: { id, createdAt } });
+const textOf = (session) => session.chunks.map((chunk) => chunk.text).join('\n');
 
 function gather(state, sessions, { records = [], config = {}, store = null } = {}) {
   const sessionQuery = {
@@ -39,7 +39,7 @@ function gather(state, sessions, { records = [], config = {}, store = null } = {
   });
 }
 
-/** A session too long for the single-pass limit. */
+/** A session longer than one transport chunk. */
 const longSession = () => {
   const events = [turn(1, '帮我梳理部署方案')];
   for (let seq = 2; seq <= 40; seq += 1) events.push(reply(seq, `第${seq}段${'过程'.repeat(600)}`));
@@ -64,26 +64,24 @@ test('gathering changes nothing in state, on disk or in memory', async (t) => {
   assert.deepEqual(input.droppedSessions, ['probe'], 'a probe is reported, and dropped only by an apply');
 });
 
-test('a session that fits is passed whole and reported as fully read', async (t) => {
+test('a short session arrives as one chunk with its last sequence number', async (t) => {
   const env = await makeEnv(t);
   await env.state.ensureSession('short', 1);
   const input = await gather(env.state, { short: [turn(4, 'short request'), reply(9, 'short reply')] });
   const [session] = input.sessions;
-  assert.ok(session.excerpt.includes('[user] short request') && session.excerpt.includes('[assistant] short reply'));
-  assert.equal(session.chunks, undefined);
-  assert.deepEqual(input.reads, [{ id: 'short', seq: 9, complete: true }]);
+  assert.equal(session.chunks.length, 1);
+  assert.ok(textOf(session).includes('[user] short request') && textOf(session).includes('[assistant] short reply'));
+  assert.equal(session.maxSeq, 9);
 });
 
 test('a long session is never sampled: it arrives as ordered chunks covering all of it', async (t) => {
   const env = await makeEnv(t);
   await env.state.ensureSession('long', 1);
-  const input = await gather(env.state, { long: longSession() }, { config: { dreamMaxSessionChars: 4000, dreamMapChunkChars: 6000 } });
+  const input = await gather(env.state, { long: longSession() }, { config: { dreamMapChunkChars: 6000 } });
   const [session] = input.sessions;
-  assert.equal(session.excerpt, '');
   assert.ok(session.chunks.length > 1);
-  const joined = session.chunks.map((chunk) => chunk.text).join('\n');
+  const joined = textOf(session);
   for (const marker of ['第2段', '第20段', '第40段']) assert.ok(joined.includes(marker), `${marker} is covered`);
-  assert.deepEqual(input.reads, [], 'nothing counts as read until the chunks have been analyzed');
 });
 
 test('a watermark limits reading to new events, and a partial one keeps the session eligible', async (t) => {
@@ -105,7 +103,7 @@ test('a watermark limits reading to new events, and a partial one keeps the sess
   });
   await env.state.ensureSession('resumed', 2); // the user continued this one
   const input = await gather(env.state, sessions, { records: [record('finished'), record('partial'), record('resumed')] });
-  const text = Object.fromEntries(input.sessions.map((session) => [session.id, session.excerpt]));
+  const text = Object.fromEntries(input.sessions.map((session) => [session.id, textOf(session)]));
   assert.equal(text.finished, undefined, 'a fully read session with no new activity is skipped');
   assert.ok(text.partial.includes('PARTIAL_NEW') && !text.partial.includes('PARTIAL_OLD'));
   assert.ok(text.resumed.includes('RESUMED_NEW') && !text.resumed.includes('RESUMED_OLD'));
@@ -132,14 +130,14 @@ test('sessions that do not fit the budget are deferred whole, not cut', async (t
     await env.state.ensureSession(`s${i}`, i);
     sessions[`s${i}`] = [turn(1, `请求${i}`), reply(2, `回复${i}${'内容'.repeat(1400)}`)];
   }
-  const input = await gather(env.state, sessions, { config: { dreamInputMaxChars: 8000, dreamMaxSessionChars: 4000 } });
+  const input = await gather(env.state, sessions, { config: { dreamInputMaxChars: 8000 } });
   assert.deepEqual(input.sessions.map((session) => session.id), ['s1', 's2'], 'a third 2.8k session would pass the 8k budget');
-  assert.ok(input.sessions.every((session) => !session.excerpt.includes('...[truncated]...')));
-  assert.deepEqual(input.reads.map((read) => read.id), ['s1', 's2'], 'deferred sessions stay unread for the next pass');
+  assert.ok(input.sessions.every((session) => !textOf(session).includes('...[truncated]...')));
+  assert.deepEqual(input.deferredSessions, ['s3', 's4'], 'deferred sessions wait for the next pass');
   assert.equal(input.truncated, true);
 });
 
-test('applying a legacy plan without read records moves no watermark', async (t) => {
+test('clearing sessions without read records moves no watermark', async (t) => {
   const env = await makeEnv(t);
   await env.state.ensureSession('a', 1);
   await env.state.clearSessions(['a']);

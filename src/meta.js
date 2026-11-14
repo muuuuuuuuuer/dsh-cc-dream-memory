@@ -46,7 +46,7 @@ export async function buildHealth({ runtime, projectContext, rules } = {}) {
   }
   try {
     const store = projectContext && projectContext.store;
-    if (store && typeof store.auditIndex === 'function') {
+    if (store) {
       const audit = await store.auditIndex('project');
       if (audit && Array.isArray(audit.missing) && audit.missing.length > 0) {
         warnings.push(`${audit.missing.length} memory file(s) are missing from MEMORY.md (run a dream to reconcile)`);
@@ -59,16 +59,14 @@ export async function buildHealth({ runtime, projectContext, rules } = {}) {
     warnings.push(`index audit failed: ${error?.message ?? error}`);
   }
   try {
-    const snapshot = projectContext && projectContext.state && typeof projectContext.state.snapshot === 'function'
-      ? projectContext.state.snapshot()
-      : {};
+    const snapshot = projectContext?.state?.snapshot() ?? {};
     if (snapshot && snapshot.lastError) warnings.push(`last dream failed: ${String(snapshot.lastError).slice(0, 200)}`);
-    if (snapshot && snapshot.pendingProposal) warnings.push('a dream proposal is waiting for apply or reject');
+    if (snapshot && snapshot.shadowPending) warnings.push('a dream result is waiting for the human to switch to it or discard it');
   } catch (error) {
     warnings.push(`state unreadable: ${error?.message ?? error}`);
   }
   try {
-    if (runtime && typeof runtime.overrides === 'function') runtime.overrides();
+    runtime?.overrides();
   } catch (error) {
     warnings.push(`runtime overrides unreadable: ${error?.message ?? error}`);
   }
@@ -114,3 +112,4 @@ export async function buildHealth({ runtime, projectContext, rules } = {}) {
 // v0.10.13: chronological paired tool evidence, corpus watermark persistence + seq reload, recent-user tail guard, docs/eval path cleanup.
 // v0.10.14: all-scenario frozen manifest, open-tool temp git workspaces + objective checks, memory-convention and dream-session scenarios, git identity/budget notice fixes.
 // v0.11.0: Dream reads whole sessions (chunked analysis, verified quotes, watermarks moved only on apply) with an evidence gate; lexical auto recall, memory_update delete, staleness hints.
+// v0.12.0: Dream v2 pipeline (per-session analyzer, host verifier, organizer, coverage), wiki-lite memory pages, knowledge-wiki corpus build and read-only wiki query tools.

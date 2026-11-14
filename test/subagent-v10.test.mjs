@@ -1,5 +1,5 @@
 /**
- * v10 P1-12: subagent write semantics (`subagentWriteMode: 'shared' | 'off'`).
+ * v10 P1-12: subagent memory semantics (`subagentMemory: 'off' | 'shared' | 'own'`).
  * Contract §6. Uses os.tmpdir(); no LLM.
  */
 import { test } from 'node:test';
@@ -27,23 +27,25 @@ async function seed(env) {
   });
 }
 
-test('v10 subagent: config defaults to shared and validates the mode', async (t) => {
+test('v10 subagent: config defaults to off and validates the mode', async (t) => {
   const env = await toolsEnv(t);
-  assert.equal(env.config.subagentWriteMode, 'off');
-  const invalid = env.mods.config.resolveConfig({ memoryRoot: env.memoryRoot, subagentWriteMode: 'bogus' });
-  assert.equal(invalid.subagentWriteMode, 'off', 'invalid mode falls back to off');
-  const off = env.mods.config.resolveConfig({ memoryRoot: env.memoryRoot, subagentWriteMode: 'off' });
-  assert.equal(off.subagentWriteMode, 'off');
+  assert.equal(env.config.subagentMemory, 'off');
+  const invalid = env.mods.config.resolveConfig({ memoryRoot: env.memoryRoot, subagentMemory: 'bogus' });
+  assert.equal(invalid.subagentMemory, 'off', 'invalid mode falls back to off');
+  const shared = env.mods.config.resolveConfig({ memoryRoot: env.memoryRoot, subagentMemory: 'shared' });
+  assert.equal(shared.subagentMemory, 'shared');
+  const own = env.mods.config.resolveConfig({ memoryRoot: env.memoryRoot, subagentMemory: 'own' });
+  assert.equal(own.subagentMemory, 'own');
 });
 
 test('v10 subagent: shared mode lets a subagent write with its own session provenance', async (t) => {
-  const env = await toolsEnv(t, { subagentWriteMode: 'shared' });
+  const env = await toolsEnv(t, { subagentMemory: 'shared' });
   await seed(env);
   const agent = subagent('child-1');
   const saved = await env.definitions.get('memory_save').execute(
     {
       name: 'child memory',
-      type: 'user',
+      type: 'project',
       description: 'child description',
       content: 'a child session memory body that is long enough',
       force: true,
@@ -58,7 +60,7 @@ test('v10 subagent: shared mode lets a subagent write with its own session prove
 });
 
 test('v10 subagent: off mode makes write tools readonly but keeps read tools working', async (t) => {
-  const env = await toolsEnv(t, { subagentWriteMode: 'off' });
+  const env = await toolsEnv(t, { subagentMemory: 'off' });
   await seed(env);
   const agent = subagent('child-readonly');
   const exec = { agent, sessionId: agent.id };
@@ -95,8 +97,19 @@ test('v10 subagent: off mode makes write tools readonly but keeps read tools wor
   assert.equal(await exists(path.join(env.pctx.paths.memoryDir, 'user_blocked.md')), false);
 });
 
+test('a delegated agent with a top-level session header cannot write to the shared store in off mode', async (t) => {
+  const env = await toolsEnv(t, { subagentMemory: 'off' });
+  const agent = { id: 'child-header', header: { parentSession: 'main-session' } };
+  const result = await env.definitions.get('memory_save').execute(
+    { name: 'child memory', type: 'project', content: 'This delegated write must be refused.' },
+    { agent, sessionId: agent.id },
+  );
+  assert.equal(result.error, 'subagent-readonly');
+  assert.deepEqual(await env.pctx.store.listEntries(), []);
+});
+
 test('v10 subagent: main agents are unaffected and status exposes subagentPolicy', async (t) => {
-  const env = await toolsEnv(t, { subagentWriteMode: 'off' });
+  const env = await toolsEnv(t, { subagentMemory: 'off' });
   const main = mainAgent();
   const saved = await env.definitions.get('memory_save').execute(
     { name: 'main memory', type: 'user', description: 'd', content: 'main body long enough to write', force: true },
@@ -107,6 +120,5 @@ test('v10 subagent: main agents are unaffected and status exposes subagentPolicy
   const service = env.mods.status.createStatusService(env.runtime);
   const status = await service.status(env.pctx, { sessionId: main.id });
   assert.ok(status.subagentPolicy, 'status must expose subagentPolicy');
-  assert.equal(typeof status.subagentPolicy.injectSubagents, 'boolean');
   assert.equal(status.subagentPolicy.mode, 'off');
 });

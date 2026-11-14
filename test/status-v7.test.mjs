@@ -2,7 +2,7 @@
  * v7 status service + HTTP endpoints + new slash commands.
  *
  * Covers FIXES-v7 contract §1:
- *   - createStatusService: status/file/rules/saveRules/resetRules/toggle/
+ *   - createStatusService: status/file/rules/saveRules/toggle/
  *     deleteFile/backups/trash/restore (whole batch, single file, trash restore,
  *     path-escape rejection);
  *   - HTTP: GET /backups|/trash, POST /restore, POST /dream preview/apply-ops,
@@ -141,16 +141,80 @@ test('v7 status: service payload mirrors the HTTP status shape with provenance',
   assert.equal(status.entries[0].via, 'tool:memory_save');
   assert.equal(status.entries[0].sourceSession, 'sess-1');
   assert.match(status.entries[0].created, /^\d{4}-\d{2}-\d{2}T/);
-  assert.equal(status.userScope.enabled, false);
+  assert.equal('userScope' in status, false, 'status reports no user scope');
   assert.equal(typeof status.changelogTail, 'string');
   assert.equal(status.trashCount, 0);
   assert.equal(status.rules.source, 'default');
   assert.equal(typeof status.health, 'object');
   assert.ok(Array.isArray(status.health.warnings));
   assert.equal(status.state.lastDreamDurationMs, 0, 'state exposes the v7 duration field');
+  assert.equal(status.config.recallMode, 'model');
+  assert.equal(status.config.autoExtract, false);
+  assert.equal(status.config.subagentMemory, 'off');
+  assert.equal(status.inbox.count, 0);
+  assert.equal(status.inbox.items.length, 0);
 });
 
-test('v7 status: file/rules/saveRules/resetRules/toggle round-trip', async (t) => {
+test('v7 status: inbox proposals list, accept and discard', async (t) => {
+  const env = await makeEnv(t);
+  const inbox = await loadModule('../src/inbox.js', { requireExports: ['writeProposal'] });
+  const record = await inbox.writeProposal(env.paths, {
+    sessionId: 'sess-inbox',
+    cwd: env.workspaceDir,
+    model: 'fake',
+    trigger: 'auto',
+    items: [
+      {
+        name: 'deploy command',
+        type: 'project',
+        description: 'How this repo deploys',
+        content: 'We deploy with make release.',
+      },
+    ],
+  });
+
+  const status = await env.service.status(env.pctx);
+  assert.equal(status.inbox.count, 1);
+  assert.equal(status.inbox.items[0].id, record.id);
+
+  const listed = await env.service.inbox(env.pctx, { action: 'list' });
+  assert.equal(listed.ok, true);
+  assert.equal(listed.count, 1);
+
+  const saved = [];
+  env.runtime.memoryTools = new Map([
+    [
+      'memory_save',
+      {
+        execute: async (input, exec) => {
+          saved.push({ input, exec });
+          return { ok: true, written: true };
+        },
+      },
+    ],
+  ]);
+  const accepted = await env.service.inbox(env.pctx, { action: 'accept', id: record.id });
+  assert.equal(accepted.ok, true);
+  assert.equal(accepted.applied, 1);
+  assert.equal(accepted.failed, 0);
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].input.basis, 'inference');
+  assert.equal(saved[0].exec.sessionId, 'sess-inbox');
+  assert.equal((await env.service.inbox(env.pctx, { action: 'list' })).count, 0);
+
+  const second = await inbox.writeProposal(env.paths, {
+    sessionId: 'sess-inbox',
+    cwd: env.workspaceDir,
+    model: 'fake',
+    trigger: 'auto',
+    items: [{ name: 'keep', type: 'user', content: 'Keep this.' }],
+  });
+  const discarded = await env.service.inbox(env.pctx, { action: 'discard', id: second.id });
+  assert.equal(discarded.ok, true);
+  assert.equal((await env.service.inbox(env.pctx, { action: 'list' })).count, 0);
+});
+
+test('v7 status: file/rules/saveRules/toggle round-trip', async (t) => {
   const env = await seedStatusEnv(t);
   const file = await env.service.file(env.pctx, 'user_one.md', 'project');
   assert.equal(file.file, 'user_one.md');
@@ -166,7 +230,7 @@ test('v7 status: file/rules/saveRules/resetRules/toggle round-trip', async (t) =
   assert.match(saved.text, /V7 PROJECT RULE/);
   assert.equal(await exists(env.paths.projectRulesFile), true);
 
-  const reset = await env.service.resetRules(env.pctx, 'project');
+  const reset = await env.service.saveRules(env.pctx, 'project', '');
   assert.equal(reset.source, 'default');
   assert.equal(await exists(env.paths.projectRulesFile), false);
 
@@ -453,62 +517,36 @@ test('v7 http: new backup/trash/restore endpoints work and stay authenticated', 
   assert.equal(evilOrigin.json().error, 'bad-origin');
 });
 
-test('v7 http: dream preview and apply-ops endpoints use plan files; invalid indexes => 400', async (t) => {
+test('v7 http: inbox list and discard endpoints stay authenticated', async (t) => {
   const env = await httpEnv(t);
-  const plan = {
-    summary: 'v7 preview plan',
-    operations: [
-      {
-        op: 'write',
-        scope: 'project',
-        type: 'user',
-        name: 'http plan note',
-        description: 'planned note',
-        body: 'planned body',
-        file: 'user_http_plan_note.md',
-      },
-    ],
-    sessions: [],
-    truncatedFiles: [],
-  };
-  const planPath = await writePlan(env, plan);
-  await env.pctx.state.setLastPlan(planPath, 'dry-run');
+  const inbox = await loadModule('../src/inbox.js', { requireExports: ['writeProposal'] });
+  const record = await inbox.writeProposal(env.paths, {
+    sessionId: 'sess-http-inbox',
+    cwd: env.workspaceDir,
+    model: 'fake',
+    trigger: 'auto',
+    items: [{ name: 'http inbox note', type: 'user', content: 'Staged note.' }],
+  });
 
-  const preview = await callHttp(env.handle, {
+  const listed = await callHttp(env.handle, { token: env.token, path: '/inbox' });
+  assert.equal(listed.statusCode, 200);
+  assert.equal(listed.json().ok, true);
+  assert.equal(listed.json().count, 1);
+  assert.equal(listed.json().items[0].id, record.id);
+
+  const discarded = await callHttp(env.handle, {
     method: 'POST',
-    path: '/dream',
+    path: '/inbox',
     token: env.token,
-    body: { action: 'preview' },
+    body: { action: 'discard', id: record.id },
     origin: 'http://127.0.0.1:61784',
   });
-  assert.equal(preview.statusCode, 200);
-  assert.equal(preview.json().ok, true);
-  assert.equal(preview.json().result.path, planPath);
-  assert.equal(preview.json().result.ops.length, 1);
-  assert.equal(preview.json().result.ops[0].file, 'user_http_plan_note.md');
-  assert.equal(preview.json().result.ops[0].changed, true);
-  assert.equal(await exists(path.join(env.paths.memoryDir, 'user_http_plan_note.md')), false, 'preview is read-only');
+  assert.equal(discarded.statusCode, 200);
+  assert.equal(discarded.json().ok, true);
+  const after = await callHttp(env.handle, { token: env.token, path: '/inbox' });
+  assert.equal(after.json().count, 0);
 
-  const applied = await callHttp(env.handle, {
-    method: 'POST',
-    path: '/dream',
-    token: env.token,
-    body: { action: 'apply-ops', indexes: [0] },
-  });
-  assert.equal(applied.statusCode, 200);
-  assert.equal(applied.json().ok, true);
-  assert.equal(applied.json().result.applied, true);
-  assert.equal(await exists(path.join(env.paths.memoryDir, 'user_http_plan_note.md')), true);
-  assert.equal(env.pctx.state.snapshot().lastPlanPath, '', 'applying the plan clears lastPlanPath');
-
-  const invalid = await callHttp(env.handle, {
-    method: 'POST',
-    path: '/dream',
-    token: env.token,
-    body: { action: 'apply-ops', indexes: [] },
-  });
-  assert.equal(invalid.statusCode, 400);
-  assert.equal(invalid.json().error, 'invalid-indexes');
+  assert.equal((await callHttp(env.handle, { path: '/inbox' })).statusCode, 401);
 });
 
 test('v7 http: plugin-disabled blocks the new endpoints but keeps toggle alive', async (t) => {
@@ -562,7 +600,7 @@ async function commandHarness(t, configOverrides = {}) {
         return () => definitions.delete(definition.name);
       },
     },
-    get: () => undefined,
+    get: (name) => (name === 'commands' ? commandCtx.commands : undefined),
     on: () => () => {},
     effect: (factory) => (typeof factory === 'function' ? factory() : undefined),
   };
@@ -605,65 +643,4 @@ test('v7 commands: backups/trash/restore list and restore batches', async (t) =>
 
   const usage = await env.invoke('restore');
   assert.equal(usage.kind, 'error', 'restore without arguments must fail with usage');
-});
-
-test('dream preview shows the quote behind each new statement', async (t) => {
-  const env = await commandHarness(t);
-  const planPath = await writePlan(env, {
-    summary: 'quoted plan',
-    operations: [
-      {
-        op: 'write',
-        scope: 'project',
-        type: 'feedback',
-        name: 'handoff notes',
-        description: 'conclusion first',
-        body: 'Handoff notes lead with the conclusion.',
-        file: 'feedback_handoff_notes.md',
-        evidence: [{ statement: 'Handoff notes lead with the conclusion.', quote: 'I want the conclusion first' }],
-      },
-    ],
-    sessions: [],
-    truncatedFiles: [],
-  });
-  await env.pctx.state.setLastPlan(planPath, 'dry-run');
-
-  const preview = await env.invoke('dream preview');
-  assert.equal(preview.kind, 'success', preview.text);
-  assert.match(preview.text, /quote: "I want the conclusion first"/);
-});
-
-test('v7 commands: dream preview and dream apply-ops execute plan subsets', async (t) => {
-  const env = await commandHarness(t);
-  const plan = {
-    summary: 'v7 command plan',
-    operations: [
-      {
-        op: 'write',
-        scope: 'project',
-        type: 'user',
-        name: 'command plan note',
-        description: 'planned',
-        body: 'command planned body',
-        file: 'user_command_plan_note.md',
-      },
-    ],
-    sessions: [],
-    truncatedFiles: [],
-  };
-  const planPath = await writePlan(env, plan);
-  await env.pctx.state.setLastPlan(planPath, 'dry-run');
-
-  const preview = await env.invoke('dream preview');
-  assert.equal(preview.kind, 'success', preview.text);
-  assert.match(preview.text, /user_command_plan_note\.md/);
-  assert.match(preview.text, /preview/i);
-
-  const apply = await env.invoke('dream apply-ops 0');
-  assert.equal(apply.kind, 'success', apply.text);
-  assert.equal(await exists(path.join(env.paths.memoryDir, 'user_command_plan_note.md')), true);
-  assert.equal(env.pctx.state.snapshot().lastPlanPath, '');
-
-  const badIndex = await env.invoke('dream apply-ops 99');
-  assert.match(badIndex.text, /invalid-indexes|not applied/i, 'an out-of-range operation index must be reported');
 });

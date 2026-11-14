@@ -68,12 +68,23 @@ test('resolveProjectRoot treats a .git file (worktree) as a marker', async (t) =
   const tmp = await makeTempDir(t);
   const main = path.join(tmp, 'main-repo');
   await mkdir(path.join(main, '.git', 'worktrees', 'wt'), { recursive: true });
+  await writeFile(path.join(main, '.git', 'worktrees', 'wt', 'commondir'), '../..\n', 'utf8');
   const worktree = path.join(tmp, 'worktree');
   await mkdir(path.join(worktree, 'sub'), { recursive: true });
   await writeFile(path.join(worktree, '.git'), `gitdir: ${path.join(main, '.git', 'worktrees', 'wt')}\n`, 'utf8');
   // All worktrees of one repository share the main repository memory root.
   assert.equal(resolveProjectRoot(path.join(worktree, 'sub')), resolveProjectRoot(main));
   assert.equal(resolveProjectRoot(worktree), resolveProjectRoot(main));
+});
+
+test('resolveProjectRoot does not infer a shared repository from an incomplete Git marker', async (t) => {
+  const { resolveProjectRoot } = await pathsModule();
+  const tmp = await makeTempDir(t);
+  const checkout = path.join(tmp, 'checkout');
+  const missingGitDir = path.join(tmp, 'other', '.git', 'worktrees', 'missing');
+  await mkdir(checkout);
+  await writeFile(path.join(checkout, '.git'), `gitdir: ${missingGitDir}\n`, 'utf8');
+  assert.equal(resolveProjectRoot(checkout), path.normalize(checkout));
 });
 
 test('resolveProjectRoot reads worktree commondir for bare and separate git dirs', async (t) => {
@@ -135,8 +146,6 @@ test('buildPaths produces absolute paths with the documented layout', async (t) 
   const p = buildPaths({ memoryRoot, homeDir: home, workspaceDir });
   const keys = [
     'root',
-    'userMemoryDir',
-    'userIndexFile',
     'projectRoot',
     'projectDir',
     'memoryDir',
@@ -145,7 +154,6 @@ test('buildPaths produces absolute paths with the documented layout', async (t) 
     'lockFile',
     'changelogFile',
     'dreamsDir',
-    'pendingDir',
   ];
   for (const key of keys) {
     assert.equal(typeof p[key], 'string', `paths.${key} must be a string`);
@@ -158,15 +166,13 @@ test('buildPaths produces absolute paths with the documented layout', async (t) 
   assert.equal(p.memoryDir, path.join(p.projectDir, 'memory'));
   assert.equal(path.basename(p.memoryDir), 'memory');
   assert.equal(p.indexFile, path.join(p.memoryDir, 'MEMORY.md'));
-  assert.equal(p.userMemoryDir, path.join(p.root, 'user', 'memory'));
-  assert.equal(p.userIndexFile, path.join(p.userMemoryDir, 'MEMORY.md'));
 
   // Plugin metadata lives beside the memory directory (see src/paths.js).
   assert.equal(path.basename(p.stateFile), '.state.json');
   assert.equal(path.basename(p.lockFile), '.consolidate-lock');
   assert.equal(path.basename(p.changelogFile), '.dream-log.md');
   assert.equal(path.basename(p.dreamsDir), '.dreams');
-  for (const key of ['stateFile', 'lockFile', 'changelogFile', 'dreamsDir', 'pendingDir']) {
+  for (const key of ['stateFile', 'lockFile', 'changelogFile', 'dreamsDir']) {
     assert.equal(isInside(p.projectDir, p[key]), true, `paths.${key} must live under projectDir`);
   }
 
@@ -174,7 +180,6 @@ test('buildPaths produces absolute paths with the documented layout', async (t) 
   assert.equal(isInside(p.root, p.memoryDir), true, 'memoryDir must be inside root');
   assert.equal(isInside(p.projectDir, p.memoryDir), true, 'memoryDir must be inside projectDir');
   assert.equal(isInside(p.root, p.projectDir), true, 'projectDir must be inside root');
-  assert.equal(isInside(p.root, p.userMemoryDir), true, 'userMemoryDir must be inside root');
   assert.equal(isInside(p.memoryDir, p.root), false, 'root is not inside memoryDir');
 
   // The default-root fallback also keeps everything under defaultMemoryRoot(home).

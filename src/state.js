@@ -11,7 +11,6 @@
  * the fresh copy instead of overwriting it with a stale in-memory snapshot.
  */
 import fs from 'node:fs/promises';
-import fsSync from 'node:fs';
 import path from 'node:path';
 
 const STATE_VERSION = 1;
@@ -29,26 +28,6 @@ const USAGE_KEYS = Object.freeze([
   'reasoningTokens',
 ]);
 
-/**
- * `src/metrics.js` is owned by memory-core and may not exist yet. The rejected
- * counter is best-effort: a missing/broken metrics module must never block the
- * state transition itself.
- */
-let metricsModulePromise = null;
-
-async function recordRejectedDream(paths) {
-  try {
-    if (metricsModulePromise === null) {
-      metricsModulePromise = import('./metrics.js').catch(() => null);
-    }
-    const module = await metricsModulePromise;
-    const record = module && typeof module.recordDream === 'function' ? module.recordDream : null;
-    if (record && paths) await record(paths, { event: 'rejected' });
-  } catch {
-    // Intentionally silent: reject bookkeeping is secondary to state cleanup.
-  }
-}
-
 function emptyState() {
   return {
     version: STATE_VERSION,
@@ -65,8 +44,9 @@ function emptyState() {
     // fallback must not re-read them unless they became active again.
     dreamProcessedSessions: [],
     counters: { dreams: 0, skipped: 0, failures: 0 },
-    pendingProposal: '',
-    lastPlanPath: '',
+    // The pending memory copy a finished dream produced. `null` means no
+    // switch is waiting; the human either switches to the copy or discards it.
+    shadowPending: null,
     lastDreamMode: '',
     consecutiveFailures: 0,
     // v7: duration / cost of the last completed dream (0/null on old files).
@@ -76,6 +56,14 @@ function emptyState() {
     lastDreamUsage: null,
     // v8: the last dream's usage exceeded `dreamMaxTotalTokens`.
     lastDreamCostExceeded: false,
+    // v21: last automatic extraction outcome, so the UI can explain why the
+    // Inbox is empty without asking the user to read host logs.
+    lastExtractAt: 0,
+    lastExtractAttemptAt: 0,
+    lastExtractCount: 0,
+    lastExtractReason: '',
+    lastExtractError: '',
+    lastExtractTrigger: '',
   };
 }
 
@@ -128,14 +116,28 @@ function normalize(raw) {
     'lastDreamDurationMs',
     'lastDreamInputChars',
     'lastDreamOutputChars',
+    'lastExtractAt',
+    'lastExtractAttemptAt',
+    'lastExtractCount',
   ]) {
     state[key] = Number(state[key]) || 0;
   }
   state.lastDreamUsage = normalizeUsage(raw.lastDreamUsage);
   state.lastDreamCostExceeded = state.lastDreamCostExceeded === true;
-  for (const key of ['lastDreamSummary', 'lastError', 'pendingProposal', 'lastPlanPath', 'lastDreamMode']) {
+  for (const key of [
+    'lastDreamSummary',
+    'lastError',
+    'lastDreamMode',
+    'lastExtractReason',
+    'lastExtractError',
+    'lastExtractTrigger',
+  ]) {
     state[key] = typeof state[key] === 'string' ? state[key] : '';
   }
+  state.shadowPending = raw.shadowPending && typeof raw.shadowPending === 'object'
+    && typeof raw.shadowPending.dir === 'string' && raw.shadowPending.dir !== ''
+    ? { ...raw.shadowPending }
+    : null;
   return state;
 }
 
@@ -291,7 +293,7 @@ export class ProjectState {
    * Remove handled sessions after a successful dream and record how far each was
    * read. `reads` comes from the applied plan: `seq` is the last event read and
    * `complete:false` keeps the session eligible for the remainder. Without read
-   * records (apply-ops, legacy plans) no watermark moves, so nothing is skipped.
+   * records no watermark moves, so nothing is skipped.
    */
   async clearSessions(ids, options = {}) {
     const drop = new Set((ids ?? []).filter((id) => typeof id === 'string'));
@@ -380,6 +382,31 @@ export class ProjectState {
     });
   }
 
+  /** Record the start of one automatic extraction attempt. */
+  async markExtractStart(trigger = 'auto') {
+    await this._mutate((state) => {
+      state.lastExtractAttemptAt = Date.now();
+      state.lastExtractTrigger = typeof trigger === 'string' ? trigger.slice(0, 40) : 'auto';
+    });
+  }
+
+  /**
+   * Record the outcome of one automatic extraction. `reason` stays a short
+   * machine code (`ok`, `no-proposals`, `timeout`, ...) so the status line can
+   * render it without leaking provider error bodies into the UI.
+   */
+  async markExtractResult({ ok = false, count = 0, reason = '', error = '', trigger = 'auto', at = Date.now() } = {}) {
+    await this._mutate((state) => {
+      const finishedAt = Number(at) || Date.now();
+      state.lastExtractAttemptAt = Math.max(Number(state.lastExtractAttemptAt) || 0, finishedAt);
+      state.lastExtractTrigger = typeof trigger === 'string' ? trigger.slice(0, 40) : 'auto';
+      state.lastExtractCount = Math.max(0, Math.trunc(Number(count) || 0));
+      state.lastExtractReason = String(reason ?? '').slice(0, 200);
+      state.lastExtractError = ok ? '' : String(error?.message ?? error ?? '').slice(0, 2000);
+      if (ok) state.lastExtractAt = finishedAt;
+    });
+  }
+
   /**
    * Record whether the last dream/cost decision exceeded `dreamMaxTotalTokens`
    * without touching the rest of the dream fields (used by cost-mode review/block
@@ -391,17 +418,22 @@ export class ProjectState {
     });
   }
 
-  /** Record the dry-run plan so a later apply executes exactly that plan. */
-  async setLastPlan(file, mode = '') {
+  /**
+   * Record the pending copy produced by a finished run: its directory, the
+   * baseline hashes it was built from, and the file-level diff the panel shows.
+   */
+  async setShadowPending(pending = null) {
     await this._mutate((state) => {
-      state.lastPlanPath = typeof file === 'string' ? file : '';
-      state.lastDreamMode = typeof mode === 'string' ? mode : '';
+      state.shadowPending = pending && typeof pending === 'object' && typeof pending.dir === 'string'
+        ? { ...pending }
+        : null;
+      if (state.shadowPending) state.lastDreamMode = 'shadow';
     });
   }
 
-  async clearLastPlan() {
+  async clearShadowPending() {
     await this._mutate((state) => {
-      state.lastPlanPath = '';
+      state.shadowPending = null;
     });
   }
 
@@ -415,60 +447,5 @@ export class ProjectState {
     await this._mutate((state) => {
       state.counters.skipped = (Number(state.counters.skipped) || 0) + 1;
     });
-  }
-
-  async setPendingProposal(file) {
-    await this._mutate((state) => {
-      state.pendingProposal = typeof file === 'string' ? file : '';
-    });
-  }
-
-  /**
-   * Clear the pending proposal pointer. External callers (for example the
-   * review-reject path in `status.js`) call this with no options, which counts
-   * as a rejection for the metrics module; the dream engine's own applies pass
-   * `{ silent: true }` because they already count as `applied`.
-   * @param {{silent?:boolean}} [options]
-   */
-  async clearPendingProposal(options = {}) {
-    let previous = '';
-    await this._mutate((state) => {
-      previous = state.pendingProposal;
-      state.pendingProposal = '';
-    });
-    if (previous !== '' && !(options && options.silent === true)) {
-      await recordRejectedDream(this.paths);
     }
-  }
-
-  /**
-   * Synchronous best-effort variant of {@link clearPendingProposal}, used by the
-   * stale-proposal expiry path where the caller needs the pointer cleared before
-   * it returns. It never records reject metrics (expiry is not a rejection).
-   * @returns {string} the previous pending proposal path ('' when none).
-   */
-  clearPendingProposalSync() {
-    let previous = typeof this.state?.pendingProposal === 'string' ? this.state.pendingProposal : '';
-    try {
-      const raw = JSON.parse(fsSync.readFileSync(this.stateFile, 'utf8'));
-      const fresh = normalize(raw);
-      previous = fresh.pendingProposal;
-      fresh.pendingProposal = '';
-      fsSync.mkdirSync(path.dirname(this.stateFile), { recursive: true });
-      const tmp = `${this.stateFile}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      fsSync.writeFileSync(tmp, JSON.stringify(fresh, null, 2), 'utf8');
-      fsSync.renameSync(tmp, this.stateFile);
-      this.state = fresh;
-      this.loaded = true;
-    } catch (error) {
-      // Missing/unreadable state file: degrade to clearing the in-memory copy.
-      if (error && error.code !== 'ENOENT') {
-        // Never throw from the expiry path; the scheduler treats it as best-effort.
-      }
-      if (!this.state || typeof this.state !== 'object') this.state = emptyState();
-      previous = typeof this.state.pendingProposal === 'string' ? this.state.pendingProposal : previous;
-      this.state.pendingProposal = '';
-    }
-    return previous;
-  }
 }

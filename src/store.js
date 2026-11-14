@@ -4,9 +4,8 @@
  * `modified`).
  *
  * Layout is owned by `src/paths.js`; this module only ever uses the resolved
- * absolute `paths.*` fields, so the same store serves both the project scope
- * (`paths.memoryDir`) and the optional cross-project user scope
- * (`paths.userMemoryDir`).
+ * absolute `paths.*` fields, so the store serves the project scope
+ * (`paths.memoryDir`) only — Claude Code keeps one memory per project.
  *
  * Invariants:
  * - every write is atomic (temp file + rename) and refuses to follow a
@@ -27,6 +26,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseFrontmatter, stringifyFrontmatter } from './frontmatter.js';
+import { currentBody, isCurrentPage } from './memory-body.js';
+import { bodyHashOf } from './verification-ledger.js';
+import { withFileLock } from './lock.js';
 import {
   SECRET_DETECTED,
   scanSecrets,
@@ -40,16 +42,10 @@ function warn(scope, error) {
   console.warn(`[cc-memory] ${scope}:`, error?.message ?? error);
 }
 
-/** Cached dynamic import of the v10 cross-process write-lock module. */
-let writeLockModulePromise = null;
-function loadWriteLockModule() {
-  if (writeLockModulePromise === null) {
-    writeLockModulePromise = import('./lock.js').catch((error) => {
-      warn('write lock unavailable', error);
-      return null;
-    });
-  }
-  return writeLockModulePromise;
+/** Whether a head buffer contains the complete `---` frontmatter block. */
+function hasCompleteFrontmatter(raw) {
+  if (!raw.startsWith('---')) return true;
+  return /\n---[ \t]*(?:\r?\n|$)/.test(raw.slice(3));
 }
 
 /**
@@ -78,7 +74,7 @@ const INDEX_NAME = 'MEMORY.md';
 /** Dream changelog file name (beside the memory directory). */
 const CHANGELOG_NAME = '.dream-log.md';
 /** Files the store never treats as topic entries nor lets callers rewrite raw. */
-const RESERVED_FILES = new Set([INDEX_NAME, CHANGELOG_NAME]);
+const RESERVED_FILES = new Set([INDEX_NAME, CHANGELOG_NAME, 'SKILL.md']);
 /** Topic file names accepted from callers: any Unicode letters/digits plus `.`, `_`, `-`. */
 const MEMORY_FILE_RE = /^[\p{L}\p{N}._-]+\.md$/u;
 /** Supported memory types. */
@@ -238,15 +234,26 @@ function stripExtension(file) {
   return file.replace(/\.md$/i, '');
 }
 
-/** Resolve the scope name, accepting only the two supported scopes. */
-function normalizeScope(scope) {
-  if (scope === undefined || scope === null || scope === '') return 'project';
-  if (scope === 'project' || scope === 'user') return scope;
+/**
+ * Content version of a page: the value an editor sends back as `expectedHash`
+ * and the one receipts report. It covers what the page says, not when it was
+ * written, so a no-op save keeps the same version.
+ * @param {{name?:string, description?:string, body?:string}} [page]
+ * @returns {string}
+ */
+export function entryVersion({ name = '', description = '', body = '' } = {}) {
+  const stamp = [String(name), String(description), String(body)].join('\u0000');
+  return createHash('sha256').update(stamp, 'utf8').digest('hex').slice(0, 16);
+}
+
+/** Resolve the scope name. Project is the only scope (Claude Code parity). */
+export function normalizeScope(scope) {
+  if (scope === undefined || scope === null || scope === '' || scope === 'project') return 'project';
   throw memoryError('INVALID_SCOPE', `unknown memory scope: ${String(scope)}`);
 }
 
 /** The type argument of a write, defaulted and validated. */
-function normalizeType(value, fallback = DEFAULT_TYPE) {
+export function normalizeType(value, fallback = DEFAULT_TYPE) {
   const type = cleanInline(value);
   if (type === '') return fallback;
   if (!MEMORY_TYPES.includes(type)) {
@@ -278,9 +285,26 @@ function validateFileName(file) {
 }
 
 /** Build the canonical index line for one entry. */
+/**
+ * One index line. Claude Code's format is `- [Title](file.md) — one-line hook`;
+ * a note without a description is a bare pointer, with no trailing dash.
+ * Hooks longer than ~200 characters are clipped: the index is a pointer, and
+ * the full description stays in the topic file.
+ */
+const INDEX_LINE_MAX_CHARS = 200;
 function indexLine(meta) {
-  return `- [${meta.name}](${meta.file}) — ${meta.description}`;
+  const description = typeof meta.description === 'string' ? meta.description.trim() : '';
+  if (description === '') return `- [${meta.name}](${meta.file})`;
+  const line = `- [${meta.name}](${meta.file}) — ${description}`;
+  if (line.length <= INDEX_LINE_MAX_CHARS) return line;
+  const prefix = `- [${meta.name}](${meta.file}) — `;
+  const room = INDEX_LINE_MAX_CHARS - prefix.length - 1;
+  if (room >= 16) return `${prefix}${description.slice(0, room).trimEnd()}…`;
+  return `${line.slice(0, INDEX_LINE_MAX_CHARS - 1)}…`;
 }
+
+/** A retired page's index line: the name still leads somewhere. */
+const MOVED_TO_RE = /—\s*MOVED TO\s*\[\[[^\]\n]+\]\]/iu;
 
 /** Extract the first Markdown link target of one index line. */
 function referencedFile(line) {
@@ -295,62 +319,32 @@ function isIndexEntryReference(reference) {
 }
 
 /** Marker line used whenever the injected index is shortened. */
-const INDEX_TRUNCATION_MARKER = '<!-- … index truncated for budget; oldest and newest lines kept … -->';
+export const INDEX_TRUNCATION_MARKER =
+  '<!-- … index truncated at the read limit; content past this line is not loaded … -->';
 
 /**
- * Select whole index lines within both budgets. When bytes are the binding
- * limit, keep the oldest head and the newest tail (whole lines only) instead of
- * cutting the file mid-line, which used to hide recent entries.
+ * Claude Code parity: the index is read from the top and everything past the
+ * line or byte limit is dropped, so the first entries are the ones that have to
+ * carry the important notes.
  */
 function selectIndexLinesWithinBudget(lines, maxLines, maxBytes) {
   const markerText = `${INDEX_TRUNCATION_MARKER}\n`;
   const markerBytes = byteLength(markerText);
-  // A marker plus one line is the minimum useful representation.
+  const lineCap = maxLines > 0 ? Math.max(0, maxLines - 1) : lines.length;
   const byteCap = Math.max(0, maxBytes - markerBytes);
-  const tailCap = Math.floor(byteCap * 0.5);
-  const headCap = byteCap - tailCap;
-  const head = [];
-  const tail = [];
-  let headBytes = 0;
-  let tailBytes = 0;
-  // Newest lines first (guarantees the latest entries survive byte pressure).
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
+  const kept = [];
+  let used = 0;
+  for (let i = 0; i < lines.length && kept.length < lineCap; i += 1) {
     const size = byteLength(`${lines[i]}\n`);
-    if (tailBytes + size > tailCap) break;
-    tail.unshift(lines[i]);
-    tailBytes += size;
+    if (used + size > byteCap) break;
+    kept.push(lines[i]);
+    used += size;
   }
-  const headLimit = Math.min(lines.length - tail.length, lines.length);
-  for (let i = 0; i < headLimit; i += 1) {
-    const size = byteLength(`${lines[i]}\n`);
-    if (headBytes + size > headCap) break;
-    head.push(lines[i]);
-    headBytes += size;
+  if (kept.length === 0 && lines.length > 0) {
+    const room = Math.max(0, maxBytes - markerBytes - 1);
+    return [truncateBytes(lines[0], room)];
   }
-  if (tail.length === 0 && lines.length > 0) {
-    // Even the newest line is larger than half the budget: keep a clipped final
-    // line so at least the newest entry is visible.
-    const room = Math.max(0, maxBytes - markerBytes - byteLength('\n'));
-    const clipped = truncateBytes(lines[lines.length - 1], room);
-    return [...head, INDEX_TRUNCATION_MARKER, `${clipped}…`];
-  }
-  let selected = [...head, INDEX_TRUNCATION_MARKER, ...tail];
-  // If byte selection was generous but the line budget is still smaller, keep
-  // a head/tail split rather than dropping the whole tail.
-  if (maxLines > 0 && selected.length > maxLines) {
-    const trailing = Math.max(1, Math.min(lines.length, Math.floor((maxLines - 1) / 2)));
-    const headCount = Math.max(0, maxLines - trailing - 1);
-    let candidate = [...lines.slice(0, headCount), INDEX_TRUNCATION_MARKER, ...lines.slice(-trailing)];
-    // Rebuilding from the original lines can exceed the byte budget; drop the
-    // oldest middle lines first while always keeping the newest tail line.
-    while (byteLength(`${candidate.join('\n')}\n`) > maxBytes && candidate.length > 2) {
-      const markerAt = candidate.indexOf(INDEX_TRUNCATION_MARKER);
-      if (markerAt > 1) candidate = [candidate[0], ...candidate.slice(2)];
-      else break;
-    }
-    selected = candidate;
-  }
-  return selected;
+  return [...kept, INDEX_TRUNCATION_MARKER];
 }
 
 /** Render one project's injected index head within the line/byte budget. */
@@ -418,21 +412,18 @@ function backupTimestamp(name) {
  * One project's memory files and index.
  *
  * @example
- * const store = new MemoryStore({ paths, config });
+ * const store = new MemoryStore({ paths, getConfig: () => config });
  * await store.ensure();
  * await store.saveEntry({ name: 'user_role', type: 'user', description: 'Backend engineer', content: '...' });
  */
 export class MemoryStore {
   /**
-   * @param {{ paths: Record<string, string>, config?: Record<string, any>,
-   *   getConfig?: () => Record<string, any> }} input
-   *   `paths` is the object returned by `src/paths.js`. `config` is a config
-   *   snapshot kept for backward compatibility; when `getConfig` is supplied the
-   *   store reads every setting through it on demand, so runtime toggles
-   *   (`/memory on|off`, `/memory user on|off`, config overrides) take effect in
+   * @param {{ paths: Record<string, string>, getConfig: () => Record<string, any> }} input
+   *   `paths` is the object returned by `src/paths.js`. The store reads every
+   *   setting through `getConfig` on demand, so runtime toggles take effect in
    *   an already-created store without a reload.
    */
-  constructor({ paths, config, getConfig } = {}) {
+  constructor({ paths, getConfig } = {}) {
     if (!paths || typeof paths !== 'object') {
       throw new TypeError('MemoryStore requires a paths object');
     }
@@ -440,10 +431,20 @@ export class MemoryStore {
       throw new TypeError('MemoryStore requires paths.memoryDir');
     }
     this._paths = MemoryStore.resolvePaths(paths);
-    this._config = config && typeof config === 'object' ? config : {};
-    this._getConfig = typeof getConfig === 'function' ? getConfig : null;
+    if (typeof getConfig !== 'function') throw new TypeError('MemoryStore requires getConfig');
+    this._getConfig = getConfig;
     this._tail = Promise.resolve();
     this._ensured = null;
+    // Content cache: one read per file per operation. Entries are validated
+    // with stat (mtime + size) so an edit made outside the store is still
+    // seen, and every write clears the cache (see `_run`).
+    this._contentCache = new Map();
+    // Metadata cache: listing a directory only needs frontmatter, never the
+    // full body. Entries are validated with stat and cleared by writes.
+    this._metaCache = new Map();
+    // Real topic-file reads (cache misses). Exposed as a counter so tests and
+    // the health payload can report how much disk a request actually costs.
+    this.contentReads = 0;
   }
 
   /**
@@ -456,26 +457,18 @@ export class MemoryStore {
     const memoryDir = path.resolve(String(paths.memoryDir));
     const projectDir = paths.projectDir ? path.resolve(String(paths.projectDir)) : path.dirname(memoryDir);
     const root = paths.root ? path.resolve(String(paths.root)) : path.dirname(projectDir);
-    const userMemoryDir = paths.userMemoryDir
-      ? path.resolve(String(paths.userMemoryDir))
-      : path.join(root, 'user', 'memory');
     return {
       ...paths,
       root,
       projectDir,
       memoryDir,
       indexFile: paths.indexFile ? path.resolve(String(paths.indexFile)) : path.join(memoryDir, INDEX_NAME),
-      userMemoryDir,
-      userIndexFile: paths.userIndexFile
-        ? path.resolve(String(paths.userIndexFile))
-        : path.join(userMemoryDir, INDEX_NAME),
       stateFile: paths.stateFile ? path.resolve(String(paths.stateFile)) : path.join(projectDir, '.state.json'),
       lockFile: paths.lockFile ? path.resolve(String(paths.lockFile)) : path.join(projectDir, '.consolidate-lock'),
       changelogFile: paths.changelogFile
         ? path.resolve(String(paths.changelogFile))
         : path.join(projectDir, CHANGELOG_NAME),
       dreamsDir: paths.dreamsDir ? path.resolve(String(paths.dreamsDir)) : path.join(projectDir, '.dreams'),
-      pendingDir: paths.pendingDir ? path.resolve(String(paths.pendingDir)) : path.join(projectDir, '.pending'),
       // v10 cross-process write lock (Lead's paths.writeLockFile when present).
       writeLockFile: paths.writeLockFile
         ? path.resolve(String(paths.writeLockFile))
@@ -488,21 +481,9 @@ export class MemoryStore {
     return this._paths;
   }
 
-  /**
-   * Live plugin config used by this store. With a `getConfig` provider every
-   * read reflects the current runtime config (v12 Bug 1); without one the
-   * frozen constructor snapshot is returned.
-   */
+  /** Live plugin config used by this store. */
   get config() {
-    if (this._getConfig !== null) {
-      try {
-        const current = this._getConfig();
-        if (current && typeof current === 'object') return current;
-      } catch (error) {
-        warn('store config provider', error);
-      }
-    }
-    return this._config;
+    return this._getConfig();
   }
 
   /** Maximum index lines accepted before the warning triggers. */
@@ -517,27 +498,10 @@ export class MemoryStore {
     return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 25 * 1024;
   }
 
-  /** Maximum lines of the independent user-scope index (v9). */
-  get userIndexMaxLines() {
-    const value = Number(this.config.userIndexMaxLines);
-    return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 30;
-  }
-
-  /** Maximum bytes of the independent user-scope index (v9). */
-  get userIndexMaxBytes() {
-    const value = Number(this.config.userIndexMaxBytes);
-    return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 4096;
-  }
-
   /** Maximum bytes of one memory body. */
   get maxContentBytes() {
     const value = Number(this.config.maxContentBytes);
     return Number.isFinite(value) && value > 0 ? Math.trunc(value) : 128 * 1024;
-  }
-
-  /** Whether the cross-project user scope is enabled. */
-  get userScopeEnabled() {
-    return this.config.userMemoryEnabled === true;
   }
 
   /** Whether overwritten memory content is kept under `.history/` (v12). */
@@ -571,44 +535,19 @@ export class MemoryStore {
   // Scope and path helpers
   // ---------------------------------------------------------------------------
 
-  /** Directory that stores the given scope's memory files. */
-  _scopeDir(scope) {
-    return scope === 'user' ? this._paths.userMemoryDir : this._paths.memoryDir;
+  /** Directory that stores this project's memory files. */
+  _scopeDir() {
+    return this._paths.memoryDir;
   }
 
-  /** Index file of the given scope. */
-  _indexFile(scope) {
-    return scope === 'user' ? this._paths.userIndexFile : this._paths.indexFile;
+  /** Index file of this project's memory. */
+  _indexFile() {
+    return this._paths.indexFile;
   }
 
-  /** Index file name of the given scope. */
-  _indexName(scope) {
-    return path.basename(this._indexFile(scope));
-  }
-
-  /**
-   * Read-side scope check: a disabled user scope behaves as if it were empty.
-   * @returns {boolean} whether reads should return an empty value.
-   */
-  _scopeReadable(scope) {
-    if (scope !== 'user') return true;
-    if (this.userScopeEnabled) return true;
-    return false;
-  }
-
-  /** Write-side scope check: a disabled user scope rejects every write. */
-  _assertScopeWritable(scope) {
-    if (scope === 'user' && !this.userScopeEnabled) {
-      throw memoryError('SCOPE_DISABLED', 'user memory scope is disabled (userMemoryEnabled=false)');
-    }
-  }
-
-  /** Read-side path for one entry; a disabled user scope reports NOT_FOUND. */
-  _readableEntry(file, scope) {
-    if (scope === 'user' && !this.userScopeEnabled) {
-      throw memoryError('NOT_FOUND', `user memory scope is disabled: ${String(file)}`);
-    }
-    return this._entryTarget(file, scope);
+  /** Index file name. */
+  _indexName() {
+    return path.basename(this._indexFile());
   }
 
   /** Resolve one validated file name to its absolute target inside the scope. */
@@ -624,7 +563,14 @@ export class MemoryStore {
 
   /** Serialize mutating operations so index read-modify-write cannot interleave. */
   _run(operation) {
-    const locked = () => this._withWriteLock(operation);
+    const locked = async () => {
+      try {
+        return await this._withWriteLock(operation);
+      } finally {
+        this._contentCache.clear();
+        this._metaCache.clear();
+      }
+    };
     const next = this._tail.then(locked, locked);
     this._tail = next.then(
       () => undefined,
@@ -635,24 +581,12 @@ export class MemoryStore {
 
   /**
    * Run one mutating operation under the cross-process write lock (v10).
-   * The lock module is imported lazily; when it is unavailable (older build or
-   * import failure) the operation still runs unlocked so memory writes never
-   * wedge. `ttlMs` tolerates a crashed writer, `waitMs` bounds the contention
-   * wait and the lock module itself degrades to best-effort past that budget.
+   * `ttlMs` tolerates a crashed writer, `waitMs` bounds the contention wait and
+   * the lock module itself degrades to best-effort past that budget.
    * @param {() => Promise<any>} operation
    */
   async _withWriteLock(operation) {
-    const lockFile = this._paths.writeLockFile;
-    if (typeof lockFile !== 'string' || lockFile === '') return operation();
-    let lockModule;
-    try {
-      lockModule = await loadWriteLockModule();
-    } catch (error) {
-      warn('write lock', error);
-      return operation();
-    }
-    if (!lockModule || typeof lockModule.withFileLock !== 'function') return operation();
-    return lockModule.withFileLock(lockFile, operation, {
+    return withFileLock(this._paths.writeLockFile, operation, {
       ttlMs: 30_000,
       waitMs: 2_000,
       onDegrade: (error) => warn('write lock degrade', error),
@@ -667,6 +601,101 @@ export class MemoryStore {
       if (isMissing(error)) return undefined;
       throw error;
     }
+  }
+
+  /**
+   * Read one file through the content cache so a single operation reads each
+   * topic file at most once. The cached copy is reused only while stat still
+   * reports the same mtime and size; any write through this store clears it.
+   * @param {string} file absolute path.
+   * @returns {Promise<string|undefined>} `undefined` when the file is gone.
+   */
+  async _readContent(file) {
+    let info;
+    try {
+      info = await fs.stat(file);
+    } catch (error) {
+      if (isMissing(error)) {
+        this._contentCache.delete(file);
+        return undefined;
+      }
+      throw error;
+    }
+    const cached = this._contentCache.get(file);
+    if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached.raw;
+    let raw;
+    try {
+      raw = await fs.readFile(file, 'utf8');
+    } catch (error) {
+      if (isMissing(error)) {
+        this._contentCache.delete(file);
+        return undefined;
+      }
+      throw error;
+    }
+    this._contentCache.set(file, { mtimeMs: info.mtimeMs, size: info.size, raw });
+    this.contentReads += 1;
+    return raw;
+  }
+
+  /**
+   * Read only the frontmatter head of a topic file. Listing a directory needs
+   * name/description/type, not the body; reading the full file there is the
+   * hot-path waste this method removes.
+   * @param {string} file absolute path.
+   * @param {number} limit maximum bytes to read.
+   * @returns {Promise<string|undefined>}
+   */
+  async _readHead(file, limit = 8192) {
+    let handle;
+    try {
+      handle = await fs.open(file, 'r');
+      const info = await handle.stat();
+      const size = Math.min(limit, info.size);
+      const buffer = Buffer.alloc(size);
+      const { bytesRead } = await handle.read(buffer, 0, size, 0);
+      return buffer.subarray(0, bytesRead).toString('utf8');
+    } catch (error) {
+      if (isMissing(error)) return undefined;
+      throw error;
+    } finally {
+      if (handle) await handle.close().catch(() => {});
+    }
+  }
+
+  /**
+   * Metadata for one topic file, validated by stat. A cache hit costs one stat;
+   * a miss reads only the frontmatter head. Full bodies are read by
+   * `readEntry()` and cached separately.
+   * @param {string} name topic file name.
+   * @param {string} target absolute path.
+   * @returns {Promise<ReturnType<MemoryStore['_entryMeta']>|undefined>}
+   */
+  async _loadMeta(name, target) {
+    let info;
+    try {
+      info = await fs.stat(target);
+    } catch (error) {
+      if (isMissing(error)) {
+        this._metaCache.delete(name);
+        return undefined;
+      }
+      throw error;
+    }
+    const cached = this._metaCache.get(name);
+    if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached.meta;
+    let raw = await this._readHead(target);
+    if (raw === undefined) {
+      this._metaCache.delete(name);
+      return undefined;
+    }
+    if (!hasCompleteFrontmatter(raw) && info.size > raw.length) {
+      raw = (await this._readContent(target)) ?? raw;
+    }
+    const meta = this._entryMeta(name, parseFrontmatter(raw), raw);
+    meta.bytes = info.size;
+    this._metaCache.set(name, { mtimeMs: info.mtimeMs, size: info.size, meta });
+    return meta;
   }
 
   /** Whether a path exists (without following a final symbolic link). */
@@ -734,23 +763,26 @@ export class MemoryStore {
   // ---------------------------------------------------------------------------
 
   /**
-   * Measure index text against the configured budget of one scope.
-   * The user scope has its own independent (smaller) v9 budget.
+   * Measure index text against the configured index budget.
    */
-  _budget(text, scope = 'project') {
+  _budget(text) {
     const lines = countLines(text);
     const bytes = byteLength(text);
-    const maxLines = scope === 'user' ? this.userIndexMaxLines : this.indexMaxLines;
-    const maxBytes = scope === 'user' ? this.userIndexMaxBytes : this.indexMaxBytes;
+    const maxLines = this.indexMaxLines;
+    const maxBytes = this.indexMaxBytes;
     const overflow = lines > maxLines || bytes > maxBytes;
     const budget = { lines, bytes, maxLines, maxBytes, overflow };
     const nearLimit = !overflow && maxLines > 0 && maxBytes > 0
       && (lines / maxLines >= 0.8 || bytes / maxBytes >= 0.8);
     if (nearLimit) budget.nearLimit = true;
     if (overflow) {
-      budget.warning =
-        `index is over budget (${lines} lines/${bytes} bytes) and the injected index will be truncated; ` +
-        'merge related notes with memory_update (delete: true removes one); the human can consolidate from the Memory page (Dry run) or /dream run';
+      // Claude Code parity: the write still succeeds, but the model is told the
+      // index is past its read limit and that everything past it is dropped.
+      budget.error =
+        `MEMORY.md is over its read limit (${lines} lines / ${bytes} bytes; limit ${maxLines} lines / ${maxBytes} bytes). ` +
+        'Everything past the limit is dropped when the index is read. Rewrite it now: one line per note, ' +
+        'move detail into topic files, and merge or drop stale entries.';
+      budget.warning = budget.error;
     } else if (nearLimit) {
       budget.warning =
         `index is nearing budget (${lines}/${maxLines} lines, ${bytes}/${maxBytes} bytes), ` +
@@ -830,23 +862,20 @@ export class MemoryStore {
 
   /**
    * Raw index text of one scope (`''` when the file or scope is absent).
-   * @param {'project'|'user'} [scope]
+   * @param {'project'} [scope]
    * @returns {Promise<string>}
    */
   async indexText(scope = 'project') {
-    const normalized = normalizeScope(scope);
-    if (!this._scopeReadable(normalized)) return '';
-    return (await this._readText(this._indexFile(normalized))) ?? '';
+    normalizeScope(scope);
+    return (await this._readText(this._indexFile())) ?? '';
   }
 
   /**
    * The index head that the prompt receives: the first `maxLines` lines and the
    * first `maxBytes` bytes, whichever is smaller.
    *
-   * The optional second argument overrides the scope budget. Without it the
-   * project scope uses `indexMaxLines/Bytes` and the user scope uses its own
-   * independent `userIndexMaxLines/Bytes` (v9: 30 lines / 4 KiB).
-   * @param {'project'|'user'} [scope]
+   * The optional second argument overrides the index budget.
+   * @param {'project'} [scope]
    * @param {{maxLines?:number, maxBytes?:number}} [budget]
    * @returns {Promise<{text:string,lines:number,bytes:number,truncated:boolean,
    *   overflow:boolean,maxLines:number,maxBytes:number}>}
@@ -856,26 +885,25 @@ export class MemoryStore {
     const limits = budget && typeof budget === 'object' && !Array.isArray(budget) ? budget : {};
     const maxLinesValue = Number(limits.maxLines);
     const maxBytesValue = Number(limits.maxBytes);
-    const fallbackLines = normalized === 'user' ? this.userIndexMaxLines : this.indexMaxLines;
-    const fallbackBytes = normalized === 'user' ? this.userIndexMaxBytes : this.indexMaxBytes;
+    const fallbackLines = this.indexMaxLines;
+    const fallbackBytes = this.indexMaxBytes;
     const maxLines =
       Number.isFinite(maxLinesValue) && maxLinesValue > 0 ? Math.trunc(maxLinesValue) : fallbackLines;
     const maxBytes =
       Number.isFinite(maxBytesValue) && maxBytesValue > 0 ? Math.trunc(maxBytesValue) : fallbackBytes;
-    const text = this._scopeReadable(normalized) ? await this.indexText(normalized) : '';
+    const text = await this.indexText(normalized);
     return buildIndexHead(text, maxLines, maxBytes);
   }
 
   /**
    * Every topic file in one scope, sorted by file name.
-   * @param {'project'|'user'} [scope]
+   * @param {'project'} [scope]
    * @returns {Promise<Array<{file:string,name:string,description:string,type:string,
    *   modified:string,bytes:number,lines:number}>>}
    */
   async listEntries(scope = 'project') {
-    const normalized = normalizeScope(scope);
-    if (!this._scopeReadable(normalized)) return [];
-    const dir = this._scopeDir(normalized);
+    normalizeScope(scope);
+    const dir = this._scopeDir();
     let names;
     try {
       names = await fs.readdir(dir);
@@ -883,19 +911,19 @@ export class MemoryStore {
       if (isMissing(error)) return [];
       throw error;
     }
-    const indexName = this._indexName(normalized);
+    const indexName = this._indexName();
     const entries = [];
     for (const name of names.sort()) {
       if (!MEMORY_FILE_RE.test(name) || name === indexName || RESERVED_FILES.has(name)) continue;
-      let raw;
+      let meta;
       try {
-        raw = await fs.readFile(path.join(dir, name), 'utf8');
+        meta = await this._loadMeta(name, path.join(dir, name));
       } catch (error) {
         if (isMissing(error)) continue;
         continue;
       }
-      const parsed = parseFrontmatter(raw);
-      entries.push(this._entryMeta(name, parsed, raw));
+      if (!meta) continue;
+      entries.push(meta);
     }
     return entries;
   }
@@ -920,17 +948,24 @@ export class MemoryStore {
   /**
    * Read one memory file in full.
    * @param {string} file topic file name.
-   * @param {'project'|'user'} [scope]
+   * @param {'project'} [scope]
    * @returns {Promise<{file:string,scope:string,frontmatter:{name:string,
    *   description:string,type:string,modified:string},body:string,raw:string,bytes:number}>}
    */
   async readEntry(file, scope = 'project') {
     const normalized = normalizeScope(scope);
-    const { name, target } = this._readableEntry(file, normalized);
+    const { name, target } = this._entryTarget(file, normalized);
     await this._assertReadableFile(target, name);
-    const raw = await fs.readFile(target, 'utf8');
+    const raw = await this._readContent(target);
+    if (raw === undefined) throw memoryError('NOT_FOUND', `memory file not found: ${name}`);
     const parsed = parseFrontmatter(raw);
     const meta = this._entryMeta(name, parsed, raw);
+    try {
+      const info = await fs.stat(target);
+      this._metaCache.set(name, { mtimeMs: info.mtimeMs, size: info.size, meta });
+    } catch {
+      // The body read already succeeded; a failed stat only skips the cache.
+    }
     return {
       file: name,
       scope: normalized,
@@ -1111,14 +1146,13 @@ export class MemoryStore {
    * the P0-2 guarantee: two Chinese memory names must not collapse onto the
    * same `user_memory.md`.
    *
-   * @param {{scope?:'project'|'user',name:string,type?:string,description?:string,
+   * @param {{scope?:'project',name:string,type?:string,description?:string,
    *   content?:string}} input
    * @returns {Promise<object>} SaveResult
    */
   saveEntry(input = {}) {
     return this._run(async () => {
       const scope = normalizeScope(input.scope);
-      this._assertScopeWritable(scope);
       const name = normalizeName(input.name);
       if (name === '') {
         throw memoryError('INVALID_NAME', 'memory name must be a non-empty string');
@@ -1156,6 +1190,8 @@ export class MemoryStore {
         type,
         created,
         description,
+        bodyHash: bodyHashOf(body),
+        version: entryVersion({ name, description, body }),
         index,
         ...(scan.warnings.length > 0 ? { warnings: scan.warnings } : {}),
         ...(index.warning === undefined ? {} : { warning: index.warning }),
@@ -1202,17 +1238,12 @@ export class MemoryStore {
   /**
    * Update the body and/or description of an existing memory in place.
    * @param {string} file topic file name.
-   * @param {{scope?:'project'|'user',content?:string,description?:string}} [changes]
+   * @param {{scope?:'project',content?:string,description?:string}} [changes]
    * @returns {Promise<object>} SaveResult
    */
   updateEntry(file, changes = {}) {
     return this._run(async () => {
       const scope = normalizeScope(changes.scope);
-      // A disabled user scope reads as absent, so updating reports NOT_FOUND
-      // (only saveEntry reports SCOPE_DISABLED, per the interface contract).
-      if (scope === 'user' && !this.userScopeEnabled) {
-        throw memoryError('NOT_FOUND', `user memory scope is disabled: ${String(file)}`);
-      }
       const { name, target } = this._entryTarget(file, scope);
       const raw = await this._readText(target);
       if (raw === undefined) throw memoryError('NOT_FOUND', `memory file not found: ${name}`);
@@ -1238,9 +1269,6 @@ export class MemoryStore {
         body,
         existing: parsed.data,
         source: changes.source,
-        // v12: the pending-review approver preserves a legacy file's missing
-        // `created` instead of inventing one at approval time.
-        preserveCreatedAbsence: changes.preserveCreatedAbsence === true,
       });
       // v12: keep the previous version before it is replaced.
       await this._recordHistory(name, raw);
@@ -1257,6 +1285,8 @@ export class MemoryStore {
         type: existing.type,
         created: false,
         description,
+        bodyHash: bodyHashOf(body),
+        version: entryVersion({ name: existing.name, description, body }),
         index,
         ...(scan.warnings.length > 0 ? { warnings: scan.warnings } : {}),
         ...(index.warning === undefined ? {} : { warning: index.warning }),
@@ -1269,14 +1299,11 @@ export class MemoryStore {
    * file (recoverable) and move its index line. Used by memory_update's `name`.
    * @param {string} file old topic file.
    * @param {string} newName new human name; file slug is derived from it.
-   * @param {{scope?:'project'|'user',source?:string}} [options]
+   * @param {{scope?:'project',source?:string}} [options]
    */
   renameEntry(file, newName, options = {}) {
     return this._run(async () => {
       const scope = normalizeScope(options.scope);
-      if (scope === 'user' && !this.userScopeEnabled) {
-        throw memoryError('NOT_FOUND', `user memory scope is disabled: ${String(file)}`);
-      }
       const { name: oldFile, target } = this._entryTarget(file, scope);
       const raw = await this._readText(target);
       if (raw === undefined) throw memoryError('NOT_FOUND', `memory file not found: ${oldFile}`);
@@ -1287,7 +1314,20 @@ export class MemoryStore {
       if (cleanName === '') throw memoryError('INVALID_NAME', 'new name must be a non-empty string');
       const hasBodyChange = options.content !== undefined || options.description !== undefined;
       if (cleanName === existing.name && !hasBodyChange) {
-        return { ok: true, file: oldFile, name: existing.name, type: existing.type, description: existing.description, renamed: false };
+        return {
+          ok: true,
+          file: oldFile,
+          name: existing.name,
+          type: existing.type,
+          description: existing.description,
+          body: parsed.body,
+          version: entryVersion({
+            name: existing.name,
+            description: existing.description,
+            body: parsed.body,
+          }),
+          renamed: false,
+        };
       }
       const newFile = `${existing.type}_${slugify(cleanName)}.md`;
       // A case-only rename points at the same file on Windows; rewrite it in
@@ -1340,6 +1380,12 @@ export class MemoryStore {
         name: cleanName,
         description,
       });
+      // `[[file]]` links point at file names, so a rename would silently break
+      // every page that referenced this one. Rewrite them here, inside the same
+      // write lock, so a link never dangles.
+      const relinked = sameFile
+        ? []
+        : await this._rewriteLinks(scope, stripExtension(oldFile), stripExtension(finalFile));
       return {
         ok: true,
         file: finalFile,
@@ -1347,11 +1393,52 @@ export class MemoryStore {
         name: cleanName,
         type: existing.type,
         description,
+        bodyHash: bodyHashOf(body),
+        version: entryVersion({ name: cleanName, description, body }),
         renamed: true,
         index,
+        ...(relinked.length > 0 ? { relinked } : {}),
         ...(scan.warnings.length > 0 ? { warnings: scan.warnings } : {}),
       };
     });
+  }
+
+  /**
+   * Rewrite `[[oldSlug]]` to `[[newSlug]]` in every page of one scope.
+   * Called while the store write lock is held; returns the changed file names.
+   * @param {'project'} scope
+   * @param {string} oldSlug file name without `.md`
+   * @param {string} newSlug file name without `.md`
+   * @returns {Promise<string[]>}
+   */
+  async _rewriteLinks(scope, oldSlug, newSlug) {
+    if (oldSlug === '' || newSlug === '' || oldSlug === newSlug) return [];
+    const dir = this._scopeDir(scope);
+    let names;
+    try {
+      names = await fs.readdir(dir);
+    } catch (error) {
+      if (isMissing(error)) return [];
+      throw error;
+    }
+    const token = new RegExp(`\\[\\[${oldSlug.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}\\]\\]`, 'gu');
+    const changed = [];
+    for (const name of names.sort()) {
+      if (!MEMORY_FILE_RE.test(name) || RESERVED_FILES.has(name)) continue;
+      const target = path.join(dir, name);
+      let raw;
+      try {
+        raw = await this._readText(target);
+      } catch (error) {
+        if (isMissing(error)) continue;
+        throw error;
+      }
+      if (raw === undefined || !token.test(raw)) continue;
+      token.lastIndex = 0;
+      await this._atomicWrite(target, raw.replace(token, `[[${newSlug}]]`));
+      changed.push(name);
+    }
+    return changed;
   }
 
   /**
@@ -1359,19 +1446,21 @@ export class MemoryStore {
    * Used by the dream engine applying a whole-file plan; the canonical
    * `MEMORY.md` index line is maintained like any other write.
    * @param {string} file topic file name.
-   * @param {{scope?:'project'|'user',type?:string,name?:string,description?:string,
+   * @param {{scope?:'project',type?:string,name?:string,description?:string,
    *   body?:string,content?:string}} [input]
    * @returns {Promise<object>} SaveResult
    */
   writeRawEntry(file, input = {}) {
     return this._run(async () => {
       const scope = normalizeScope(input.scope);
-      this._assertScopeWritable(scope);
       const { name: fileName, target } = this._entryTarget(file, scope);
       if (RESERVED_FILES.has(fileName)) {
         throw memoryError('INVALID_NAME', `reserved memory file: ${fileName}`);
       }
       const existingRaw = await this._readText(target);
+      // Editor baselines: compare under the store's write lock so a page changed
+      // in another window fails here instead of being overwritten.
+      assertExpectedHash(existingRaw, input.expectedHash, fileName);
       const existingData = existingRaw === undefined ? undefined : parseFrontmatter(existingRaw).data;
       const existing = this._frontmatterOf(existingData ?? {}, fileName, {
         fallbackName: stripExtension(fileName),
@@ -1411,6 +1500,8 @@ export class MemoryStore {
         type,
         created,
         description,
+        bodyHash: bodyHashOf(body),
+        version: entryVersion({ name, description, body }),
         index,
         ...(scan.warnings.length > 0 ? { warnings: scan.warnings } : {}),
         ...(index.warning === undefined ? {} : { warning: index.warning }),
@@ -1422,13 +1513,12 @@ export class MemoryStore {
    * Replace one scope's index file with the supplied text.
    * Over-budget text is still written; the returned budget carries the warning.
    * @param {string} text
-   * @param {'project'|'user'} [scope]
+   * @param {'project'} [scope]
    * @returns {Promise<object>} IndexBudget
    */
   writeIndex(text, scope = 'project') {
     return this._run(async () => {
       const normalized = normalizeScope(scope);
-      this._assertScopeWritable(normalized);
       const content = normalizeNewlines(text === undefined || text === null ? '' : String(text));
       const payload = content === '' || content.endsWith('\n') ? content : `${content}\n`;
       return this._writeIndexLocked(normalized, payload);
@@ -1436,43 +1526,16 @@ export class MemoryStore {
   }
 
   /**
-   * Delete one memory file and its index line.
-   * @param {string} file topic file name.
-   * @param {'project'|'user'} [scope]
-   * @returns {Promise<{deleted:boolean,file:string}>}
-   */
-  deleteEntry(file, scope = 'project') {
-    return this._run(async () => {
-      const normalized = normalizeScope(scope);
-      if (normalized === 'user' && !this.userScopeEnabled) {
-        throw memoryError('NOT_FOUND', `user memory scope is disabled: ${String(file)}`);
-      }
-      const { name, target } = this._entryTarget(file, normalized);
-      if (RESERVED_FILES.has(name)) {
-        throw memoryError('INVALID_NAME', `refusing to delete reserved memory file: ${name}`);
-      }
-      if (!(await this._exists(target))) return { deleted: false, file: name };
-      await fs.unlink(target);
-      await this._removeIndexLine(normalized, name);
-      return { deleted: true, file: name };
-    });
-  }
-
-  /**
    * Soft-delete one memory: move the file into `paths.trashRoot/<timestamp>/`
    * and remove its index line. The file stays recoverable, which is why the
-   * dream engine and the `memory_delete` tool use this instead of `deleteEntry`.
-   * `deleteEntry` remains the hard delete for tests and legacy callers.
+   * This is the only delete.
    * @param {string} file topic file name.
-   * @param {{scope?:'project'|'user',reason?:string}} [options]
+   * @param {{scope?:'project',reason?:string}} [options]
    * @returns {Promise<{trashed:true,file:string,trashPath:string,trashDir:string,reason:string}>}
    */
   trashEntry(file, options = {}) {
     return this._run(async () => {
       const normalized = normalizeScope(options.scope);
-      if (normalized === 'user' && !this.userScopeEnabled) {
-        throw memoryError('NOT_FOUND', `user memory scope is disabled: ${String(file)}`);
-      }
       const { name, target } = this._entryTarget(file, normalized);
       if (RESERVED_FILES.has(name)) {
         throw memoryError('INVALID_NAME', `refusing to trash reserved memory file: ${name}`);
@@ -1525,14 +1588,12 @@ export class MemoryStore {
    * Link targets that are not plain `.md` file names (headings, external URLs
    * in a hand-written index) are ignored instead of being reported as dangling.
    *
-   * @param {'project'|'user'} [scope]
+   * @param {'project'} [scope]
    * @returns {Promise<{files:string[],missing:Array<{file:string,name:string,
    *   description:string,type:string}>,dangling:string[]}>}
    */
   async auditIndex(scope = 'project') {
     const normalized = normalizeScope(scope);
-    const empty = { files: [], missing: [], dangling: [] };
-    if (!this._scopeReadable(normalized)) return empty;
     const entries = await this.listEntries(normalized);
     const files = entries.map((entry) => entry.file);
     const disk = new Set(files);
@@ -1561,31 +1622,78 @@ export class MemoryStore {
     return { files, missing, dangling };
   }
 
+  refreshIndex(scope = 'project') {
+    return this.reconcileIndex(normalizeScope(scope));
+  }
+
   /**
    * Repair the index: keep lines whose topic file still exists (in their
    * current order), drop dangling entries and append a canonical index line for
    * every missing topic file (ordered by the file `modified` timestamp).
-   * @param {'project'|'user'} [scope]
+   * @param {'project'} [scope]
    * @returns {Promise<{appended:string[],removed:string[]}>}
    */
   reconcileIndex(scope = 'project') {
     return this._run(async () => {
       const normalized = normalizeScope(scope);
-      this._assertScopeWritable(normalized);
       const audit = await this.auditIndex(normalized);
       const disk = new Set(audit.files);
+      const entries = await this.listEntries(normalized);
+      const byFile = new Map(entries.map((entry) => [entry.file, entry]));
+      const maxLines = Number(this.indexMaxLines) > 0
+        ? Number(this.indexMaxLines)
+        : Number.POSITIVE_INFINITY;
       const lines = splitLines(await this.indexText(normalized));
       const kept = [];
       const removed = [];
+      let pruned = 0;
       for (const line of lines) {
-        const reference = referencedFile(line);
-        if (!isIndexEntryReference(reference) || disk.has(reference)) {
+        // A `MOVED TO` stub points at a file that is gone on purpose.
+        if (MOVED_TO_RE.test(line)) {
           kept.push(line);
           continue;
         }
-        if (!removed.includes(reference)) removed.push(reference);
+        const reference = referencedFile(line);
+        if (!isIndexEntryReference(reference) || !disk.has(reference)) {
+          if (isIndexEntryReference(reference) && !disk.has(reference) && !removed.includes(reference)) {
+            removed.push(reference);
+            pruned += 1;
+          } else {
+            kept.push(line);
+          }
+          continue;
+        }
+        const meta = byFile.get(reference);
+        if (meta === undefined) {
+          kept.push(line);
+          continue;
+        }
+        // A stale/superseded page has no business taking an index slot; the page
+        // stays readable and searchable, it is just no longer advertised.
+        let body;
+        try {
+          body = (await this.readEntry(reference, normalized)).body;
+        } catch {
+          kept.push(line);
+          continue;
+        }
+        if (!isCurrentPage(body)) {
+          removed.push(reference);
+          pruned += 1;
+          continue;
+        }
+        kept.push(line.length > INDEX_LINE_MAX_CHARS ? indexLine(meta) : line);
       }
-      const entries = await this.listEntries(normalized);
+      // Hard line cap: extra entry lines are dropped from the head, not written
+      // into the prompt. The topic files remain on disk and searchable.
+      const isEntryLine = (line) => isIndexEntryReference(referencedFile(line));
+      let entryLines = kept.filter(isEntryLine).length;
+      for (let index = kept.length - 1; index >= 0 && entryLines > maxLines; index -= 1) {
+        if (!isEntryLine(kept[index])) continue;
+        kept.splice(index, 1);
+        entryLines -= 1;
+        pruned += 1;
+      }
       const modifiedByFile = new Map(entries.map((entry) => [entry.file, entry.modified ?? '']));
       const missing = audit.missing.slice().sort((left, right) => {
         const leftAt = modifiedByFile.get(left.file) ?? '';
@@ -1595,12 +1703,31 @@ export class MemoryStore {
       });
       const appended = [];
       for (const meta of missing) {
+        if (entryLines >= maxLines) break;
         kept.push(indexLine(meta));
         appended.push(meta.file);
+        entryLines += 1;
       }
-      const text = kept.length > 0 ? `${kept.join('\n')}\n` : '';
+      // Byte cap: the prompt reads `indexMaxBytes` too. A 200-line index whose
+      // hooks are long enough can silently hide entries past the byte budget,
+      // so prune over-budget entry lines here rather than only warning later.
+      const render = () => (kept.length > 0 ? `${kept.join('\n')}\n` : '');
+      let text = render();
+      while (kept.length > 0 && Buffer.byteLength(text, 'utf8') > this.indexMaxBytes) {
+        let dropAt = -1;
+        for (let index = kept.length - 1; index >= 0; index -= 1) {
+          if (isEntryLine(kept[index])) {
+            dropAt = index;
+            break;
+          }
+        }
+        if (dropAt < 0) dropAt = kept.length - 1;
+        kept.splice(dropAt, 1);
+        pruned += 1;
+        text = render();
+      }
       await this._writeIndexLocked(normalized, text);
-      return { appended, removed };
+      return { appended, removed, pruned };
     });
   }
 
@@ -1618,21 +1745,23 @@ export class MemoryStore {
    * and `offset` pagination and returns 1-2 matched snippets per file.
    *
    * @param {string} query
-   * @param {{scope?:'project'|'user',limit?:number,offset?:number,type?:string}} [options]
+   * @param {{scope?:'project',limit?:number,offset?:number,type?:string,currentOnly?:boolean}} [options]
+   *   `currentOnly` scores and snippets only the current content, leaving
+   *   superseded values out (automatic recall); explicit search keeps them.
    * @returns {Promise<Array<{file:string,name:string,description:string,type:string,
-   *   modified:string,score:number,recency:number,snippets:string[],snippet:string,
+   *   modified:string,score:number,recency:number,snippets:string[],
    *   via:string,created:string}>>}
    */
   async search(query, options = {}) {
     const scope = normalizeScope(options.scope);
     const text = cleanInline(query);
     if (text === '') return [];
-    if (!this._scopeReadable(scope)) return [];
     const limitValue = Number(options.limit);
     const limit = Number.isFinite(limitValue) ? Math.max(1, Math.min(200, Math.trunc(limitValue))) : 20;
     const offsetValue = Number(options.offset);
     const offset = Number.isFinite(offsetValue) ? Math.max(0, Math.trunc(offsetValue)) : 0;
     const typeFilter = MEMORY_TYPES.includes(options.type) ? options.type : '';
+    const currentOnly = options.currentOnly === true;
     const tokens = this._searchTokens(text);
     const phrase = String(text).toLowerCase();
     const now = Date.now();
@@ -1644,12 +1773,16 @@ export class MemoryStore {
       if (typeFilter !== '' && meta.type !== typeFilter) continue;
       let raw;
       try {
-        raw = await fs.readFile(path.join(dir, meta.file), 'utf8');
+        raw = await this._readContent(path.join(dir, meta.file));
       } catch {
         continue;
       }
+      if (raw === undefined) continue;
       const parsed = parseFrontmatter(raw);
-      const body = parsed.body;
+      // Default retrieval is current-only: a retired or superseded page is
+      // history, and history is reachable through an explicit read.
+      if (currentOnly && !isCurrentPage(parsed.body)) continue;
+      const body = currentOnly ? currentBody(parsed.body) : parsed.body;
       const nameText = meta.name.toLowerCase();
       const descriptionText = meta.description.toLowerCase();
       const bodyText = body.toLowerCase();
@@ -1684,8 +1817,6 @@ export class MemoryStore {
           score: rounded,
           recency,
           snippets,
-          // Backward-compatible single snippet for older callers.
-          snippet: snippets[0] ?? meta.description,
         },
       });
     }
@@ -1717,7 +1848,6 @@ export class MemoryStore {
 
   /**
    * Up to two body lines that match the query phrase or one of its tokens.
-   * The first existing snippet is the backward-compatible `snippet` field.
    */
   _snippets(body, tokens, phrase) {
     const snippets = [];
@@ -1736,17 +1866,15 @@ export class MemoryStore {
 
   /**
    * Full status of one scope, for the `memory_status` tool and `/memory json`.
-   * @param {'project'|'user'} [scope]
-   * @returns {Promise<{dir:string,indexFile:string,index:object,entries:object[],
-   *   userScope:{enabled:boolean,dir:string,entries:object[]}}>}
+   * @param {'project'} [scope]
+   * @returns {Promise<{dir:string,indexFile:string,index:object,entries:object[]}>}
    */
   async status(scope = 'project') {
     const normalized = normalizeScope(scope);
     const dir = this._scopeDir(normalized);
     const indexFile = this._indexFile(normalized);
-    const index = this._budget(await this.indexText(normalized), normalized);
+    const index = this._budget(await this.indexText(normalized));
     const entries = await this.listEntries(normalized);
-    const userEntries = this.userScopeEnabled ? await this.listEntries('user') : [];
     return {
       dir,
       indexFile,
@@ -1754,11 +1882,6 @@ export class MemoryStore {
       entries,
       trashRoot: this.trashRoot,
       trashCount: await this.countTrash(),
-      userScope: {
-        enabled: this.userScopeEnabled,
-        dir: this._paths.userMemoryDir,
-        entries: userEntries,
-      },
     };
   }
 

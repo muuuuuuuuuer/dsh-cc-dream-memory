@@ -18,14 +18,10 @@ function configModule() {
   return configModulePromise;
 }
 
-/** Values documented in INTERFACES.md (Lead added refreshIntervalMs later). */
 const DOCUMENTED_DEFAULTS = {
   enabled: true,
   autoMemoryEnabled: true,
   memoryRoot: '',
-  userMemoryEnabled: false,
-  injectIndex: true,
-  injectionMode: 'session',
   indexMaxLines: 200,
   indexMaxBytes: 25 * 1024,
   autoDreamEnabled: false,
@@ -33,25 +29,20 @@ const DOCUMENTED_DEFAULTS = {
   minSessions: 5,
   scanThrottleMs: 10 * 60 * 1000,
   lockTtlMs: 60 * 60 * 1000,
-  dreamMode: 'apply',
-  dreamProvider: '',
-  dreamModel: '',
+  dreamAnalyzerProvider: '',
+  dreamAnalyzerModel: '',
   dreamAllowDelete: true,
-  dreamMaxOps: 40,
   dreamInputMaxChars: 96_000,
-  dreamMaxFileChars: 20_000,
-  dreamMaxSessionChars: 12_000,
+  dreamMaxFileChars: 100_000,
   dreamMaxToolChars: 4_000,
-  sessionLookback: 8,
   tools: true,
   commands: true,
   ui: true,
-  injectSubagents: false,
+  subagentMemory: 'off',
   contextOrder: 850,
   maxContentBytes: 128 * 1024,
-  llmMaxTokens: 16_384,
+  dreamAnalyzerMaxTokens: 8192,
   rulesMaxChars: 8000,
-  refreshIntervalMs: 30_000,
 };
 
 test('resolveConfig() returns the documented defaults and a frozen object', async () => {
@@ -86,9 +77,6 @@ test('valid overrides are preserved verbatim', async () => {
     enabled: false,
     autoMemoryEnabled: false,
     memoryRoot: '~/custom-memory',
-    userMemoryEnabled: true,
-    injectIndex: false,
-    injectionMode: 'live',
     indexMaxLines: 120,
     indexMaxBytes: 4096,
     autoDreamEnabled: true,
@@ -96,24 +84,19 @@ test('valid overrides are preserved verbatim', async () => {
     minSessions: 2,
     scanThrottleMs: 5000,
     lockTtlMs: 60_000,
-    dreamMode: 'review',
-    dreamProvider: 'local',
-    dreamModel: 'small-model',
+      dreamAnalyzerProvider: 'local',
+    dreamAnalyzerModel: 'small-model',
     dreamAllowDelete: true,
-    dreamMaxOps: 7,
-    dreamInputMaxChars: 10_000,
+      dreamInputMaxChars: 10_000,
     dreamMaxFileChars: 15_000,
-    dreamMaxSessionChars: 5000,
-    sessionLookback: 3,
     tools: false,
     commands: false,
     ui: false,
-    injectSubagents: false,
+    subagentMemory: 'shared',
     contextOrder: 100,
     maxContentBytes: 2048,
-    llmMaxTokens: 1024,
+    dreamAnalyzerMaxTokens: 1024,
     rulesMaxChars: 4000,
-    refreshIntervalMs: 10_000,
   };
   const config = resolveConfig(raw);
   for (const [key, expected] of Object.entries(raw)) {
@@ -126,14 +109,11 @@ test('invalid types fall back to defaults', async () => {
   const config = resolveConfig({
     enabled: 'no',
     autoMemoryEnabled: 'no',
-    userMemoryEnabled: 1,
-    injectIndex: null,
-    injectionMode: 'sometimes',
     autoDreamEnabled: 'on',
     tools: 0,
     commands: '',
     ui: null,
-    injectSubagents: 'yes',
+    subagentMemory: 'sometimes',
     dreamAllowDelete: 'yes',
     indexMaxLines: 'many',
     indexMaxBytes: {},
@@ -141,31 +121,23 @@ test('invalid types fall back to defaults', async () => {
     minSessions: Number.NaN,
     scanThrottleMs: undefined,
     lockTtlMs: Number.NaN,
-    dreamMaxOps: 'several',
-    dreamInputMaxChars: null,
+      dreamInputMaxChars: null,
     dreamMaxFileChars: 'lots',
-    dreamMaxSessionChars: {},
-    sessionLookback: {},
     contextOrder: null,
     maxContentBytes: 'huge',
-    llmMaxTokens: [],
+    dreamAnalyzerMaxTokens: [],
     rulesMaxChars: [],
-    refreshIntervalMs: null,
     memoryRoot: 42,
-    dreamMode: 'sometimes',
-    dreamProvider: 7,
-    dreamModel: null,
+      dreamAnalyzerProvider: 7,
+    dreamAnalyzerModel: null,
   });
   assert.equal(config.enabled, true, 'enabled (invalid string) falls back to default true');
   assert.equal(config.autoMemoryEnabled, true, 'autoMemoryEnabled (invalid string) falls back to default true');
-  assert.equal(config.userMemoryEnabled, false);
-  assert.equal(config.injectIndex, true);
-  assert.equal(config.injectionMode, 'session', 'invalid injectionMode falls back to session');
   assert.equal(config.autoDreamEnabled, false);
   assert.equal(config.tools, true);
   assert.equal(config.commands, true);
   assert.equal(config.ui, true);
-  assert.equal(config.injectSubagents, false, 'invalid injectSubagents falls back to false');
+  assert.equal(config.subagentMemory, 'off', 'invalid subagentMemory falls back to off');
   assert.equal(config.dreamAllowDelete, true, 'v11 flips dreamAllowDelete on by default');
   assert.equal(config.indexMaxLines, 200);
   assert.equal(config.indexMaxBytes, 25 * 1024);
@@ -173,21 +145,16 @@ test('invalid types fall back to defaults', async () => {
   assert.equal(config.minSessions, 5);
   assert.equal(config.scanThrottleMs, 600_000);
   assert.equal(config.lockTtlMs, 3_600_000);
-  assert.equal(config.dreamMaxOps, 40);
   assert.equal(config.dreamInputMaxChars, 96_000);
-  assert.equal(config.dreamMaxFileChars, 20_000);
-  assert.equal(config.dreamMaxSessionChars, 12_000);
+  assert.equal(config.dreamMaxFileChars, 100_000);
   assert.equal(config.dreamMaxToolChars, 4_000);
-  assert.equal(config.sessionLookback, 8);
   assert.equal(config.contextOrder, 850);
   assert.equal(config.maxContentBytes, 128 * 1024);
-  assert.equal(config.llmMaxTokens, 16_384);
+  assert.equal(config.dreamAnalyzerMaxTokens, 8192);
   assert.equal(config.rulesMaxChars, 8000);
-  assert.equal(config.refreshIntervalMs, 30_000);
   assert.equal(config.memoryRoot, '');
-  assert.equal(config.dreamMode, 'apply', 'invalid dreamMode falls back to apply');
-  assert.equal(config.dreamProvider, '');
-  assert.equal(config.dreamModel, '');
+  assert.equal(config.dreamAnalyzerProvider, '');
+  assert.equal(config.dreamAnalyzerModel, '');
 });
 
 test('numeric fields are clamped into sane ranges and truncated to integers', async () => {
@@ -199,15 +166,11 @@ test('numeric fields are clamped into sane ranges and truncated to integers', as
     minSessions: 0,
     scanThrottleMs: 10,
     lockTtlMs: 1000,
-    dreamMaxOps: 0,
     dreamInputMaxChars: 10,
     dreamMaxFileChars: 10,
-    dreamMaxSessionChars: 10,
-    sessionLookback: -3,
     contextOrder: -1,
     maxContentBytes: 1,
-    llmMaxTokens: 1,
-    refreshIntervalMs: 1,
+    dreamAnalyzerMaxTokens: 1,
   });
   const lowerBounds = {
     indexMaxLines: 1,
@@ -216,15 +179,11 @@ test('numeric fields are clamped into sane ranges and truncated to integers', as
     minSessions: 1,
     scanThrottleMs: 1000,
     lockTtlMs: 60_000,
-    dreamMaxOps: 1,
     dreamInputMaxChars: 4096,
     dreamMaxFileChars: 1000,
-    dreamMaxSessionChars: 800,
-    sessionLookback: 0,
     contextOrder: 0,
     maxContentBytes: 1024,
-    llmMaxTokens: 256,
-    refreshIntervalMs: 5000,
+    dreamAnalyzerMaxTokens: 512,
   };
   for (const [key, min] of Object.entries(lowerBounds)) {
     assert.equal(Number.isInteger(low[key]), true, `${key} must be an integer after clamping`);
@@ -233,35 +192,28 @@ test('numeric fields are clamped into sane ranges and truncated to integers', as
 
   const high = resolveConfig({
     indexMaxLines: 1_000_000,
-    dreamMaxOps: 99_999,
-    sessionLookback: 99_999,
     dreamMaxFileChars: 9_999_999,
-    dreamMaxSessionChars: 9_999_999,
   });
   assert.ok(high.indexMaxLines <= 100_000, 'indexMaxLines must be clamped down');
-  assert.ok(high.dreamMaxOps <= 500, 'dreamMaxOps must be clamped down');
-  assert.ok(high.sessionLookback <= 100, 'sessionLookback must be clamped down');
   assert.ok(high.dreamMaxFileChars <= 500_000, 'dreamMaxFileChars must be clamped down');
-  assert.ok(high.dreamMaxSessionChars <= 100_000, 'dreamMaxSessionChars must be clamped down');
 
-  const fractional = resolveConfig({ indexMaxLines: 12.9, dreamMaxOps: 5.8 });
+  const fractional = resolveConfig({ indexMaxLines: 12.9 });
   assert.equal(fractional.indexMaxLines, 12, 'indexMaxLines truncates to integer');
-  assert.equal(fractional.dreamMaxOps, 5, 'dreamMaxOps truncates to integer');
 });
 
-test('dreamProvider and dreamModel only take effect as a pair', async () => {
+test('dreamAnalyzerProvider and dreamAnalyzerModel only take effect as a pair', async () => {
   const { resolveConfig } = await configModule();
-  const providerOnly = resolveConfig({ dreamProvider: 'local', dreamModel: '' });
-  assert.equal(providerOnly.dreamProvider, '');
-  assert.equal(providerOnly.dreamModel, '');
+  const providerOnly = resolveConfig({ dreamAnalyzerProvider: 'local', dreamAnalyzerModel: '' });
+  assert.equal(providerOnly.dreamAnalyzerProvider, '');
+  assert.equal(providerOnly.dreamAnalyzerModel, '');
 
-  const modelOnly = resolveConfig({ dreamProvider: '', dreamModel: 'small' });
-  assert.equal(modelOnly.dreamProvider, '');
-  assert.equal(modelOnly.dreamModel, '');
+  const modelOnly = resolveConfig({ dreamAnalyzerProvider: '', dreamAnalyzerModel: 'small' });
+  assert.equal(modelOnly.dreamAnalyzerProvider, '');
+  assert.equal(modelOnly.dreamAnalyzerModel, '');
 
-  const pair = resolveConfig({ dreamProvider: '  local  ', dreamModel: '  small  ' });
-  assert.equal(pair.dreamProvider, 'local', 'dreamProvider is trimmed');
-  assert.equal(pair.dreamModel, 'small', 'dreamModel is trimmed');
+  const pair = resolveConfig({ dreamAnalyzerProvider: '  local  ', dreamAnalyzerModel: '  small  ' });
+  assert.equal(pair.dreamAnalyzerProvider, 'local', 'dreamAnalyzerProvider is trimmed');
+  assert.equal(pair.dreamAnalyzerModel, 'small', 'dreamAnalyzerModel is trimmed');
 });
 
 test('memoryRoot is trimmed', async () => {
@@ -269,14 +221,65 @@ test('memoryRoot is trimmed', async () => {
   assert.equal(resolveConfig({ memoryRoot: '  ~/mem  ' }).memoryRoot, '~/mem');
 });
 
-test('injectionMode and injectSubagents accept only documented values', async () => {
+test('subagentMemory accepts only documented values', async () => {
   const { resolveConfig } = await configModule();
-  assert.equal(resolveConfig().injectionMode, 'session', 'injection defaults to frozen session mode');
-  assert.equal(resolveConfig({ injectionMode: 'live' }).injectionMode, 'live');
-  assert.equal(resolveConfig({ injectionMode: 'LIVE' }).injectionMode, 'session', 'injectionMode is case-sensitive');
-  assert.equal(resolveConfig({ injectionMode: 'always' }).injectionMode, 'session', 'unknown mode falls back to session');
+  assert.equal(resolveConfig().subagentMemory, 'off', 'subagents are isolated by default');
+  assert.equal(resolveConfig({ subagentMemory: 'shared' }).subagentMemory, 'shared');
+  assert.equal(resolveConfig({ subagentMemory: 'own' }).subagentMemory, 'own');
+  assert.equal(resolveConfig({ subagentMemory: 'sometimes' }).subagentMemory, 'off', 'invalid mode falls back to off');
+});
 
-  assert.equal(resolveConfig().injectSubagents, false, 'subagent sessions are not injected by default');
-  assert.equal(resolveConfig({ injectSubagents: false }).injectSubagents, false);
-  assert.equal(resolveConfig({ injectSubagents: 'no' }).injectSubagents, false, 'invalid flag falls back to false');
+test('recallMode is model or off, with no legacy boolean', async () => {
+  const { resolveConfig } = await configModule();
+  assert.equal(resolveConfig().recallMode, 'model', 'new configs get the per-turn selector');
+  assert.equal(resolveConfig({ recallMode: 'lexical' }).recallMode, 'model', 'lexical is gone and falls back to model');
+  assert.equal(resolveConfig({ recallMode: 'bogus' }).recallMode, 'model', 'unknown mode falls back to model');
+  assert.equal(resolveConfig({ recallMode: 'off' }).recallMode, 'off');
+  assert.equal(resolveConfig({ autoRecall: false }).recallMode, 'model', 'the old boolean is ignored');
+  assert.equal(Object.prototype.hasOwnProperty.call(resolveConfig(), 'autoRecall'), false, 'autoRecall is not exposed');
+});
+
+test('CLAUDE_CODE_DISABLE_AUTO_MEMORY turns recall off whatever the config says', async () => {
+  const { resolveConfig } = await configModule();
+  const config = resolveConfig({ recallMode: 'model' }, { env: { CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' } });
+  assert.equal(config.autoMemoryEnabled, false);
+  assert.equal(config.recallMode, 'off');
+});
+
+test('autoExtract and subagent memory are opt-in', async () => {
+  const { resolveConfig } = await configModule();
+  const config = resolveConfig();
+  assert.equal(config.autoExtract, false);
+  assert.equal(config.autoExtractEveryTurns, 3);
+  assert.equal(config.subagentMemory, 'off');
+  assert.deepEqual(config.agentMemoryPresets, []);
+  const custom = resolveConfig({
+    autoExtract: true,
+    autoExtractEveryTurns: 5,
+    subagentMemory: 'own',
+    agentMemoryPresets: [' reviewer ', '', 7],
+  });
+  assert.equal(custom.autoExtract, true);
+  assert.equal(custom.autoExtractEveryTurns, 5);
+  assert.equal(custom.subagentMemory, 'own');
+  assert.deepEqual(custom.agentMemoryPresets, ['reviewer']);
+});
+
+test('legacy Dream model settings normalize to one analyzer pair', async () => {
+  const { resolveConfig } = await configModule();
+  const legacy = { dreamProvider: 'old-provider', dreamModel: 'old-model' };
+  const migrated = resolveConfig({ ...legacy, dreamAnalyzerProvider: 'partial' });
+  assert.equal(migrated.dreamAnalyzerProvider, 'old-provider');
+  assert.equal(migrated.dreamAnalyzerModel, 'old-model');
+  assert.equal(Object.hasOwn(migrated, 'dreamProvider'), false);
+  assert.equal(Object.hasOwn(migrated, 'dreamModel'), false);
+  assert.equal(Object.hasOwn(migrated, 'llmMaxTokens'), false);
+
+  const current = resolveConfig({
+    ...legacy,
+    dreamAnalyzerProvider: 'current-provider',
+    dreamAnalyzerModel: 'current-model',
+  });
+  assert.equal(current.dreamAnalyzerProvider, 'current-provider');
+  assert.equal(current.dreamAnalyzerModel, 'current-model');
 });

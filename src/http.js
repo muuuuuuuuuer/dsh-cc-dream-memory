@@ -4,8 +4,9 @@
  * The client view must not execute slash commands for every refresh: command
  * runs are appended to the session log and the Trajectory view renders each one
  * as a `memory · …` row. This module exposes the same operations over a
- * loopback HTTP route authenticated with a per-process random token injected
- * into the application index. Nothing here writes session events.
+ * loopback HTTP route authenticated with a per-process random token. The page
+ * gets the token from `GET /api/cc-memory/bridge` (loopback only). Nothing here
+ * writes session events.
  *
  * All project-facing reads and mutations go through `src/status.js` so the HTTP
  * payload and the `/memory json` payload share one implementation.
@@ -161,13 +162,24 @@ function readBody(req) {
 export function createHttpHandler({ runtime, token }) {
   const service = createStatusService(runtime);
 
-  /** Resolve one project context for the request. */
+  /**
+   * Resolve one project context for the request.
+   *
+   * An explicit session id that this process cannot map is a hard error: a
+   * stale page must never be served by, or write into, whichever project
+   * happens to be loaded. Only a request that names no session may fall back
+   * to the single loaded project.
+   */
   async function resolveProject(sessionId) {
-    if (typeof sessionId === 'string' && sessionId !== '') {
-      const projectContext = await runtime.forSessionId(sessionId);
+    const explicit = typeof sessionId === 'string' ? sessionId.trim() : '';
+    if (explicit !== '') {
+      const projectContext = await runtime.forSessionId(explicit);
       if (projectContext) return projectContext;
+      throw Object.assign(new Error(`session ${explicit} is not loaded in this process`), {
+        code: 'UNKNOWN_SESSION',
+      });
     }
-    const projects = typeof runtime.projects === 'function' ? runtime.projects() : [];
+    const projects = runtime.projects();
     if (projects.length === 1) return projects[0];
     return undefined;
   }
@@ -210,8 +222,11 @@ export function createHttpHandler({ runtime, token }) {
         agent: projectContext.agent,
         sessionId: body.sessionId,
         action,
-        indexes: body.indexes,
+        runId: typeof body.runId === 'string' ? body.runId : '',
         focus: body.focus,
+        noSessions: body.noSessions === true,
+        inputId: typeof body.inputId === 'string' ? body.inputId : '',
+        inputRanges: Array.isArray(body.inputRanges) ? body.inputRanges : null,
         trigger: 'manual',
         reason: 'web ui',
       });
@@ -239,12 +254,11 @@ export function createHttpHandler({ runtime, token }) {
       });
     }
     const remoteAddress = req.socket?.remoteAddress;
-    // Bridge discovery: the Web UI may start before the index injection reaches
-    // it (desktop boot caches rows; a page can be older than a plugin reload).
-    // The page fetches this once to obtain the same {base, token} the Host would
-    // have injected. The explicit Host check above prevents DNS rebinding from
-    // exposing the token even when a hostile hostname resolves to loopback.
-    // The token still guards every data call; remote peers are rejected below.
+    // Token handout: the only way the page learns {base, token}. It works for a
+    // page of any age (desktop boot caches index rows; a page can be older than
+    // a plugin reload). The explicit Host check above prevents DNS rebinding from
+    // exposing the token even when a hostile hostname resolves to loopback, and
+    // remote peers are refused here and on every data call.
     if (url.pathname === `${API_PREFIX}/bridge`) {
       if ((req.method ?? 'GET').toUpperCase() !== 'GET') {
         return sendJson(res, 405, { ok: false, error: 'method-not-allowed' });
@@ -312,9 +326,8 @@ export function createHttpHandler({ runtime, token }) {
         const projectContext = await resolveProject(url.searchParams.get('sessionId') ?? undefined);
         if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
         const file = url.searchParams.get('file') ?? '';
-        const scope = (url.searchParams.get('scope') ?? 'project').toLowerCase();
         try {
-          return sendJson(res, 200, { ok: true, ...(await service.file(projectContext, file, scope)) });
+          return sendJson(res, 200, { ok: true, ...(await service.file(projectContext, file)) });
         } catch (error) {
           return sendJson(res, 200, {
             ok: false,
@@ -362,7 +375,7 @@ export function createHttpHandler({ runtime, token }) {
             limit: url.searchParams.get('limit') ?? undefined,
             offset: url.searchParams.get('offset') ?? undefined,
             type: url.searchParams.get('type') ?? undefined,
-            scope: url.searchParams.get('scope') ?? undefined,
+            history: url.searchParams.get('history') === '1' || url.searchParams.get('history') === 'true',
           });
           return sendJson(res, 200, { ok: true, items: result.items, total: result.total });
         } catch (error) {
@@ -404,6 +417,33 @@ export function createHttpHandler({ runtime, token }) {
           return sendCoded(res, error, 'no-toggle-field');
         }
       }
+      if (route === '/inbox' && method === 'GET') {
+        const projectContext = await resolveProject(url.searchParams.get('sessionId') ?? undefined);
+        if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
+        try {
+          return sendJson(res, 200, await service.inbox(projectContext, { action: 'list' }));
+        } catch (error) {
+          return sendCoded(res, error, 'inbox-failed');
+        }
+      }
+      if (route === '/inbox' && method === 'POST') {
+        const body = await readBody(req);
+        const projectContext = await resolveProject(body.sessionId);
+        if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
+        try {
+          return sendJson(
+            res,
+            200,
+            await service.inbox(projectContext, {
+              action: typeof body.action === 'string' ? body.action : 'list',
+              id: typeof body.id === 'string' ? body.id : '',
+              agent: projectContext.agent,
+            }),
+          );
+        } catch (error) {
+          return sendCoded(res, error, 'inbox-failed');
+        }
+      }
       if (route === '/rules' && method === 'POST') {
         const body = await readBody(req);
         const projectContext = await resolveProject(body.sessionId);
@@ -425,7 +465,7 @@ export function createHttpHandler({ runtime, token }) {
         const projectContext = await resolveProject(body.sessionId);
         if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
         try {
-          const result = await service.deleteFile(projectContext, body.file, body.scope);
+          const result = await service.deleteFile(projectContext, body.file);
           return sendJson(res, 200, { ok: true, ...result });
         } catch (error) {
           return sendCoded(res, error, 'DELETE_FAILED');
@@ -457,54 +497,6 @@ export function createHttpHandler({ runtime, token }) {
           trend: report.trend,
           quality: report.quality,
         });
-      }
-      if (route === '/pending-writes' && method === 'GET') {
-        const projectContext = await resolveProject(url.searchParams.get('sessionId') ?? undefined);
-        if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
-        return sendJson(res, 200, { ok: true, ...(await service.pendingWrites(projectContext)) });
-      }
-      if (route === '/pending-writes' && method === 'POST') {
-        const body = await readBody(req);
-        const projectContext = await resolveProject(body.sessionId);
-        if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
-        const action = String(body.action ?? '').toLowerCase();
-        try {
-          if (action === 'approve') {
-            const result = await service.approveWrite(projectContext, body.id, { sessionId: body.sessionId });
-            return sendJson(res, 200, { ok: true, ...result });
-          }
-          if (action === 'reject') {
-            const result = await service.rejectWrite(projectContext, body.id, body.reason);
-            return sendJson(res, 200, { ok: true, ...result });
-          }
-          return sendJson(res, 400, {
-            ok: false,
-            error: 'unknown-action',
-            message: 'action must be "approve" or "reject"',
-          });
-        } catch (error) {
-          return sendCoded(res, error, 'pending-write-failed');
-        }
-      }
-      if (route === '/session-live' && method === 'POST') {
-        const body = await readBody(req);
-        const sessionId = typeof body.sessionId === 'string' ? body.sessionId.trim() : '';
-        if (sessionId === '') {
-          return sendJson(res, 400, { ok: false, error: 'invalid-session', message: 'sessionId is required' });
-        }
-        if (typeof runtime.setSessionMode !== 'function') {
-          return sendJson(res, 200, {
-            ok: false,
-            error: 'not-ready',
-            message: 'per-session live mode is not available in this build',
-          });
-        }
-        try {
-          const mode = runtime.setSessionMode(sessionId, body.live === true ? 'live' : 'auto');
-          return sendJson(res, 200, { ok: true, session: { live: mode === 'live', mode } });
-        } catch (error) {
-          return sendCoded(res, error, 'session-live-failed');
-        }
       }
       if (route === '/restore' && method === 'POST') {
         const body = await readBody(req);
@@ -538,6 +530,13 @@ export function createHttpHandler({ runtime, token }) {
       if (code === 'BODY_TOO_LARGE') {
         return sendJson(res, 413, { ok: false, error: 'body-too-large', message: 'request body exceeds 256 KiB' });
       }
+      if (code === 'UNKNOWN_SESSION') {
+        return sendJson(res, 400, {
+          ok: false,
+          error: 'unknown-session',
+          message: 'the request names a session that is not loaded; reopen the project and try again',
+        });
+      }
       return sendJson(res, 500, {
         ok: false,
         error: code !== '' ? code : 'internal',
@@ -554,69 +553,17 @@ export function createHttpHandler({ runtime, token }) {
  * @returns {() => void} disposer.
  */
 export function registerHttpApi(ctx, runtime) {
-  if (typeof ctx.inject === 'function') {
-    const fiber = ctx.inject(['webServer'], (webCtx) => {
-      const dispose = mountHttpApi(webCtx, runtime);
-      webCtx.effect(() => dispose, 'cc-memory: http api');
-    });
-    return () => fiber?.dispose?.();
-  }
-  return mountHttpApi(ctx, runtime);
+  const fiber = ctx.inject(['webServer'], (webCtx) => {
+    const dispose = mountHttpApi(webCtx.get('webServer'), runtime);
+    webCtx.effect(() => dispose, 'cc-memory: http api');
+  });
+  return () => fiber?.dispose?.();
 }
 
-function mountHttpApi(ctx, runtime) {
-  let server;
-  try {
-    server = typeof ctx.get === 'function' ? ctx.get('webServer') : undefined;
-  } catch {
-    server = undefined;
-  }
-  if (!server || typeof server.register !== 'function') {
-    // eslint-disable-next-line no-console
-    console.warn('[cc-memory] webServer is unavailable; the Web UI falls back to command mode');
-    return function dispose() {};
-  }
+function mountHttpApi(server, runtime) {
   const token = loadOrCreateApiToken(path.join(path.dirname(runtime.overrideFile), '.api-token'));
   const handler = createHttpHandler({ runtime, token });
   const disposers = [];
-  // Structured index injection: the same row feeds the served web index and the
-  // desktop shell (Electron collects rows and applies kind:'global' before the
-  // app boots). Only an owner Peer gets the token — liveshare viewers must
-  // never receive the memory API credential.
-  try {
-    const isOwnerPeer = (peer) => {
-      if (!peer || typeof peer !== 'object') return false;
-      if (peer.owner === true) return true;
-      const principal = peer.principal;
-      return Boolean(principal && typeof principal === 'object' && principal.kind === 'owner');
-    };
-    const stopIndexInject =
-      typeof ctx.on === 'function'
-        ? ctx.on('webserver/index-inject', (table, peer) => {
-            try {
-              if (!Array.isArray(table) || !isOwnerPeer(peer)) return;
-              table.push({
-                kind: 'global',
-                name: '__CC_MEMORY_API__',
-                value: { base: API_PREFIX, token },
-              });
-            } catch (error) {
-              // eslint-disable-next-line no-console
-              console.warn('[cc-memory] index injection failed:', error?.message ?? error);
-            }
-          })
-        : undefined;
-    if (typeof stopIndexInject === 'function') disposers.push(stopIndexInject);
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.warn('[cc-memory] failed to register index injection:', error?.message ?? error);
-  }
-  // Older builds wrote a diagnostic log through tapIndex; remove it on upgrade.
-  try {
-    fsSync.rmSync(path.join(path.dirname(runtime.overrideFile), '.api-tap.log'), { force: true });
-  } catch {
-    /* optional cleanup */
-  }
   disposers.push(
     server.register({
       kind: 'prefix',

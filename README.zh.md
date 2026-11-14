@@ -34,6 +34,8 @@
 
 ## 安装
 
+**GitHub v0.20.0** 可用下方指定 GitHub 标签的命令安装。npm 命令安装的是 npm 上已发布的版本。
+
 需要 Node 22 或更新版本，以及 DeepSeek Harness 0.2.2-rc.1 或更新版本。
 
 ```bash
@@ -51,7 +53,7 @@ npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
 也可以直接从 GitHub 安装：
 
 ```bash
-dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
+dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.20.0
 ```
 
 ## Dream
@@ -62,7 +64,7 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
   <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/dream-before-after.png" width="860" alt="Dream 前后的记忆列表。之前五条，有两条重复，部署和冻结信息已过时。之后四条，重复项已合并，信息已更正，并加入了交接格式。">
 </p>
 
-你可以只应用其中一部分，一条命令就能撤销整次 Dream。
+截图展示的是旧版界面。当前 Dream 生成一份副本，审阅后可切换或丢弃，一条命令就能撤销切换。
 
 ## 界面
 
@@ -77,7 +79,7 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
     <td width="50%" valign="top">
       <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/dream-plan.png" alt="Dream 方案，列出六项可勾选的改动，其中一项展开显示新内容">
       <br>
-      <b>Dream。</b>点开任何一处改动查看内容，只应用你认可的。
+      <b>Dream。</b>审阅副本中的改动，再决定是否切换。
     </td>
     <td width="50%" valign="top">
       <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/settings.png" alt="设置页，有记忆和自动 Dream 的开关，以及可编辑的记忆规则">
@@ -97,14 +99,9 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
 
 **记忆能带过来。** 记忆是纯 Markdown，目录结构和 Claude Code 兼容：一个 `MEMORY.md` 索引，加上每个主题一个文件。已有 Claude Code 记忆的话，用 `/memory import` 就能导入。每个文件都能直接用编辑器打开。
 
-**Dream 给出来源。** Dream 读完整会话，不抽样。每条新事实都要引用对话原文，插件在会话记录里找不到这段引用，这处改动就会被丢弃。`/memory dream preview` 会打印这些引用：
+**Dream 给出来源。** Dream 分块读取会话，每条新事实都须引用对话原文。被推翻的旧值留在笔记历史中。
 
-```text
-[2] write feedback_handoff_notes.md (changed)
-    quote: "For handoff notes I want the conclusion first, then risks, with no headings."
-```
-
-**改了也能退回。** Dream 只提出方案，由你挑选要应用的改动。应用前会先备份，删除的记忆进回收目录，一条命令就能撤销整次 Dream。自动 Dream 默认关闭，要你自己打开。
+**切换后仍可撤销。** Dream 先生成副本，切换时备份当前记忆。自动 Dream 默认关闭。
 
 ## 上手
 
@@ -116,19 +113,21 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
    /remember --type=project Release notes live in docs/releases.md
    ```
 
-2. 新建一个会话。`MEMORY.md` 索引只加载一次，在这个会话里保持不变。消息明显涉及某条记忆时，插件会把它附到这一步。
+2. 新建一个会话。模型收到一份 `MEMORY.md` 开头的快照，默认最多 200 行或 25 KB。会话压缩、配置或规则变更、`/memory refresh` 会重建快照。每轮由模型选择相关记忆，其他主题按需读取。
 
-3. 积累几个会话后生成方案。这一步不会改动任何文件：
+3. 启动后台 Dream。命令返回运行 ID，Dream 把结果写入副本。
 
    ```text
-   /memory dream run --dry-run
-   /memory dream preview
+   /memory dream run
+   /memory dream status <runId>
    ```
 
-4. 应用你认可的改动，改主意了就撤销：
+   长会话按顺序分块分析。`/memory dream cancel` 停止运行并保留已完成的分块，`/memory dream resume` 继续未完成的部分。`/memory dream run --wait` 等待运行结束。
+
+4. 审阅后切换到副本，需要时可以撤销。
 
    ```text
-   /memory dream apply-ops 0,2
+   /memory dream switch
    /memory dream undo
    ```
 
@@ -146,10 +145,10 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
 
 | | 本插件 |
 |---|---|
-| 整理方式 | 插件校验并应用 JSON 方案，有备份，可撤销 |
+| 整理方式 | 插件校验并生成副本，支持切换、丢弃和撤销 |
 | Dream 写入的新事实 | 必须引用会话原文 |
 | 自动 Dream | 默认关闭 |
-| 召回 | 按名称和描述做词面匹配，不调用模型 |
+| 召回 | 模型根据笔记元数据选择候选 |
 | 子代理 | 默认不注入记忆 |
 
 ## 适合你吗
@@ -158,15 +157,15 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
 
 这些情况可以看看别的插件：
 
-- **需要向量检索或托管的记忆服务。** 本插件都没有。召回是词面匹配，换个说法可能就找不到。`@openviking/dsh-memory-plugin`、`@honcho-ai/dsh-honcho` 和 `dsh-tdai-memory` 走的是其他路线。
-- **每次写入都要审批。** `dsh-memento` 就是围绕这一点设计的。本插件的普通写入是自动的，只有不确定的才进待审队列；`writeMode: confirm` 可以让所有写入都排队。
+- **需要向量检索或托管的记忆服务。** 本插件都没有。模型按笔记元数据选择候选，可能漏召回。`@openviking/dsh-memory-plugin`、`@honcho-ai/dsh-honcho` 和 `dsh-tdai-memory` 走的是其他路线。
+- **每次写入都要审批。** Inbox 提供自动抽取的提案审阅，普通记忆写入直接经过写入策略。
 
 ## 你的数据
 
 - 记忆保存在你自己的机器上，位于 `$DSH_HOME/cc-memory/`。插件没有遥测。
 - 记忆内容会随正常提示词发给你的模型服务。
 - Dream 会把会话文本和记忆发给你配置的模型服务。虚构的三个短会话演示用了 6,500 到 11,000 tokens；一次真实项目批次记录为 **149,984 总 tokens、约 263 秒**，随后应用了两次记忆写入和一次索引更新。两者工作量不同，不能当作典型成本。见[脱敏汇总](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/REAL-WORKSPACE-OBSERVATIONS-2026-11-09.md)。
-- dry-run 也会调用模型并消耗 tokens。付费运行前可用 `/memory dream estimate`，或查看界面启动 Dream 时显示的输入估算；单独估算不调用模型。实际总用量可能高于粗略输入估算。`dreamMaxTotalTokens: 0` 表示不限；需要成本保护时，请配置明确的预算和 `dreamCostMode: block`。
+- 运行 Dream 会调用模型。启动前可用 `/memory dream estimate`，或查看界面启动 Dream 时显示的输入估算；单独估算不调用模型。实际总用量可能高于粗略输入估算。`dreamMaxTotalTokens: 0` 表示不限；需要成本保护时，请配置明确的预算和 `dreamCostMode: block`。
 - 符合常见密钥格式的写入会被拒绝。这是启发式检查，不能保证拦住所有密钥。详见 [SECURITY.md](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/SECURITY.md)。
 
 ## 现状

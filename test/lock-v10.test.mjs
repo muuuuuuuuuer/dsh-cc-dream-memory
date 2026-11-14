@@ -110,7 +110,7 @@ test('v10 lock: paths expose writeLockFile and interleaved store writes keep the
   assert.ok(path.isAbsolute(env.paths.writeLockFile));
 
   // Two store instances over the same memory dir (simulates two sessions).
-  const second = new env.mods.store.MemoryStore({ paths: env.paths, config: env.config });
+  const second = new env.mods.store.MemoryStore({ paths: env.paths, getConfig: () => env.config });
   await second.ensure();
   const saves = [];
   for (let index = 0; index < 10; index += 1) {

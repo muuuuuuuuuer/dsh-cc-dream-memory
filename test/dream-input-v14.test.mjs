@@ -102,7 +102,7 @@ test('dream input: processed-session watermark skips old events and re-reads onl
   const input = await gatherDreamInput({
     ctx: { get: (name) => (name === 'sessionQuery' ? sessionQuery : undefined) },
     store,
-    config: { dreamMaxSessionChars: 12000, dreamMaxFileChars: 20000, sessionLookback: 8 },
+    config: { dreamMaxFileChars: 20000 },
     workspaceDir: 'C:/workspace',
     state,
   });
@@ -111,6 +111,7 @@ test('dream input: processed-session watermark skips old events and re-reads onl
   assert.equal(input.skippedSessions.includes('processed-old'), true);
   assert.equal(input.skippedSessions.includes('probe'), true);
   const active = input.sessions.find((session) => session.id === 'active-processed');
-  assert.ok(active.excerpt.includes('new active text after watermark'), 'incremental read starts after processed seq');
-  assert.equal(active.excerpt.includes('old already read'), false);
+  const activeText = active.chunks.map((chunk) => chunk.text).join('\n');
+  assert.ok(activeText.includes('new active text after watermark'), 'incremental read starts after processed seq');
+  assert.equal(activeText.includes('old already read'), false);
 });

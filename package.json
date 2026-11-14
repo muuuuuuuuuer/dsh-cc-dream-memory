@@ -1,6 +1,6 @@
 {
   "name": "dsh-cc-dream-memory",
-  "version": "0.12.0",
+  "version": "0.20.0",
   "type": "module",
   "description": "Claude Code-style auto memory and reviewable Dream consolidation for DeepSeek Harness. Community plugin, not affiliated with Anthropic.",
   "icon": "icon.svg",
@@ -32,8 +32,7 @@
       "immediately": true,
       "inject": [
         "@deepseek-ai/dsh-client-ui-conversation",
-        "@deepseek-ai/dsh-client-locale",
-        "@deepseek-ai/dsh-api-remotes"
+        "@deepseek-ai/dsh-client-locale"
       ]
     },
     "catalog": {

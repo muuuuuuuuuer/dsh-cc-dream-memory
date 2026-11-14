@@ -4,28 +4,23 @@ import { Readable } from 'node:stream';
 import { readFile } from 'node:fs/promises';
 import { registerHttpApi } from '../src/http.js';
 import { fakeRes, runtimeEnv, exists } from './v10-helpers.mjs';
+import { injectNow } from './helpers.mjs';
 
 /** Exercise the route mounted on the host, with a real isolated runtime/store. */
 async function registeredApi(t) {
   const env = await runtimeEnv(t);
   let route;
-  const listeners = new Map();
-  const dispose = registerHttpApi({
+  const ctx = {
     get: (name) => name === 'webServer' ? {
       register(definition) {
         route = definition;
         return () => {};
       },
     } : undefined,
-    on(event, listener) {
-      listeners.set(event, listener);
-      return () => listeners.delete(event);
-    },
-  }, env.runtime);
+  };
+  ctx.inject = injectNow(ctx);
+  const dispose = registerHttpApi(ctx, env.runtime);
   t.after(dispose);
-  const rows = [];
-  listeners.get('webserver/index-inject')(rows, { principal: { kind: 'owner' } });
-  const { token } = rows.find((row) => row.name === '__CC_MEMORY_API__').value;
 
   async function request({
     method = 'GET', path = '/bridge', host = '127.0.0.1:61784', origin,
@@ -54,6 +49,7 @@ async function registeredApi(t) {
     await complete;
     return res;
   }
+  const token = (await request()).json().token;
   return { ...env, token, request };
 }
 

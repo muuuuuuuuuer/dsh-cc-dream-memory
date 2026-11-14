@@ -2,6 +2,7 @@
  * v12 Bug 5: runtime.bySession must not leak disposed agent sessions.
  * Contract `docs/superpowers/specs/2026-11-08-v12-review-fixes.md` Bug 5.
  */
+import { withCordis } from './helpers.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
@@ -61,7 +62,7 @@ function fakeHost({ workspaceDir }) {
 }
 
 function makeAgent(id) {
-  return { id, ctx: { systemPrompt: { context: () => () => {} } } };
+  return { id, ctx: withCordis({ systemPrompt: { context: () => () => {} } }) };
 }
 
 async function leakEnv(t) {
@@ -121,5 +122,4 @@ test('v12 session-leak: bySession has an LRU cap and forgetSession removes all m
   const victim = `cap-agent-${cap + 39}`;
   env.runtime.forgetSession(victim);
   assert.equal(env.runtime.bySession.has(victim), false, 'forgetSession removes the session entry');
-  assert.equal(typeof env.runtime.sessionMode(victim), 'string', 'sessionMode falls back after forget');
 });

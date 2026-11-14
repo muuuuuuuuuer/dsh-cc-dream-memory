@@ -13,6 +13,8 @@
  *
  * Everything uses fake Host contexts and os.tmpdir() memory roots.
  */
+import { injectNow } from './helpers.mjs';
+import { withCordis } from './helpers.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -138,6 +140,7 @@ function trackingHost(services = {}) {
       };
     },
   };
+  host.inject = injectNow(host);
   return { host, records, services };
 }
 
@@ -168,7 +171,7 @@ function makeAgent(records, id) {
   const agent = {
     id,
     contextCalls: calls,
-    ctx: {
+    ctx: withCordis({
       systemPrompt: {
         context(options) {
           records.promptRegistrations.push({ agentId: id, options });
@@ -178,7 +181,7 @@ function makeAgent(records, id) {
           };
         },
       },
-    },
+    }),
   };
   return agent;
 }
@@ -431,15 +434,26 @@ test('v6: HTTP API rejects cross-origin mutations with 403 bad-origin, GET unaff
 // 3. Stable API token (persisted to <memoryRoot>/.api-token)
 // ---------------------------------------------------------------------------
 
-function extractTokenFromIndex(html) {
-  const match = /window\.__CC_MEMORY_API__=(\{.*?\});<\/script>/.exec(String(html ?? ''));
-  if (!match) return '';
-  try {
-    const parsed = JSON.parse(match[1]);
-    return typeof parsed.token === 'string' ? parsed.token : '';
-  } catch {
-    return '';
-  }
+/** GET /bridge through one registered route handler; resolves to the token it hands out. */
+async function bridgeToken(registration) {
+  const req = Readable.from([]);
+  req.method = 'GET';
+  req.url = `${registration.path}/bridge`;
+  req.headers = { host: '127.0.0.1:61784' };
+  req.rawHeaders = ['Host', '127.0.0.1:61784'];
+  req.socket = { remoteAddress: '127.0.0.1' };
+  const res = fakeRes();
+  const done = new Promise((resolve) => {
+    const end = res.end;
+    res.end = function (chunk) {
+      end.call(this, chunk);
+      resolve();
+      return this;
+    };
+  });
+  registration.handler(req, res);
+  await done;
+  return res.json().token;
 }
 
 test('v6: API token persists in <memoryRoot>/.api-token across plugin reloads', async (t) => {
@@ -470,25 +484,10 @@ test('v6: API token persists in <memoryRoot>/.api-token across plugin reloads', 
   const persisted = (await readFile(tokenFile, 'utf8')).trim();
   assert.match(persisted, /^[A-Za-z0-9_-]{24,}$/, 'the persisted token must be a base64url string');
 
-  // v11: the bridge is a webserver/index-inject listener instead of tapIndex.
-  const ownerListeners = [...(records.listeners.get('webserver/index-inject') ?? [])];
-  assert.equal(ownerListeners.length, 2, 'both registrations must register an index-inject listener');
-  const injectedTokens = ownerListeners.map((listener) => {
-    const rows = [];
-    listener(rows, { principal: { kind: 'owner' } });
-    const row = rows.find((item) => item && item.name === '__CC_MEMORY_API__');
-    assert.ok(row, 'an owner peer receives the API row');
-    assert.equal(row.kind, 'global');
-    assert.equal(row.value.base, '/api/cc-memory');
-    return row.value.token;
-  });
-  assert.equal(injectedTokens[0], injectedTokens[1], 'reloading the plugin must not rotate the token');
-  assert.equal(injectedTokens[0], persisted, 'each registration must serve the persisted token');
-
-  const viewerRows = [];
-  ownerListeners[0](viewerRows, { principal: { kind: 'share-viewer' } });
-  assert.equal(viewerRows.some((item) => item.name === '__CC_MEMORY_API__'), false, 'non-owner peers get no token row');
   assert.equal(registrations.length, 2, 'the API route is registered once per load');
+  const tokens = await Promise.all(registrations.map(bridgeToken));
+  assert.equal(tokens[0], tokens[1], 'reloading the plugin must not rotate the token');
+  assert.equal(tokens[0], persisted, 'each registration must serve the persisted token');
 
   if (typeof disposeFirst === 'function') disposeFirst();
   if (typeof disposeSecond === 'function') disposeSecond();
@@ -498,7 +497,7 @@ test('v6: API token persists in <memoryRoot>/.api-token across plugin reloads', 
 // 4. Rules audit log
 // ---------------------------------------------------------------------------
 
-test('v6: saveRules/resetRules append audit lines with scope/source/bytes/sha256', async (t) => {
+test('v6: saving and clearing rules append audit lines with scope/source/bytes/sha256', async (t) => {
   const env = await makeEnv(t);
   const { host, services } = trackingHost();
   services.workingDirectory = { ensure: async () => env.workspaceDir };
@@ -517,9 +516,9 @@ test('v6: saveRules/resetRules append audit lines with scope/source/bytes/sha256
   const digest = createHash('sha256').update(text).digest('hex').slice(0, 16);
   assert.match(firstLine, new RegExp(`sha256=${digest}`), 'audit sha256 must hash the saved rules text');
 
-  await runtime.resetRules(pctx, 'project');
+  await runtime.saveRules(pctx, 'project', '');
   const lines = (await readFile(logFile, 'utf8')).trim().split(/\r?\n/);
-  assert.equal(lines.length, 2, 'resetRules must append a second audit line');
+  assert.equal(lines.length, 2, 'clearing the rules must append a second audit line');
   assert.match(lines[1], /scope=project/);
   assert.match(lines[1], /source=api/);
   assert.match(lines[1], /bytes=0/, 'reset records an empty rules payload');
@@ -592,7 +591,7 @@ test('v6: unresolved working directory yields no-project and never writes proces
 test('v6: store.search matches Chinese queries without spaces (single char + bigram)', async (t) => {
   const env = await makeEnv(t);
   const paths = env.mods.paths.buildPaths({ memoryRoot: env.memoryRoot, workspaceDir: env.workspaceDir });
-  const store = new env.mods.store.MemoryStore({ paths, config: env.config });
+  const store = new env.mods.store.MemoryStore({ paths, getConfig: () => env.config });
   await store.ensure();
   await store.saveEntry({
     name: 'project-preference',
@@ -621,10 +620,7 @@ test('v6: store.search matches Chinese queries without spaces (single char + big
 
 test('v6: client.js has bridge/token banners with reload + markdown rendering, locale keys synced', async () => {
   const client = await readFile(path.join(PLUGIN_ROOT, 'client.js'), 'utf8');
-  // v4 UI keys: the missing bridge is `banner.apiMissing` (read-only commands
-  // fallback) or `banner.noBackend`; global switches are labelled by
-  // `settings.switchesHint` ("these apply to every project").
-  const keys = ['banner.apiMissing', 'banner.noBackend', 'banner.tokenExpired', 'btn.reload', 'settings.switchesHint'];
+  const keys = ['banner.noBackend', 'banner.tokenExpired', 'btn.reload', 'settings.switchesHint'];
   for (const needle of [...keys, 'renderMarkdown']) {
     assert.equal(client.includes(needle), true, `client.js must reference ${needle}`);
   }
@@ -636,11 +632,11 @@ test('v6: client.js has bridge/token banners with reload + markdown rendering, l
   assert.equal(reloadBlock.includes('btn.reload'), true, 'the reload button must be labelled');
 
   const bannersIndex = client.indexOf('// ---- banners');
-  assert.notEqual(bannersIndex, -1, 'client.js must keep the degraded-mode banner branch');
+  assert.notEqual(bannersIndex, -1, 'client.js must keep the connection error banner branch');
   const bannersBlock = client.slice(bannersIndex, bannersIndex + 1500);
-  assert.equal(bannersBlock.includes('banner.apiMissing'), true, 'a banner must explain a missing bridge');
+  assert.equal(bannersBlock.includes('banner.noBackend'), true, 'a banner must explain a missing bridge');
   assert.equal(bannersBlock.includes('banner.tokenExpired'), true, 'a banner must explain a rotated token');
-  assert.equal(bannersBlock.includes('reloadButton(t)'), true, 'degraded banners must offer a reload button');
+  assert.equal(bannersBlock.includes('reloadButton(t)'), true, 'connection error banners must offer a reload button');
 
   for (const localeName of ['en', 'zh']) {
     const localePath = path.join(PLUGIN_ROOT, 'locale', `${localeName}.json`);

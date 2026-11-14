@@ -13,6 +13,7 @@
  *
  * Everything runs against fake Host contexts and os.tmpdir() memory roots.
  */
+import { withCordis } from './helpers.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
@@ -159,9 +160,10 @@ function commandsService(records) {
 }
 
 function makeAgent(records, id, { withPrompt = true } = {}) {
-  const agent = { id, ctx: {} };
+  const services = {};
+  const agent = { id, ctx: withCordis(services) };
   if (withPrompt) {
-    agent.ctx.systemPrompt = {
+    services.systemPrompt = {
       context(options) {
         records.promptRegistrations.push({ agentId: id, options });
         return () => {
@@ -205,10 +207,11 @@ test('v5: apply() mounts with only the hard services and degrades the rest', asy
   });
   t.after(() => disposeEffects(records));
 
+  const names = records.tools.map((definition) => definition.name).sort();
   assert.deepEqual(
-    records.tools.map((definition) => definition.name).sort(),
+    names.filter((name) => name.startsWith('memory_')),
     [...TOOL_NAMES].sort(),
-    'all 4 memory tools must register while the tools service is available',
+    'the four memory tools must register while the tools service is available',
   );
   assert.equal(records.commands.length, 0, 'no commands service => /memory commands are not registered (no throw)');
   assert.ok(pendingListenerCount(records) > 0, 'prompt injection must still register its listeners');
@@ -243,7 +246,7 @@ test('v5: a missing systemPrompt degrades injection without throwing', async (t)
   });
   t.after(() => disposeEffects(records));
 
-  assert.equal(records.tools.length, 4, 'tools must still mount');
+  assert.equal(records.tools.length, 4, 'the memory tools must still mount');
   assert.equal(records.promptRegistrations.length, 0, 'agents without systemPrompt get no injection context');
   assert.equal(
     warnings.some((warning) => /systemPrompt|agent context/i.test(warning)),
@@ -479,11 +482,11 @@ test('v5: unknown config keys are ignored; DATA_SCHEMA exists', async (t) => {
     memoryRoot: env.memoryRoot,
     unknownFutureKey: 'ignored',
     anotherOne: 42,
-    injectionMode: 'live',
+    minHours: 7,
   });
   assert.equal(Object.prototype.hasOwnProperty.call(withUnknown, 'unknownFutureKey'), false);
   assert.equal(Object.prototype.hasOwnProperty.call(withUnknown, 'anotherOne'), false);
-  assert.equal(withUnknown.injectionMode, 'live', 'known keys still apply next to unknown ones');
+  assert.equal(withUnknown.minHours, 7, 'known keys still apply next to unknown ones');
   assert.deepEqual(
     env.mods.config.resolveConfig({ memoryRoot: env.memoryRoot, unknownFutureKey: 'ignored' }),
     env.mods.config.resolveConfig({ memoryRoot: env.memoryRoot }),
@@ -519,8 +522,8 @@ test('v5: corrupt state / override / rules data degrade to defaults without thro
   assert.doesNotThrow(() => {
     rules = runtime.rulesFor(pctx);
   });
-  assert.equal(rules.source, 'default', 'unreadable project rules fall back to defaults');
-  assert.ok(rules.text.length > 0);
+  assert.equal(rules.source, 'default', 'unreadable project rules fall back to no rules at all');
+  assert.equal(rules.text, '', 'the built-in behaviour manual is gone');
 });
 
 // ---------------------------------------------------------------------------

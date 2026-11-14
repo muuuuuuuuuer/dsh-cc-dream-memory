@@ -7,11 +7,11 @@
  * - duplicate is a hard block at `policyDuplicateThreshold`;
  * - possible-duplicate is **advisory** (v11): the write proceeds and the caller
  *   reports the near-duplicate candidates;
- * - conflict is **advisory** in this evaluator; model-originated tools use
- *   write-review to queue same-topic, opposite-polarity clauses for review;
- * - low-confidence is only an explicit `confidence:'low'` or
- *   `writeMode:'confirm'` (v11 removed the short-body / invalid-type heuristics
- *   so ordinary preference notes are never queued).
+ * - conflict is **advisory** in this evaluator; the tools stop a write that
+ *   adds a second, opposite active fact and report the rest;
+ * - low-confidence is only an explicit `confidence:'low'`, reported back;
+ * - attribution (`basis`, v21): only `user-explicit` authority with verified
+ *   evidence marks a note current; `forwarded`/`inference` are written plainly.
  *
  * `evaluateWrite` never writes anything; callers (the tools) act on the action.
  *
@@ -166,7 +166,6 @@ function normalizeCandidate(candidate) {
     description: typeof value.description === 'string' ? value.description : '',
     content: body,
     confidence: value.confidence === 'low' ? 'low' : 'high',
-    scope: value.scope === 'user' ? 'user' : 'project',
   };
 }
 
@@ -309,6 +308,26 @@ function entityOverlap(left, right) {
   return shared / Math.min(left.size, right.size);
 }
 
+// ---------------------------------------------------------------------------
+// v21: write attribution (`basis`)
+// ---------------------------------------------------------------------------
+
+/** Explicit authority for one model-originated memory write. */
+export const BASIS_VALUES = Object.freeze(['user-explicit', 'forwarded', 'inference']);
+
+/**
+ * Normalize a model-supplied `basis` value.
+ *
+ * An unrecognized value normalizes to `''`, which the tools reject.
+ * @param {unknown} value
+ * @returns {'user-explicit'|'forwarded'|'inference'|''}
+ */
+export function normalizeBasis(value) {
+  if (typeof value !== 'string') return '';
+  const basis = value.trim().toLowerCase();
+  return BASIS_VALUES.includes(basis) ? basis : '';
+}
+
 /**
  * Detect a same-topic, opposite-polarity conflict.
  * @param {object} candidate `{name, type, description, content|body}`
@@ -337,33 +356,13 @@ export function detectConflict(candidate, entries) {
 }
 
 /**
- * Reasons a write is not confident enough to apply automatically (v11).
- * Only two signals queue a write for human review: an explicit
- * `confidence:'low'` and `writeMode:'confirm'`. Ordinary preference notes,
- * short bodies and missing descriptions are written directly — the earlier
- * body-length/type/description heuristics made normal model writes get queued.
- * @param {object} normalized candidate from `normalizeCandidate`
- * @param {object} config resolved plugin config
- * @returns {string[]}
- */
-function lowConfidenceReasons(normalized, config) {
-  const reasons = [];
-  if (config.writeMode === 'confirm') {
-    reasons.push('writeMode is confirm: every write needs review');
-  }
-  if (normalized.confidence === 'low') reasons.push('confidence is low');
-  return reasons;
-}
-
-/**
  * Evaluate one candidate write against the existing memory (v11 advisory
  * policy).
  *
- * Only a `duplicate` (similarity ≥ duplicateThreshold) blocks the write.
- * `conflict` and `possible-duplicate` are advisory return values. Tool callers
- * use write-review to queue conflicts independently of the duplicate score;
- * possible duplicates may still be written with advisory fields. Low-confidence
- * (`confidence:'low'` or `writeMode:'confirm'`) also requires review.
+ * A `duplicate` and an opposite-polarity `conflict` stop the write: the caller
+ * updates the owning page instead of adding a second active fact. Everything
+ * else (`possible-duplicate`, low confidence) is advisory only — the caller
+ * writes and reports it.
  *
  * Return shapes:
  * - `{action:'allow'}`
@@ -374,7 +373,9 @@ function lowConfidenceReasons(normalized, config) {
  * - `{action:'possible-duplicate', advisory:true,
  *    candidates:[{file,similarity,name,description}], conflicts:[],
  *    similarity}`
- * - `{action:'low-confidence', reasons}`
+ *
+ * A low-confidence candidate is written like any other; its reason travels in
+ * `reasons` so the receipt can mention it.
  *
  * @param {{candidate:object, entries?:object[], config?:object}} input
  * @returns {object}
@@ -388,11 +389,10 @@ export function evaluateWrite(input = {}) {
     (entry) => entry && typeof entry === 'object' && typeof entry.file === 'string' && entry.file !== '',
   );
 
-  // Low confidence queues the write instead of advising on it. v12 Bug 2:
-  // `writeMode:'confirm'` must win over every other outcome — even an exact
-  // duplicate is queued (and force cannot bypass it), never silently blocked.
-  const lowReasons = lowConfidenceReasons(candidate, config);
-  if (lowReasons.length > 0) return { action: 'low-confidence', reasons: lowReasons };
+  // v24, Claude Code parity: nothing queues a write. A low-confidence
+  // candidate is written and the reason is reported (advisory), exactly like a
+  // near-duplicate.
+  const reasons = candidate.confidence === 'low' ? ['confidence is low'] : [];
 
   // Hard block: an almost identical memory already exists.
   const scored = entries
@@ -405,6 +405,7 @@ export function evaluateWrite(input = {}) {
       advisory: false,
       existingFile: best.entry.file,
       similarity: round3(best.similarity),
+      reasons,
     };
   }
 
@@ -435,13 +436,9 @@ export function evaluateWrite(input = {}) {
       advisory: true,
       conflicts,
       candidates,
-      // Backward-compatible single-target fields for older callers/UI.
-      ...(primary === null
-        ? {}
-        : { existingFile: primary.file, reason: primary.reason }),
-      similarity: candidates.length > 0 ? candidates[0].similarity : undefined,
+      reasons,
     };
   }
 
-  return { action: 'allow', advisory: false };
+  return { action: 'allow', advisory: reasons.length > 0, reasons };
 }

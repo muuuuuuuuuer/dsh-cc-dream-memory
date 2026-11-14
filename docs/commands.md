@@ -7,7 +7,8 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 | Command | What it does |
 |---|---|
 | `/remember [--type=user\|feedback\|project\|reference] [--scope=project\|user] <text>` | Save one note |
-| `/memory` | Show status: entries, index size, Dream state and health |
+| `/memory` | Show status: entries, index size, recall mode, auto-extract and Inbox state, per-agent policy, Dream state and health |
+| `/memory status` | Same as bare `/memory` |
 | `/memory list` | List memories |
 | `/memory show <file>` | Show one memory |
 | `/memory search <query>` | Search names, descriptions and bodies |
@@ -22,18 +23,27 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 
 | Command | What it does |
 |---|---|
-| `/memory dream run --dry-run` | Make a plan without changing anything |
-| `/memory dream run --dry-run --focus "<topic>"` | Prefer one topic in this round |
-| `/memory dream preview` | Show the plan's operations and the quotes behind new statements |
-| `/memory dream apply` | Apply the whole plan |
-| `/memory dream apply-ops 0,2` | Apply only the numbered operations |
-| `/memory dream reject` | Discard a proposal |
-| `/memory dream undo` | Undo the most recent Dream |
+| `/memory dream run` | Start a background run; it writes a cleaned-up copy of your memory under `.dreams/shadow/` and leaves the real notes untouched; `/memory dream status [runId]` shows progress, `cancel`/`resume` stop and continue it |
+| `/memory dream run --focus "<topic>"` | Prefer one topic in this round |
+| `/memory dream switch` | Switch to the copy Dream wrote (backed up first; `undo` returns) |
+| `/memory dream discard` | Throw the copy away and keep memory exactly as it is |
+| `/memory dream undo` | Undo the most recent switch (only the notes that switch touched) |
 | `/memory dream history` | List past Dreams |
 | `/memory dream status` | Show what a Dream would read and whether one is ready |
 | `/memory dream estimate [--focus "<topic>"]` | Estimate input tokens without calling the model or changing memory; actual total can be higher |
 | `/memory dream on` | Turn on automatic Dreams. They are off by default |
 | `/memory dream off` | Turn automatic Dreams off |
+
+## Inbox (auto-extract)
+
+`autoExtract` is off by default. When enabled, every proposal is staged in `<projectDir>/inbox/` until you accept it; accepting applies the `memory_save` gates. There is no direct-write mode.
+
+| Command | What it does |
+|---|---|
+| `/memory inbox list` | List pending proposals |
+| `/memory inbox show <id>` | Show one proposal as JSON |
+| `/memory inbox accept <id>` | Apply the proposal through `memory_save`; the file is removed only when every item succeeds |
+| `/memory inbox discard <id>` | Delete a proposal without writing memory |
 
 ## Moving memories
 
@@ -46,9 +56,6 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 
 | Command | What it does |
 |---|---|
-| `/memory writes` | List writes waiting for review |
-| `/memory approve <id>` | Approve a waiting write |
-| `/memory reject <id>` | Reject a waiting write |
 | `/memory history <file>` | List earlier versions of a memory |
 | `/memory backups` | List the backups taken before Dreams |
 | `/memory trash` | List deleted memories |

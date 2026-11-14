@@ -87,12 +87,12 @@ test('v18 gather: recent user messages survive tool-heavy sampling and stay orde
   const input = await gatherDreamInput({
     ctx: { get: (name) => (name === 'sessionQuery' ? sessionQuery : undefined) },
     store,
-    config: { dreamInputMaxChars: 12000, dreamMaxSessionChars: 1200, dreamMaxToolChars: 300, dreamMaxFileChars: 20000, sessionLookback: 8 },
+    config: { dreamInputMaxChars: 12000, dreamMaxToolChars: 300, dreamMaxFileChars: 20000 },
     workspaceDir: 'C:/workspace',
     state,
   });
   assert.equal(input.sessions.length, 1);
-  const excerpt = input.sessions[0].excerpt;
+  const excerpt = input.sessions[0].chunks.map((chunk) => chunk.text).join('\n');
   const users = ["第 7 轮", "第 8 轮", "第 9 轮", "第 10 轮", "第 11 轮"];
   for (const needle of users) assert.ok(excerpt.includes(`[user] ${needle}`), `recent user message missing: ${needle}`);
   assert.ok(excerpt.indexOf('第 7 轮') < excerpt.indexOf('第 8 轮'));
@@ -115,12 +115,13 @@ test('v18 gather: corpus fallback sessions are tracked and not re-read after sta
     },
   };
   const store = { indexText: async () => '', listEntries: async () => [] };
-  const config = { dreamInputMaxChars: 12000, dreamMaxSessionChars: 12000, dreamMaxToolChars: 4000, dreamMaxFileChars: 20000, sessionLookback: 8 };
+  const config = { dreamInputMaxChars: 12000, dreamMaxToolChars: 4000, dreamMaxFileChars: 20000 };
   const ctx = { get: (name) => (name === 'sessionQuery' ? sessionQuery : undefined) };
   const first = await gatherDreamInput({ ctx, store, config, workspaceDir: 'C:/workspace', state: env.state });
   assert.deepEqual(first.sessions.map((session) => session.id), ['corpus-1', 'corpus-2']);
   assert.deepEqual(env.state.snapshot().sessionsSince, [], 'gathering alone must not touch state');
-  await env.state.clearSessions(first.sessions.map((session) => session.id), { reads: first.reads });
+  const reads = first.sessions.map((session) => ({ id: session.id, seq: session.maxSeq, complete: true }));
+  await env.state.clearSessions(first.sessions.map((session) => session.id), { reads });
   const reloaded = new env.mods.state.ProjectState(env.paths);
   await reloaded.load();
   const processed = reloaded.snapshot().dreamProcessedSessions;

@@ -81,13 +81,11 @@ function worktreeMainRoot(worktreeDir) {
         return path.basename(common) === '.git' ? path.dirname(common) : common;
       }
     }
-    if (path.basename(gitDir) === '.git') return path.dirname(gitDir);
-    // `--separate-git-dir` (and submodule) checkouts point at a real git dir.
-    if (fs.existsSync(path.join(gitDir, 'HEAD'))) return gitDir;
-    // Legacy fallback for worktree paths without a readable commondir.
-    const normalized = gitDir.replace(/\\/g, '/');
-    const at = normalized.toLowerCase().lastIndexOf('/.git/worktrees/');
-    if (at >= 0) return normalizeDriveLetter(path.normalize(normalized.slice(0, at)));
+    // A separate git dir or submodule has its own HEAD. Use the same identity
+    // rule as a common dir so its linked worktrees agree with the main checkout.
+    if (fs.existsSync(path.join(gitDir, 'HEAD'))) {
+      return path.basename(gitDir) === '.git' ? path.dirname(gitDir) : gitDir;
+    }
     return worktreeDir;
   } catch {
     return worktreeDir;
@@ -144,11 +142,39 @@ export function resolveMemoryRoot(memoryRoot = '', homeDir = '') {
 }
 
 /**
+ * The files of one memory directory owner (a project, or a delegated agent's
+ * private memory under `agents/<preset>/`). Plugin metadata lives beside the
+ * memory directory so `memory/` keeps only human-readable notes, exactly like
+ * Claude Code's layout.
+ * @param {string} projectDir
+ */
+export function projectLayout(projectDir) {
+  const memoryDir = path.join(projectDir, 'memory');
+  return {
+    projectDir,
+    memoryDir,
+    indexFile: path.join(memoryDir, 'MEMORY.md'),
+    // Dream v2 run artifacts: one folder per pass, with analysis JSON and manifests.
+    runsDir: path.join(projectDir, 'runs'),
+    stateFile: path.join(projectDir, '.state.json'),
+    lockFile: path.join(projectDir, '.consolidate-lock'),
+    writeLockFile: path.join(projectDir, '.write.lock'),
+    changelogFile: path.join(projectDir, '.dream-log.md'),
+    dreamsDir: path.join(projectDir, '.dreams'),
+    trashRoot: path.join(projectDir, '.trash'),
+    projectRulesFile: path.join(projectDir, 'memory-rules.md'),
+    rulesLogFile: path.join(projectDir, '.memory-rules.log'),
+    // v8 effect metrics: one JSON document plus a cross-process write lock.
+    metricsFile: path.join(projectDir, '.metrics.json'),
+    metricsLockFile: path.join(projectDir, '.metrics.lock'),
+  };
+}
+
+/**
  * Build every absolute path this plugin uses for one project.
  * @param {{memoryRoot?: string, homeDir?: string, workspaceDir: string, projectId?: string}} input
- * @returns {{root:string, userMemoryDir:string, userIndexFile:string, projectRoot:string,
- *   projectDir:string, memoryDir:string, indexFile:string, stateFile:string,
- *   lockFile:string, changelogFile:string, dreamsDir:string, pendingDir:string,
+ * @returns {{root:string, projectRoot:string, projectDir:string, memoryDir:string, indexFile:string,
+ *   stateFile:string, lockFile:string, changelogFile:string, dreamsDir:string,
  *   trashRoot:string, projectRulesFile:string, globalRulesFile:string,
  *   rulesLogFile:string, pluginStateFile:string, apiTokenFile:string,
  *   metricsFile:string, metricsLockFile:string}}
@@ -161,38 +187,16 @@ export function buildPaths({ memoryRoot = '', homeDir = '', workspaceDir = '.', 
   // path-derived slug, so non-git workspaces and monorepos can be split.
   const explicitId = sanitizeProjectId(projectId);
   const projectDirName = explicitId !== '' ? explicitId : projectSlug(projectRoot);
-  const projectDir = path.join(root, 'projects', projectDirName);
-  const memoryDir = path.join(projectDir, 'memory');
   return {
     root,
     homes: { home, memoryRoot: root },
-    userMemoryDir: path.join(root, 'user', 'memory'),
-    userIndexFile: path.join(root, 'user', 'memory', 'MEMORY.md'),
     projectRoot,
     projectId: explicitId,
     projectDirName,
-    projectDir,
-    memoryDir,
-    indexFile: path.join(memoryDir, 'MEMORY.md'),
-    // Plugin metadata lives beside the memory files so the memory directory
-    // keeps only human-readable memory, exactly like Claude Code's layout.
-    stateFile: path.join(projectDir, '.state.json'),
-    lockFile: path.join(projectDir, '.consolidate-lock'),
-    writeLockFile: path.join(projectDir, '.write.lock'),
-    changelogFile: path.join(projectDir, '.dream-log.md'),
-    dreamsDir: path.join(projectDir, '.dreams'),
-    pendingDir: path.join(projectDir, '.pending'),
-    pendingWritesDir: path.join(projectDir, '.pending', 'writes'),
-    pendingExpiredDir: path.join(projectDir, '.pending', 'expired'),
-    trashRoot: path.join(projectDir, '.trash'),
-    projectRulesFile: path.join(projectDir, 'memory-rules.md'),
+    ...projectLayout(path.join(root, 'projects', projectDirName)),
     globalRulesFile: path.join(root, 'memory-rules.md'),
-    rulesLogFile: path.join(projectDir, '.memory-rules.log'),
     pluginStateFile: path.join(root, '.plugin-state.json'),
     apiTokenFile: path.join(root, '.api-token'),
-    // v8 effect metrics: one JSON document plus a cross-process write lock.
-    metricsFile: path.join(projectDir, '.metrics.json'),
-    metricsLockFile: path.join(projectDir, '.metrics.lock'),
   };
 }
 

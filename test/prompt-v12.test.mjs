@@ -26,10 +26,8 @@ async function injectionText(env, extra = {}) {
   const mods = await injectModule();
   return mods.buildInjectionText({
     memoryDir: env.pctx.paths.memoryDir,
-    userMemoryDir: env.pctx.paths.userMemoryDir,
     config: env.runtime.config,
     index: index(['- [note](user_note.md) — a note']),
-    user: null,
     rules: '',
     ...extra,
   });
@@ -44,17 +42,19 @@ test('v12 prompt: injected text has no model-impossible dream/merge instructions
   assert.match(text, /memory_update/i, 'the updated advice prefers memory_update');
 });
 
-test('v12 prompt: gives today\'s date, so an absolute date in a note is not a guess', async (t) => {
+test('v12 prompt: no dated behaviour manual is injected any more', async (t) => {
   const env = await runtimeEnv(t);
   const text = await injectionText(env, { now: new Date(2026, 10, 9, 12) });
-  assert.match(text, /Today's date is 2026-11-09\./);
+  assert.doesNotMatch(text, /Today's date is/);
+  assert.doesNotMatch(text, /When to save:/);
 });
 
 test('v12 prompt: injected text does not leak absolute memory paths', async (t) => {
   const env = await runtimeEnv(t);
   const text = await injectionText(env);
   assert.equal(text.includes(env.pctx.paths.memoryDir), false, 'no absolute project memory path');
-  assert.equal(text.includes(env.pctx.paths.userMemoryDir), false, 'no absolute user memory path');
+  assert.equal('userMemoryDir' in env.pctx.paths, false, 'paths no longer expose a user memory dir');
+  assert.equal(text.includes('<user-index>'), false, 'no user index is injected');
   assert.equal(text.includes(env.pctx.paths.projectDir), false, 'no absolute project dir');
   assert.doesNotMatch(text, /[A-Za-z]:\\\\|[A-Za-z]:\//, 'no windows drive-letter memory path');
 });
@@ -71,13 +71,11 @@ test('v12 prompt: budget notice avoids the removed dream-run command and names t
   };
   const text = mods.buildInjectionText({
     memoryDir: env.paths.memoryDir,
-    userMemoryDir: env.paths.userMemoryDir,
     config: env.config,
     index: overflowIndex,
-    user: null,
     rules: '',
   });
   assert.match(text, /budget|over budget|truncat/i, 'the overflow notice is present');
   assert.doesNotMatch(text, /\/memory dream run/, 'the old command hint is gone');
-  assert.match(text, /Memory page|human can consolidate|consolidat/i, 'the notice points at the human consolidation path');
+  assert.match(text, /Rewrite it now/, 'the notice tells the model what it can do itself');
 });

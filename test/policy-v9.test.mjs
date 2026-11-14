@@ -4,12 +4,14 @@
  * Contract: docs/superpowers/specs/2026-11-07-v9-p0-contract.md §1.
  * Real store/state/runtime in os.tmpdir(); no LLM is invoked.
  */
+import { withCordis } from './helpers.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
 import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { loadModule, makeTempDir } from './helpers.mjs';
+import { seedUserMessages } from './v10-helpers.mjs';
 
 // ---------------------------------------------------------------------------
 // Modules / fixtures
@@ -27,9 +29,6 @@ function modules() {
       runtime: await loadModule('../src/runtime.js', { requireExports: ['MemoryRuntime'] }),
       policy: await loadModule('../src/policy.js', {
         requireExports: ['POLICY_DEFAULTS', 'textSimilarity', 'entrySimilarity', 'detectConflict', 'evaluateWrite'],
-      }),
-      pending: await loadModule('../src/pending-writes.js', {
-        requireExports: ['listPendingWrites', 'queuePendingWrite', 'approvePendingWrite', 'rejectPendingWrite'],
       }),
       tools: await loadModule('../src/tools.js', { requireExports: ['registerTools'] }),
       commands: await loadModule('../src/commands.js', { requireExports: ['registerCommands'] }),
@@ -77,7 +76,7 @@ async function makeEnv(t, configOverrides = {}) {
   await mkdir(workspaceDir, { recursive: true });
   const config = mods.config.resolveConfig({ memoryRoot, ...configOverrides });
   const paths = mods.paths.buildPaths({ memoryRoot: config.memoryRoot, homeDir: path.join(tmp, 'home'), workspaceDir });
-  const store = new mods.store.MemoryStore({ paths, config });
+  const store = new mods.store.MemoryStore({ paths, getConfig: () => config });
   await store.ensure();
   const state = new mods.state.ProjectState(paths);
   await state.load();
@@ -96,14 +95,14 @@ async function runtimeEnv(t, configOverrides = {}) {
 async function toolsEnv(t, configOverrides = {}) {
   const env = await runtimeEnv(t, configOverrides);
   const definitions = new Map();
-  const toolCtx = {
+  const toolCtx = withCordis({
     tools: {
       register(definition) {
         definitions.set(definition.name, definition);
         return () => {};
       },
     },
-  };
+  });
   const dispose = env.mods.tools.registerTools(toolCtx, env.runtime);
   t.after(() => {
     if (typeof dispose === 'function') dispose();
@@ -121,7 +120,7 @@ async function commandEnv(t, configOverrides = {}) {
         return () => commandDefs.delete(definition.name);
       },
     },
-    get: () => undefined,
+    get: (name) => (name === 'commands' ? commandCtx.commands : undefined),
     on: () => () => {},
     effect: (factory) => (typeof factory === 'function' ? factory() : undefined),
   };
@@ -270,7 +269,7 @@ test('v9 policy: detectConflict finds Chinese and English polarity conflicts on 
   assert.equal(noConflict, null, 'same polarity is not a conflict');
 });
 
-test('v9 policy: evaluateWrite returns allow/duplicate/possible-duplicate/conflict/low-confidence', async (t) => {
+test('v9 policy: evaluateWrite returns allow/duplicate/possible-duplicate/conflict', async (t) => {
   const env = await makeEnv(t);
   const { evaluateWrite, entrySimilarity, POLICY_DEFAULTS } = env.mods.policy;
   assert.equal(POLICY_DEFAULTS.duplicateThreshold, 0.82);
@@ -322,7 +321,7 @@ test('v9 policy: evaluateWrite returns allow/duplicate/possible-duplicate/confli
   assert.equal(possible.action, 'possible-duplicate', JSON.stringify(possible));
   assert.ok(Array.isArray(possible.candidates) && possible.candidates.length >= 1);
   assert.equal(possible.candidates[0].file, 'user_language.md');
-  assert.ok(possible.similarity >= bandConfig.policySuggestThreshold);
+  assert.ok(possible.candidates[0].similarity >= bandConfig.policySuggestThreshold);
 
   const conflict = evaluateWrite({
     candidate: { name: 'reply preference', description: 'Chinese replies', body: '用户讨厌中文回复。', type: 'user' },
@@ -335,132 +334,81 @@ test('v9 policy: evaluateWrite returns allow/duplicate/possible-duplicate/confli
   assert.equal(conflict.conflicts[0].file, 'user_language.md');
   assert.equal(typeof conflict.conflicts[0].reason, 'string');
 
+  // v24: low confidence is written like any other candidate; the reason only
+  // travels in the receipt.
   const lowConfidence = evaluateWrite({
     candidate: { name: 'tmp', description: 'd', body: 'short', type: 'user', confidence: 'low' },
     entries,
     config,
   });
-  assert.equal(lowConfidence.action, 'low-confidence');
-  assert.ok(Array.isArray(lowConfidence.reasons) && lowConfidence.reasons.length > 0);
-});
-
-// ---------------------------------------------------------------------------
-// pending-writes store
-// ---------------------------------------------------------------------------
-
-test('v9 pending writes: queue, list, approve (writes file + index), reject', async (t) => {
-  const env = await makeEnv(t);
-  const { queuePendingWrite, listPendingWrites, approvePendingWrite, rejectPendingWrite } = env.mods.pending;
-
-  const queued = await queuePendingWrite(env.paths, {
-    candidate: {
-      name: 'queued note',
-      type: 'user',
-      description: 'queued description',
-      body: 'queued body that is long enough',
-    },
-    reasons: ['write-mode-confirm'],
-    source: { sessionId: 'sess-1', via: 'tool:memory_save' },
-  });
-  assert.equal(typeof queued.id, 'string');
-  assert.equal(typeof queued.file, 'string');
-  assert.equal(await exists(queued.file), true, 'the pending write is persisted as JSON');
-
-  let items = await listPendingWrites(env.paths);
-  assert.equal(items.length, 1);
-  assert.equal(items[0].id, queued.id);
-  assert.equal(items[0].candidate.name, 'queued note');
-  assert.deepEqual(items[0].reasons, ['write-mode-confirm']);
-  assert.equal(items[0].source.via, 'tool:memory_save', 'the provenance source is recorded on the queued write');
-  assert.equal(items[0].source.sessionId, 'sess-1');
-
-  const approved = await approvePendingWrite(env.paths, queued.id, { store: env.store });
-  assert.equal(approved.written, true, JSON.stringify(approved));
-  assert.equal(typeof approved.file, 'string');
-  assert.equal(await exists(path.join(env.paths.memoryDir, approved.file)), true, 'approve writes the memory file');
-  assert.match(await env.store.indexText(), new RegExp(approved.file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
-  assert.deepEqual(await listPendingWrites(env.paths), [], 'approved items leave the queue');
-
-  const second = await queuePendingWrite(env.paths, {
-    candidate: { name: 'reject me', type: 'user', description: 'd', body: 'reject body long enough' },
-    reasons: ['low-confidence'],
-    source: 'tool:memory_save',
-  });
-  const rejected = await rejectPendingWrite(env.paths, second.id, 'not useful');
-  assert.equal(rejected.rejected, true);
-  assert.deepEqual(await listPendingWrites(env.paths), [], 'rejected items leave the queue');
+  assert.equal(lowConfidence.action, 'allow');
+  assert.equal(lowConfidence.advisory, true);
+  assert.deepEqual(lowConfidence.reasons, ['confidence is low']);
 });
 
 // ---------------------------------------------------------------------------
 // Tools: memory_save policy outcomes
 // ---------------------------------------------------------------------------
 
-test('v9 tools: memory_save duplicate/conflict/low-confidence/confirm outcomes', async (t) => {
+test('v9 tools: memory_save stops duplicates and conflicts, writes everything else', async (t) => {
   const env = await toolsEnv(t);
+  seedUserMessages(env, '用户喜欢用中文回复所有问题。', '用户讨厌中文回复。', 'a clean durable note body');
   await env.pctx.store.saveEntry({
     name: '回复语言',
     type: 'user',
     description: '用户喜欢中文回复',
     content: '用户喜欢用中文回复所有问题。',
+    basis: 'user-explicit',
+    evidence: '用户喜欢用中文回复所有问题。',
   });
   const save = env.definitions.get('memory_save');
   assert.ok(save);
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
 
   const duplicate = await save.execute(
-    { name: '回复语言', type: 'user', description: '用户喜欢中文回复', content: '用户喜欢用中文回复所有问题。' },
+    { name: '回复语言', type: 'user', description: '用户喜欢中文回复', content: '用户喜欢用中文回复所有问题。', basis: 'user-explicit', evidence: '用户喜欢用中文回复所有问题。' },
     exec,
   );
-  assert.equal(duplicate.ok, true, JSON.stringify(duplicate));
-  assert.equal(duplicate.written, false);
-  assert.equal(duplicate.action, 'duplicate');
+  assert.equal(duplicate.ok, false, JSON.stringify(duplicate));
+  assert.equal(duplicate.error, 'DUPLICATE');
   assert.equal(typeof duplicate.existingFile, 'string');
   assert.equal(typeof duplicate.similarity, 'number');
   assert.equal(typeof duplicate.hint, 'string');
 
   const conflict = await save.execute(
-    { name: 'reply preference', type: 'user', description: 'Chinese replies', content: '用户讨厌中文回复。' },
+    { name: 'reply preference', type: 'user', description: 'Chinese replies', content: '用户讨厌中文回复。', basis: 'user-explicit', evidence: '用户讨厌中文回复。' },
     exec,
   );
-  assert.equal(conflict.ok, true, JSON.stringify(conflict));
-  assert.equal(conflict.written, false, 'conflicts must not create a second active fact');
-  assert.equal(conflict.action, 'queued-review', JSON.stringify(conflict));
-  assert.ok((await env.mods.pending.listPendingWrites(env.pctx.paths)).some((item) => item.id === conflict.pendingId));
+  assert.equal(conflict.ok, false, JSON.stringify(conflict));
+  assert.equal(conflict.error, 'CONFLICT');
+  assert.equal(conflict.written, undefined, 'a stopped write never reaches the store');
   assert.ok(Array.isArray(conflict.conflicts) && conflict.conflicts.length >= 1, JSON.stringify(conflict));
   assert.equal(typeof conflict.conflicts[0].file, 'string');
   assert.equal(typeof conflict.conflicts[0].reason, 'string');
+  assert.equal(conflict.existingFile, 'user_回复语言.md');
+  assert.equal((await env.pctx.store.listEntries()).length, 1, 'no second active fact');
 
+  // v24: low confidence is written, and the reason travels in the receipt.
   const lowConfidence = await save.execute(
     { name: 'low conf', type: 'user', description: 'd', content: 'short body', confidence: 'low' },
     exec,
   );
   assert.equal(lowConfidence.ok, true, JSON.stringify(lowConfidence));
-  assert.equal(lowConfidence.written, false);
-  assert.equal(lowConfidence.action, 'queued-review');
-  assert.equal(typeof lowConfidence.pendingId, 'string');
-  const pendingItems = await env.mods.pending.listPendingWrites(env.pctx.paths);
-  assert.ok(pendingItems.some((item) => item.id === lowConfidence.pendingId));
-
-  // writeMode: confirm queues even a clean candidate.
-  const confirmEnv = await toolsEnv(t, { writeMode: 'confirm' });
-  const confirmSave = confirmEnv.definitions.get('memory_save');
-  const queued = await confirmSave.execute(
-    { name: 'confirm note', type: 'user', description: 'clean description', content: 'a clean durable note body' },
-    exec,
-  );
-  assert.equal(queued.ok, true, JSON.stringify(queued));
-  assert.equal(queued.written, false);
-  assert.equal(queued.action, 'queued-review');
-  assert.equal(typeof queued.pendingId, 'string');
+  assert.equal(lowConfidence.written, true);
+  assert.equal(lowConfidence.advisory, true);
+  assert.deepEqual(lowConfidence.reasons, ['confidence is low']);
 });
 
 test('v9 tools: possible-duplicate is advisory and force still writes', async (t) => {
   const env = await toolsEnv(t, { policyDuplicateThreshold: 0.99, policySuggestThreshold: 0.01 });
+  seedUserMessages(env, 'The project prefers tabs for indentation everywhere.', 'The project prefers tabs for indentation in all source files.');
   await env.pctx.store.saveEntry({
     name: 'indent style',
     type: 'feedback',
     description: 'prefer tabs for indentation',
     content: 'The project prefers tabs for indentation everywhere.',
+    basis: 'user-explicit',
+    evidence: 'The project prefers tabs for indentation everywhere.',
   });
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
@@ -469,6 +417,8 @@ test('v9 tools: possible-duplicate is advisory and force still writes', async (t
     type: 'feedback',
     description: 'prefer tabs for indentation in code',
     content: 'The project prefers tabs for indentation in all source files.',
+    basis: 'user-explicit',
+    evidence: 'The project prefers tabs for indentation in all source files.',
   };
   const suspected = await save.execute(candidate, exec);
   assert.equal(suspected.ok, true, JSON.stringify(suspected));
@@ -492,111 +442,15 @@ test('v9 tools: possible-duplicate is advisory and force still writes', async (t
 // HTTP + status + commands surfaces
 // ---------------------------------------------------------------------------
 
-test('v9 pending writes: status.pendingWrites, GET/POST /pending-writes', async (t) => {
-  const env = await httpEnv(t, { writeMode: 'confirm' });
-  // Queue one through the real tool path.
-  const definitions = new Map();
-  env.host.services.tools = {
-    register(definition) {
-      definitions.set(definition.name, definition);
-      return () => {};
-    },
-  };
-  const toolDispose = env.mods.tools.registerTools(env.host, env.runtime);
-  t.after(() => toolDispose?.());
-  const saved = await definitions.get('memory_save').execute(
-    { name: 'http pending', type: 'user', description: 'http queued note', content: 'http queued body long enough' },
-    { agent: { id: 'agent-1' }, sessionId: 'sess-1' },
-  );
-  assert.equal(saved.action, 'queued-review', JSON.stringify(saved));
-
-  const status = (await callHttp(env, { token: env.token, path: '/status' })).json();
-  assert.equal(status.ok, true);
-  assert.equal(status.pendingWrites.count, 1);
-  assert.ok(Array.isArray(status.pendingWrites.items));
-  assert.equal(status.pendingWrites.items[0].candidate.name, 'http pending');
-
-  const list = await callHttp(env, { token: env.token, path: '/pending-writes' });
-  assert.equal(list.statusCode, 200);
-  assert.equal(list.json().ok, true);
-  assert.equal(list.json().items.length, 1);
-  const pendingId = list.json().items[0].id;
-  assert.equal(list.json().items[0].id, pendingId);
-
-  const approved = await callHttp(env, {
-    method: 'POST',
-    path: '/pending-writes',
-    token: env.token,
-    body: { action: 'approve', id: pendingId },
-    origin: 'http://127.0.0.1:61784',
-  });
-  assert.equal(approved.statusCode, 200);
-  assert.equal(approved.json().ok, true);
-  assert.equal(approved.json().written, true);
-  const statusAfter = (await callHttp(env, { token: env.token, path: '/status' })).json();
-  assert.equal(statusAfter.pendingWrites.count, 0);
-
-  const queueTwo = await env.mods.pending.queuePendingWrite(env.pctx.paths, {
-    candidate: { name: 'reject http', type: 'user', description: 'd', body: 'reject body long enough' },
-    reasons: ['test'],
-    source: 'api',
-  });
-  const rejected = await callHttp(env, {
-    method: 'POST',
-    path: '/pending-writes',
-    token: env.token,
-    body: { action: 'reject', id: queueTwo.id },
-  });
-  assert.equal(rejected.json().ok, true);
-  assert.equal(rejected.json().rejected, true);
-
-  // Token still required.
-  assert.equal((await callHttp(env, { path: '/pending-writes' })).statusCode, 401);
-});
-
-test('v9 commands: /memory writes / approve / reject', async (t) => {
-  const env = await commandEnv(t, { writeMode: 'confirm' });
-  const queued = await env.mods.pending.queuePendingWrite(env.pctx.paths, {
-    candidate: { name: 'command pending', type: 'user', description: 'queued from command', body: 'command queued body long enough' },
-    reasons: ['write-mode-confirm'],
-    source: 'tool:memory_save',
-  });
-
-  const writes = await env.invoke('writes');
-  assert.equal(writes.kind, 'success', writes.text);
-  assert.match(writes.text, /command pending/);
-  assert.match(writes.text, new RegExp(queued.id));
-
-  const approve = await env.invoke(`approve ${queued.id}`);
-  assert.equal(approve.kind, 'success', approve.text);
-  assert.match(approve.text, /written|approv/i);
-  const entries = await env.pctx.store.listEntries();
-  assert.ok(entries.some((entry) => entry.name === 'command pending'), 'approve writes the memory file');
-
-  const second = await env.mods.pending.queuePendingWrite(env.pctx.paths, {
-    candidate: { name: 'command reject', type: 'user', description: 'd', body: 'reject body long enough' },
-    reasons: ['low-confidence'],
-    source: 'tool:memory_save',
-  });
-  const reject = await env.invoke(`reject ${second.id}`);
-  assert.equal(reject.kind, 'success', reject.text);
-  assert.deepEqual(await env.mods.pending.listPendingWrites(env.pctx.paths), []);
-});
-
-test('v9 config: writeMode/policy thresholds default and override', async (t) => {
+test('v9 config: policy thresholds default and override', async (t) => {
   const env = await makeEnv(t);
-  assert.equal(env.config.writeMode, 'auto');
   assert.equal(env.config.policyDuplicateThreshold, 0.82);
   assert.equal(env.config.policySuggestThreshold, 0.55);
   const custom = env.mods.config.resolveConfig({
     memoryRoot: env.memoryRoot,
-    writeMode: 'confirm',
     policyDuplicateThreshold: 0.9,
     policySuggestThreshold: 0.4,
   });
-  assert.equal(custom.writeMode, 'confirm');
   assert.equal(custom.policyDuplicateThreshold, 0.9);
   assert.equal(custom.policySuggestThreshold, 0.4);
-  const invalid = env.mods.config.resolveConfig({ memoryRoot: env.memoryRoot, writeMode: 'sometimes' });
-  assert.equal(invalid.writeMode, 'auto', 'invalid writeMode falls back to auto');
 });

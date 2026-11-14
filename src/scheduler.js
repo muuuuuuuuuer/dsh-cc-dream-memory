@@ -1,51 +1,30 @@
 /**
- * Background dream scheduler.
- *
- * Listens to the durable session feed and, after a turn ends, first expires a
- * stale review proposal (`pendingProposalTtlHours`, moved to `.pending/expired/`)
- * and then checks the dream gates for that project: auto memory enabled, auto
- * dream enabled, no pending review proposal, at least `minHours` since the last
- * dream, at least `minSessions` distinct sessions touched since then, the scan
- * throttle, and a failure backoff. The actual run is fire-and-forget and owns
- * its own lock, so a second session cannot start a concurrent dream.
+ * Turns durable session events into automatic Dream and Inbox work.
+ * The Dream launcher owns readiness and execution.
  */
-import { expireStaleProposal } from './readiness.js';
+import { runAutoExtract } from './auto-extract.js';
+import { dreamReadiness } from './readiness.js';
+import { isDelegated } from './session-kind.js';
 
 function warn(scope, error) {
   // eslint-disable-next-line no-console
   console.warn(`[cc-memory] ${scope}:`, error?.message ?? error);
 }
 
-/** Exponential backoff for consecutive dream failures, capped at 6 hours. */
-function failureBackoffMs(config, failures) {
-  const base = Math.max(60_000, Number(config.scanThrottleMs) || 600_000);
-  return Math.min(base * 2 ** Math.min(failures, 6), 6 * 60 * 60 * 1000);
-}
-
-/** A delegated child session (teammate/subagent) is not a user conversation. */
-function isDelegatedSession(session) {
-  const header = session && typeof session === 'object' ? session.header : undefined;
-  if (header && typeof header === 'object') {
-    if (header.parentSession) return true;
-    if (header.origin === 'subagent') return true;
-  }
-  return false;
-}
-
 export function registerScheduler(ctx, runtime) {
   const cleanups = [];
-  const running = new Set();
+  const extracting = new Set();
   let disposed = false;
 
   const onTurnEnd = (session, event) => {
     if (disposed) return;
     if (!event || event.type !== 'turn/end') return;
-    if (isDelegatedSession(session)) return;
+    if (isDelegated(session)) return;
     const sessionId = typeof session?.id === 'string' ? session.id : event?.data?.sessionId;
     if (typeof sessionId !== 'string' || sessionId === '') return;
     const cwd = session?.header?.cwd ?? session?.cwd;
     const at = Number(event?.time) || Date.now();
-    handleTurnEnd(sessionId, cwd, at).catch((error) => warn('turn-end handling', error));
+    handleTurnEnd(sessionId, cwd, at, session).catch((error) => warn('turn-end handling', error));
   };
 
   async function handleTurnEnd(sessionId, cwd, at, session) {
@@ -56,77 +35,59 @@ export function registerScheduler(ctx, runtime) {
     } catch (error) {
       warn('state.ensureSession', error);
     }
-    // v9: an over-age review proposal must not block dreaming forever.
-    if (runtime.config.expireStaleProposal !== false) {
-      try {
-        const expired = await expireStaleProposal(projectContext, {
-          config: runtime.config,
-          now: Date.now(),
-        });
-        if (expired && expired.expired) {
-          try {
-            runtime.invalidateAllInjections?.('pending-expired');
-          } catch {
-            /* prompt refresh is best-effort */
-          }
-        }
-      } catch (error) {
-        warn('expire pending proposal', error);
-      }
-    }
-    await maybeAutoDream(projectContext);
+    runtime.track(maybeAutoDream(projectContext).catch((error) => warn('auto dream', error)));
+    maybeAutoExtract(projectContext, sessionId, at, session);
+  }
+
+  async function maybeAutoDream(projectContext) {
+    if (disposed || !dreamReadiness(projectContext, { config: runtime.config }).eligible) return;
+    const run = await runtime.startDream(projectContext, { trigger: 'auto' });
+    if (run.started && (await run.done)?.skipped) await projectContext.state.markSkipped();
   }
 
   /**
-   * Cheap gate pass before waking the model. The engine re-checks the
-   * authoritative time/session gates itself; this only avoids the work.
+   * v20 auto-extract: fire-and-forget after the Nth mainline turn, unless the
+   * model already wrote memory this turn. The model call never blocks turn/end;
+   * a failed attempt simply waits for the next multiple.
    */
-  async function maybeAutoDream(projectContext) {
+  function maybeAutoExtract(projectContext, sessionId, at, session) {
     const config = runtime.config;
-    if (config.enabled === false || !config.autoMemoryEnabled || !config.autoDreamEnabled || disposed) return;
-    const key = projectContext.paths.projectDir;
-    if (running.has(key)) return;
-    let snapshot;
-    try {
-      snapshot = projectContext.state.snapshot();
-    } catch {
-      return;
-    }
-    const now = Date.now();
-    if (snapshot.pendingProposal) return; // a human still has to accept or reject it
-    if (snapshot.lastScanAt && now - snapshot.lastScanAt < config.scanThrottleMs) return;
-    if (snapshot.lastDreamAt && now - snapshot.lastDreamAt < config.minHours * 60 * 60 * 1000) return;
-    const failures = Number(snapshot.consecutiveFailures) || 0;
-    if (failures > 0 && snapshot.lastDreamAttemptAt) {
-      if (now - snapshot.lastDreamAttemptAt < failureBackoffMs(config, failures)) return;
-    }
-    if (!Array.isArray(snapshot.sessionsSince) || snapshot.sessionsSince.length < config.minSessions) return;
-    running.add(key);
-    try {
-      await projectContext.state.noteScan();
-      const result = await runtime.dream({
-        pctx: projectContext,
-        agent: projectContext.agent,
-        force: false,
-        trigger: 'auto',
-      });
-      if (result && result.skipped) {
+    if (config.enabled === false || !config.autoMemoryEnabled || !config.autoExtract || disposed) return;
+    if (typeof sessionId !== 'string' || sessionId === '') return;
+    if (extracting.has(sessionId)) return;
+    const turn = runtime.noteTurnEnd(sessionId, at);
+    if (turn.wrote) return;
+    const every = Math.max(1, Number(config.autoExtractEveryTurns) || 1);
+    if (turn.turns % every !== 0) return;
+    extracting.add(sessionId);
+    const state = projectContext.state;
+    state.markExtractStart('auto').catch((error) => warn('state.markExtractStart', error));
+    const work = runAutoExtract({
+      ctx: runtime.ctx,
+      runtime,
+      pctx: projectContext,
+      sessionId,
+      agent: session ?? projectContext.agent ?? { id: sessionId },
+      trigger: 'auto',
+    })
+      .then(async (result) => {
+        await state.markExtractResult({
+          ok: result?.ok === true,
+          count: Number(result?.count) || 0,
+          reason: result?.ok === true ? String(result?.mode ?? 'ok') : String(result?.reason ?? 'failed'),
+          trigger: 'auto',
+        });
+      })
+      .catch(async (error) => {
+        warn('auto extract', error);
         try {
-          await projectContext.state.markSkipped();
-        } catch (error) {
-          warn('state.markSkipped', error);
+          await state.markExtractResult({ ok: false, reason: 'error', error, trigger: 'auto' });
+        } catch (inner) {
+          warn('state.markExtractResult', inner);
         }
-      }
-    } catch (error) {
-      warn('auto dream', error);
-      try {
-        await projectContext.state.markDreamFailed(error);
-      } catch (inner) {
-        warn('state.markDreamFailed', inner);
-      }
-    } finally {
-      running.delete(key);
-    }
+      })
+      .finally(() => extracting.delete(sessionId));
+    runtime.track(work);
   }
 
   // `session/event` is the post-commit fire-and-forget append feed; `turn/end`

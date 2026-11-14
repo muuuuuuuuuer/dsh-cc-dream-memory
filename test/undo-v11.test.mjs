@@ -7,37 +7,26 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { runtimeEnv, httpEnv, callHttp, writePlanOf, exists, memoryFile } from './v10-helpers.mjs';
+import { runtimeEnv, httpEnv, callHttp, exists, scriptDream, claimOf } from './v10-helpers.mjs';
 
 const TOUCHED = 'user_touch_target.md';
-const CREATED = 'user_created_by_dream.md';
+// The Dream adds one cited line to TOUCHED and creates one page from a claim.
+const CREATED = 'releases-go-out-on-fridays.md';
 
-const PLAN = writePlanOf(
-  [
-    {
-      op: 'write',
-      scope: 'project',
-      type: 'user',
-      name: 'touch target',
-      description: 'touched by the dream',
-      body: 'DREAM REWRITTEN BODY',
-      file: TOUCHED,
-    },
-    {
-      op: 'write',
-      scope: 'project',
-      type: 'user',
-      name: 'created by dream',
-      description: 'created by the dream',
-      body: 'created body',
-      file: CREATED,
-    },
-  ],
-  { summary: 'undo-safety plan' },
-);
+async function dream(env) {
+  await scriptDream(env, {
+    sessions: { s1: ['Use pnpm, not npm.', 'Releases go out on Fridays.'] },
+    claims: [claimOf('Use pnpm, not npm.', { target: TOUCHED, kind: 'preference' }), claimOf('Releases go out on Fridays.')],
+  });
+  const ready = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual' });
+  assert.equal(ready.ready, true, JSON.stringify(ready).slice(0, 400));
+  const switched = await env.runtime.switchDream({ pctx: env.pctx, agent: env.pctx.agent });
+  assert.equal(switched.ok, true, JSON.stringify(switched).slice(0, 400));
+  return switched;
+}
 
 async function seedEnv(t) {
-  const env = await runtimeEnv(t, {}, { plan: PLAN });
+  const env = await runtimeEnv(t);
   await env.pctx.store.saveEntry({
     name: 'touch target',
     type: 'user',
@@ -50,8 +39,7 @@ async function seedEnv(t) {
     description: 'never touched by the dream',
     content: 'untouched original body',
   });
-  const applied = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual' });
-  assert.equal(applied.applied, true, JSON.stringify(applied).slice(0, 300));
+  await dream(env);
   return env;
 }
 
@@ -89,7 +77,6 @@ test('v11 undo: dream meta records hashes/created/rewritten for touched files', 
   const batch = await batchWithMeta(env);
   assert.ok(batch, 'the apply batch meta.json must contain hashes');
   const { meta } = batch;
-  assert.equal(meta.operations.every((operation) => 'hashAfter' in operation), true, 'each operation carries hashAfter');
   assert.ok(meta.hashes && typeof meta.hashes === 'object');
   for (const file of [TOUCHED, CREATED]) {
     assert.match(String(meta.hashes[file]), /^sha256:[0-9a-f]{64}$/, `hash for ${file}`);
@@ -153,37 +140,27 @@ test('v11 undo: files created after the dream are not trashed by undo', async (t
   assert.equal(await exists(path.join(env.pctx.paths.memoryDir, newFile)), true, 'post-dream files stay in memory/');
 });
 
-test('v11 undo: legacy batches without hashes are listed but not undoable', async (t) => {
+test('v11 undo: a folder without switch metadata is neither history nor undoable', async (t) => {
   const env = await httpEnv(t);
-  const legacyDir = path.join(env.pctx.paths.dreamsDir, '2026-01-01T00-00-00');
-  await mkdir(legacyDir, { recursive: true });
-  await writeFile(path.join(legacyDir, 'MEMORY.md'), '', 'utf8');
-  await writeFile(
-    path.join(legacyDir, 'meta.json'),
-    JSON.stringify({ ts: '2026-01-01T00-00-00', kind: 'apply', appliedAt: 1, ops: 1, files: [] }),
-    'utf8',
-  );
+  const otherDir = path.join(env.pctx.paths.dreamsDir, '2026-01-01T00-00-00');
+  await mkdir(otherDir, { recursive: true });
+  await writeFile(path.join(otherDir, 'meta.json'), JSON.stringify({ kind: 'apply', appliedAt: 1, files: [] }), 'utf8');
 
   const res = await callHttp(env, { path: '/dream-history' });
   assert.equal(res.statusCode, 200, res.bodyText());
-  const items = res.json().items;
-  const legacy = items.find((item) => item.ts === '2026-01-01T00-00-00');
-  assert.ok(legacy, 'legacy batches remain listed');
-  assert.equal(legacy.hasMeta, true);
-  assert.equal(legacy.undoable, false, 'a batch without hashes is not undoable');
+  assert.deepEqual(res.json().items, []);
 
   const undo = await env.runtime.undoLastDream(env.pctx);
   assert.equal(undo.ok, false);
-  assert.equal(undo.error, 'legacy-batch');
+  assert.equal(undo.error, 'no-undoable-batch');
 });
 
 test('v11 undo: GET /dream-history marks an undone batch as undone and no longer undoable', async (t) => {
-  const env = await httpEnv(t, {}, { plan: PLAN });
+  const env = await httpEnv(t);
   await env.pctx.store.saveEntry({ name: 'touch target', type: 'user', description: 'original', content: 'ORIGINAL BODY' });
-  const applied = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual' });
-  assert.equal(applied.applied, true, JSON.stringify(applied).slice(0, 300));
+  await dream(env);
 
-  const before = (await callHttp(env, { path: '/dream-history' })).json().items.find((item) => item.kind === 'apply');
+  const before = (await callHttp(env, { path: '/dream-history' })).json().items.find((item) => item.undoable === true);
   assert.ok(before, 'the applied batch is listed');
   assert.equal(before.undoable, true);
   assert.equal(before.undone, false);
@@ -200,9 +177,8 @@ test('v11 undo: a second undo can restore the previous batch (consecutive undo)'
   const first = await env.runtime.undoLastDream(env.pctx);
   assert.equal(first.ok, true, JSON.stringify(first).slice(0, 300));
 
-  // Re-apply the same plan, then undo twice in a row.
-  const again = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual' });
-  assert.equal(again.applied, true, JSON.stringify(again).slice(0, 300));
+  // Dream the same sessions again, then undo twice in a row.
+  await dream(env);
   const undo2 = await env.runtime.undoLastDream(env.pctx);
   assert.equal(undo2.ok, true, JSON.stringify(undo2).slice(0, 300));
   assert.notEqual(undo2.batch, first.batch);

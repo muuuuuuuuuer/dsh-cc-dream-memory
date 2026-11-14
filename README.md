@@ -30,6 +30,8 @@ We ran the second session three times on each side. The deploy step was `legacy-
 
 ## Install
 
+**GitHub v0.20.0:** Install from the GitHub tag using the command below. The npm instructions install the version available on npm.
+
 Requires Node 22 or newer and DeepSeek Harness 0.2.2-rc.1 or newer.
 
 ```bash
@@ -47,7 +49,7 @@ In the desktop app, open **Plugins → Add plugin** and enter `dsh-cc-dream-memo
 You can also install directly from GitHub:
 
 ```bash
-dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory
+dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.20.0
 ```
 
 ## Dream
@@ -58,11 +60,13 @@ Notes go stale. Here, three sessions changed the facts while five older notes st
   <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/dream-before-after.png" width="860" alt="The Memories tab before and after a Dream. Before: five notes, with two duplicates and stale deploy and freeze facts. After: four notes, with the duplicates merged, the facts corrected and the handoff format added.">
 </p>
 
-You can apply only some of the changes, and one command undoes the whole Dream.
+The screenshots show an earlier Dream interface. The current Dream stages one copy. Review its changes, then switch to that copy or discard it. One command undoes the switch.
 
 ## The interface
 
 A **Memory** tab sits next to Chat in every session, and the status bar shows how many notes the project has.
+
+The **Inbox** tab is the review surface: it lists auto-extract proposals (open one to read the notes, then accept all or discard) and any Dream result waiting to be switched to. The **Settings** tab has switches for memory, auto memory, automatic Dreams and auto-extract, plus the current recall and subagent memory policies.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/memory-tab.png" width="860" alt="DeepSeek Harness with the Memory tab open, listing four notes with search, type filters and a New button">
@@ -71,9 +75,9 @@ A **Memory** tab sits next to Chat in every session, and the status bar shows ho
 <table>
   <tr>
     <td width="50%" valign="top">
-      <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/dream-plan.png" alt="A Dream plan with six selectable changes, one opened to show its new text">
+      <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/dream-plan.png" alt="Earlier Dream interface with one change expanded">
       <br>
-      <b>Dream.</b> Open any change to read it, then apply only what you agree with.
+      <b>Dream.</b> Review the result before switching to the prepared copy.
     </td>
     <td width="50%" valign="top">
       <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/settings.png" alt="Settings with switches for memory and automatic Dreams, and an editable list of what to remember">
@@ -93,14 +97,9 @@ A **Memory** tab sits next to Chat in every session, and the status bar shows ho
 
 **Bring your memories.** Notes are plain Markdown in a Claude Code-compatible layout: a `MEMORY.md` index plus one file per topic. Already have Claude Code memories? `/memory import` brings them over, and you can open every file in your editor.
 
-**Dream shows its sources.** Dream reads whole sessions, not samples. Each new fact has to quote the conversation, and a quote the plugin cannot find in the transcript gets the change dropped. `/memory dream preview` prints the quotes:
+**Dream shows its sources.** Dream reads session chunks and checks each new fact against a transcript quote. It keeps superseded values in the note's history.
 
-```text
-[2] write feedback_handoff_notes.md (changed)
-    quote: "For handoff notes I want the conclusion first, then risks, with no headings."
-```
-
-**Nothing is final.** Dream only proposes a plan. You pick the changes, a backup is taken first, deleted notes go to a trash folder, and one command undoes the whole Dream. Automatic Dreams are off until you turn them on.
+**You control when Dream takes effect.** Dream writes a separate copy. Switching backs up the current notes first, and undo restores the notes touched by the switch. Automatic Dreams are off by default.
 
 ## Try it
 
@@ -112,19 +111,21 @@ Run these in a session.
    /remember --type=project Release notes live in docs/releases.md
    ```
 
-2. Start a new session. The `MEMORY.md` index loads once and stays frozen for that session. When a message clearly matches a memory, the plugin attaches that memory to the step.
+2. Start a new session. The agent receives a snapshot of the start of `MEMORY.md` (up to 200 lines or 25 KB by default). Compaction, config or rule changes, and `/memory refresh` rebuild it. The per-turn selector can attach relevant notes, and the agent can read other topics on demand.
 
-3. After a few sessions, make a plan. This changes nothing:
+3. After a few sessions, start a background Dream. It returns a run ID and prepares a copy of your notes.
 
    ```text
-   /memory dream run --dry-run
-   /memory dream preview
+   /memory dream run
+   /memory dream status <runId>
    ```
 
-4. Apply what you agree with, and undo it if you change your mind:
+   A long session is split into parts and each part is analyzed once. `/memory dream cancel` stops a run and keeps the parts it finished; `/memory dream resume` retries only the missing parts. `/memory dream run --wait` still waits for the run to finish.
+
+4. Review the result in Memory and switch to it when ready. Undo the switch if you change your mind.
 
    ```text
-   /memory dream apply-ops 0,2
+   /memory dream switch
    /memory dream undo
    ```
 
@@ -142,11 +143,12 @@ What is different here:
 
 | | This plugin |
 |---|---|
-| Consolidation | A JSON plan the plugin validates and applies, with backups and undo |
+| Consolidation | A validated copy you can switch to or discard, with backups and undo |
 | New facts from Dream | Must quote the transcript |
 | Automatic Dream | Off by default |
-| Recall | Word matching on names and descriptions, no model call |
-| Subagents | No injected memory by default |
+| Recall | A cheap model selector picks at most 5 candidates per turn; autoRecallMaxFiles (default 3) still caps what is attached. There is no lexical fallback |
+| Auto-extract | Off by default; proposals stage in an Inbox for review; never writes directly |
+| Subagents | One `subagentMemory` policy: `off` (default), `shared`, or `own` per-agent directories |
 
 ## Is it right for you?
 
@@ -154,15 +156,15 @@ This plugin suits you if you want to read and correct what your agent remembers,
 
 Look elsewhere if you need:
 
-- **Vector search or a hosted memory service.** This plugin has neither. Recall is word matching, so a rephrased question can miss. `@openviking/dsh-memory-plugin`, `@honcho-ai/dsh-honcho` and `dsh-tdai-memory` take other approaches.
-- **Approval for every single write.** `dsh-memento` is built around that. Here, ordinary saves are automatic and only uncertain ones wait for review. `writeMode: confirm` queues all of them.
+- **Vector search or a hosted memory service.** This plugin has neither. Recall is a cheap model selector over note names and descriptions, so a rephrased question can still miss. `@openviking/dsh-memory-plugin`, `@honcho-ai/dsh-honcho` and `dsh-tdai-memory` take other approaches.
+- **Approval for every write.** The Inbox lets you review auto-extract proposals. Ordinary memory saves run through the write policy immediately.
 
 ## Your data
 
 - Memories stay on your machine, under `$DSH_HOME/cc-memory/`. The plugin has no telemetry.
 - Memory text goes to your model provider as part of normal prompts.
 - Dream sends session text and memories to the provider you configured. The synthetic three-short-session demo used 6,500 to 11,000 tokens. One real-project batch used **149,984 reported total tokens and about 263 seconds**, then applied two memory writes and one index update. These are different workloads, not a typical-use estimate. See the [aggregate observations](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/REAL-WORKSPACE-OBSERVATIONS-2026-11-09.md).
-- Before paying for a dry-run, use `/memory dream estimate`, or review the input estimate shown when starting Dream in the interface. Estimation makes no model call; dry-run does. Actual total usage can exceed the rough input estimate. `dreamMaxTotalTokens: 0` means unlimited; set an explicit budget and `dreamCostMode: block` if you need the existing cost guard.
+- Before starting a run, use `/memory dream estimate`, or review the input estimate shown when starting Dream in the interface. Estimation reads the input without calling the model. Starting a run calls the model. Actual total usage can exceed the rough input estimate. `dreamMaxTotalTokens: 0` means unlimited; set an explicit budget and `dreamCostMode: block` if you need the existing cost guard.
 - Writes that match common key formats are refused. This is a heuristic and will not catch every secret. See [SECURITY.md](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/SECURITY.md).
 
 ## Status
@@ -172,7 +174,7 @@ Look elsewhere if you need:
 What has been checked:
 
 - The test suite runs on Windows and Ubuntu with Node 22 and 24.
-- The packed plugin was installed into a clean profile on DeepSeek Harness 0.2.2-rc.1. A full Dream ran there with a real model on made-up sessions: plan, preview, selective apply and undo.
+- The packed plugin was installed into a clean profile on DeepSeek Harness 0.2.2-rc.1. An earlier release completed a real-model Dream there using synthetic sessions, from preview to selective apply and undo.
 
 What has not:
 
@@ -181,7 +183,7 @@ What has not:
 
 Known limits:
 
-- A quote proves the words exist in the session. It does not prove the conclusion drawn from them is right, so read the plan.
+- A quote proves the words exist in the session. It does not prove the conclusion drawn from them is right, so review the result before switching.
 - Telling your typing apart from pasted text is a heuristic, and short pastes get through.
 - The interface comes in English and Chinese.
 
