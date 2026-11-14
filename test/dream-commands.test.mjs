@@ -25,3 +25,24 @@ test('dream status <runId> shows that run, not the newest', async (t) => {
   const overview = await e.invokeMemory('dream status');
   assert.match(messageOf(overview), /^dream status/m, 'without a run id the overview stays');
 });
+
+test('dream switch --reject and dream run --memory-only reach the runtime', async (t) => {
+  const e = await commandEnv(t);
+  const switches = [];
+  e.runtime.switchDream = async (options) => {
+    switches.push(options.reject);
+    return { ok: true, counts: { added: 0, changed: 1, removed: 0 }, rejected: options.reject };
+  };
+  const switched = await e.invokeMemory('dream switch --reject a.md,b.md');
+  assert.deepEqual(switches, [['a.md', 'b.md']]);
+  assert.doesNotMatch(messageOf(switched), /not switched/, 'a successful switch is reported as one');
+
+  const starts = [];
+  e.runtime.startDream = async (pctx, options) => {
+    starts.push(options.noSessions);
+    return { ok: true, started: true, runId: 'run-1', status: 'running' };
+  };
+  await e.invokeMemory('dream run --memory-only');
+  await e.invokeMemory('dream run');
+  assert.deepEqual(starts, [true, false]);
+});

@@ -196,35 +196,29 @@ test('v9 identity: two marker directories map to separate memory spaces; the sam
 // user scope independent budget + status surface + health warning
 // ---------------------------------------------------------------------------
 
-test('v9 identity: user scope has its own index budget, independent from the project index', async (t) => {
+test('v9 identity: the project index owns the only budget; the user scope is gone', async (t) => {
   const tree = await makeTree(t);
-  const config = configFor(tree, { userMemoryEnabled: true });
-  assert.equal(config.userIndexMaxLines, 30, 'userIndexMaxLines defaults to 30');
-  assert.equal(config.userIndexMaxBytes, 4096, 'userIndexMaxBytes defaults to 4096');
+  const config = configFor(tree, {});
+  assert.equal('userIndexMaxLines' in config, false, 'userIndexMaxLines no longer exists');
+  assert.equal('userIndexMaxBytes' in config, false, 'userIndexMaxBytes no longer exists');
 
   const paths = pathsFor(tree);
-  const store = new tree.mods.store.MemoryStore({ paths, config });
+  const store = new tree.mods.store.MemoryStore({ paths, getConfig: () => config });
   await store.ensure();
   const projectIndex = await store.injectedIndex('project');
   assert.equal(projectIndex.maxLines, 200);
   assert.equal(projectIndex.maxBytes, 25 * 1024);
 
-  await store.writeIndex(Array.from({ length: 31 }, (_, i) => `- [u${i}](user_u${i}.md) — note ${i}`).join('\n') + '\n', 'user');
-  const userIndex = await store.injectedIndex('user');
-  assert.equal(userIndex.maxLines, 30, 'user index reports its own line budget');
-  assert.equal(userIndex.maxBytes, 4096, 'user index reports its own byte budget');
-  assert.equal(userIndex.truncated, true, '31 user index lines are truncated by the user budget');
+  await assert.rejects(store.injectedIndex('user'), (error) => {
+    assert.equal(error.code, 'INVALID_SCOPE', String(error.code));
+    return true;
+  });
 
   const runtime = new tree.mods.runtime.MemoryRuntime(fakeHost({ workspaceDir: tree.workspaceDir }), config);
   const pctx = await runtime.storeFor(tree.workspaceDir);
   const service = tree.mods.status.createStatusService(runtime);
   const status = await service.status(pctx);
-  assert.ok(status.userScope, 'status must expose userScope');
-  assert.equal(status.userScope.enabled, true);
-  assert.ok(status.userScope.budgets, 'userScope exposes its independent budgets');
-  assert.equal(status.userScope.budgets.maxLines, 30);
-  assert.equal(status.userScope.budgets.maxBytes, 4096);
-  assert.ok(status.userScope.usage && typeof status.userScope.usage === 'object');
+  assert.equal('userScope' in status, false, 'status must not expose a user scope');
 });
 
 test('v9 identity: a non-git workspace without a marker raises a sharing warning', async (t) => {

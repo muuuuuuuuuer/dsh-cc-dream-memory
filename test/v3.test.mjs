@@ -7,6 +7,7 @@
  * runtime/store instance points at an os.tmpdir() memory root (the real
  * `~/.dsh` is never touched).
  */
+import { withCordis } from './helpers.mjs';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
@@ -130,27 +131,24 @@ test('rules: saveRules writes the override file and rulesFor reads it back', asy
   assert.match(await readFile(paths.globalRulesFile, 'utf8'), /custom global rule/);
 });
 
-test('rules: buildInjectionText replaces the built-in Rules section with input.rules', async (t) => {
+test('rules: a user rules file is injected as a <rules> block, and nothing is injected by default', async (t) => {
   await runtimeSetup(t);
   const { buildInjectionText } = (await v3()).inject;
   const custom = '- CUSTOM RULE A: only durable knowledge\n- CUSTOM RULE B: verify before relying';
-  const text = buildInjectionText({
-    memoryDir: 'C:/tmp/memory',
-    config: { injectIndex: false },
-    rules: custom,
-  });
-  assert.match(text, /Rules:/);
+  const text = buildInjectionText({ rules: custom });
+  assert.match(text, /<rules>/);
   assert.match(text, /CUSTOM RULE A/);
   assert.match(text, /CUSTOM RULE B/);
   assert.doesNotMatch(
     text,
-    /Save only durable knowledge that is NOT derivable/,
-    'built-in default rules must be replaced by the custom rules',
+    /When to save:/,
+    'the built-in behaviour manual is gone; only the user rules file remains',
   );
 
-  // Without input.rules the built-in block stays exactly as before.
-  const builtin = buildInjectionText({ memoryDir: 'C:/tmp/memory', config: { injectIndex: false } });
-  assert.match(builtin, /Save only durable knowledge that is NOT derivable/);
+  // Without a user rules file the first turn carries the index and nothing else.
+  const builtin = buildInjectionText({});
+  assert.doesNotMatch(builtin, /<rules>/);
+  assert.doesNotMatch(builtin, /When to save:/);
 });
 
 // ---------------------------------------------------------------------------
@@ -224,24 +222,19 @@ test('enabled:false: no memory text is injected, enabled:true injects the index 
   function fakeAgent(record) {
     return {
       id: 'agent-injection',
-      ctx: {
+      ctx: withCordis({
         systemPrompt: {
           context(options) {
             record.push(options);
             return () => {};
           },
         },
-      },
+      }),
     };
   }
 
-  // The agents service is resolved through ctx.get('agents') or ctx.agents; keep
-  // the fake ctx minimal but service-shaped.
   const disabledCalls = [];
-  const disabledCtx = {
-    agents: { list: () => [fakeAgent(disabledCalls)] },
-    on: () => () => {},
-  };
+  const disabledCtx = withCordis({ agents: { list: () => [fakeAgent(disabledCalls)] } });
   const disposeDisabled = mods.inject.registerInjection(disabledCtx, runtime);
   await tick(150);
   const disabledTexts = disabledCalls.map((options) => String(options?.text?.() ?? '').trim()).filter((text) => text !== '');
@@ -254,10 +247,7 @@ test('enabled:false: no memory text is injected, enabled:true injects the index 
     mods.config.resolveConfig({ memoryRoot: baseConfig.memoryRoot, enabled: true }),
   );
   const enabledCalls = [];
-  const enabledCtx = {
-    agents: { list: () => [fakeAgent(enabledCalls)] },
-    on: () => () => {},
-  };
+  const enabledCtx = withCordis({ agents: { list: () => [fakeAgent(enabledCalls)] } });
   const disposeEnabled = mods.inject.registerInjection(enabledCtx, enabledRuntime);
   await tick(250);
   assert.equal(enabledCalls.length, 1, 'enabled:true must register the cc-memory prompt context');
@@ -265,7 +255,7 @@ test('enabled:false: no memory text is injected, enabled:true injects the index 
   assert.equal(enabledCalls[0].required, false);
   const injected = String(enabledCalls[0].text?.() ?? '');
   assert.match(injected, /<system-reminder>/, 'enabled:true must inject the system reminder block');
-  assert.match(injected, /Rules:/, 'enabled:true must inject the rules block');
+  assert.match(injected, /Auto memory is enabled for this project/, 'enabled:true must inject the memory header');
   if (typeof disposeEnabled === 'function') disposeEnabled();
 });
 
@@ -273,14 +263,14 @@ test('enabled:false: write tools refuse, read tools still work', async (t) => {
   const mods = await v3();
   const { runtime } = await runtimeSetup(t, { configOverrides: { enabled: false }, withProject: false });
   const definitions = new Map();
-  const toolCtx = {
+  const toolCtx = withCordis({
     tools: {
       register(definition) {
         definitions.set(definition.name, definition);
         return () => {};
       },
     },
-  };
+  });
   const dispose = mods.tools.registerTools(toolCtx, runtime);
   t.after(() => {
     if (typeof dispose === 'function') dispose();
@@ -428,11 +418,9 @@ test('http: GET /status returns the documented status shape', async (t) => {
     'enabled',
     'autoMemoryEnabled',
     'autoDreamEnabled',
-    'dreamMode',
     'indexMaxLines',
     'indexMaxBytes',
     'dreamAllowDelete',
-    'userMemoryEnabled',
   ]) {
     assert.ok(Object.prototype.hasOwnProperty.call(body.config, key), `status.config.${key} is missing`);
   }
@@ -445,9 +433,7 @@ test('http: GET /status returns the documented status shape', async (t) => {
   assert.equal(body.entries.length, 1);
   assert.equal(body.entries[0].file, 'user_alpha.md');
   assert.equal(body.entries[0].name, 'alpha');
-  assert.equal(typeof body.userScope, 'object');
-  assert.equal(body.userScope.enabled, false);
-  assert.ok(Array.isArray(body.userScope.entries));
+  assert.equal(typeof body.userScope, 'undefined', 'status no longer carries a user scope');
 
   for (const key of [
     'lastDreamAt',
@@ -456,8 +442,8 @@ test('http: GET /status returns the documented status shape', async (t) => {
     'lastDreamSessions',
     'lastDreamOps',
     'lastDreamMode',
-    'lastPlanPath',
-    'pendingProposal',
+    'shadowPending',
+    'shadowPending',
     'lastError',
     'consecutiveFailures',
     'counters',
@@ -496,7 +482,7 @@ test('http: GET /file, /rules and /log return the expected payloads', async (t) 
   const rulesBody = rules.json();
   assert.equal(rulesBody.ok, true);
   assert.equal(rulesBody.rules.source, 'default');
-  assert.ok(String(rulesBody.rules.text).length > 0);
+  assert.equal(rulesBody.rules.text, '', 'no built-in behaviour manual is injected by default');
 
   const log = await callHttp(handle, { token, path: '/log?lines=5' });
   assert.equal(log.statusCode, 200);
@@ -655,7 +641,7 @@ async function commandHarness(t) {
         return () => definitions.delete(definition.name);
       },
     },
-    get: () => undefined,
+    get: (name) => (name === 'commands' ? commandCtx.commands : undefined),
     on: () => () => {},
     effect: (factory) => (typeof factory === 'function' ? factory() : undefined),
   };

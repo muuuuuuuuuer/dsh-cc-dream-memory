@@ -1,12 +1,13 @@
-/** Shared authority boundary for model-originated saves and updates. */
+/** Body composition shared by every memory write (corrections, hashes). */
 import { createHash } from 'node:crypto';
-import { basisReviewReasons, detectConflict, evaluateWrite } from './policy.js';
-import { queuePendingWrite } from './pending-writes.js';
+import { CURRENT_STATUS_LINE, ensureCurrentStatus } from './memory-body.js';
+
+/** Re-exported for the write callers; the definition lives with the other body
+ * markers in `memory-body.js`. */
+export { CURRENT_STATUS_LINE, ensureCurrentStatus };
 
 export const memoryHash = (raw) => createHash('sha256').update(raw).digest('hex');
 
-/** Active marker written on an explicit user correction (v21). */
-export const CURRENT_STATUS_LINE = 'STATUS: current';
 /** Heading separating the current value from superseded values (v21). */
 export const HISTORY_HEADING = '## History';
 const HISTORY_HEADING_RE = /^##\s+history\s*$/iu;
@@ -17,6 +18,9 @@ const SUPERSEDED_LINE_RE = /^\s*[-*]\s+Superseded:/iu;
 const NOTE_LINE_RE = /^\s*(APPLIES WHEN|HOW TO VERIFY|VERIFY|OBSERVED|EXCEPTION):\s*(.+)$/iu;
 /** A superseded value is collapsed onto one history line and capped for size. */
 const MAX_SUPERSEDED_CHARS = 1000;
+/** Inline history is a short audit trail, not an append-only log. */
+const MAX_HISTORY_LINES = 20;
+const MAX_HISTORY_CHARS = 4000;
 
 function normalizeNewlines(text) {
   return String(text ?? '').replace(/\r\n?/g, '\n');
@@ -140,13 +144,20 @@ export function composeCorrection({ existingBody, content, source = {}, date, no
   const suppliedLabels = new Set(next.notes.map(noteLabel).filter((label) => label !== ''));
   const carriedNotes = previous.notes.filter((line) => !suppliedLabels.has(noteLabel(line)));
   const notes = [...next.notes, ...carriedNotes];
-  const history = superseded === ''
+  const history = [];
+  let historyChars = 0;
+  const candidates = superseded === ''
     ? [...next.history, ...previous.history]
     : [
         `- Superseded: ${superseded} (until ${until}) — ${sourceText}`,
         ...next.history,
         ...previous.history,
       ];
+  for (const line of candidates) {
+    if (history.length >= MAX_HISTORY_LINES || historyChars + line.length > MAX_HISTORY_CHARS) break;
+    history.push(line);
+    historyChars += line.length;
+  }
   const blocks = [CURRENT_STATUS_LINE];
   if (next.value !== '') blocks.push(next.value);
   if (notes.length > 0) blocks.push(notes.join('\n'));
@@ -160,56 +171,4 @@ export function composeCorrection({ existingBody, content, source = {}, date, no
     notes,
     history,
   };
-}
-
-/**
- * Mark a body the user just stated as the current value.
- *
- * Only writes backed by a verified user quote reach here: a hand-edited note
- * keeps whatever status it had, so an inference can never mint one.
- * @param {string} content
- * @returns {string}
- */
-export function ensureCurrentStatus(content) {
-  const text = normalizeNewlines(String(content ?? ''));
-  if (/^\s*status:\s*current\s*$/imu.test(text)) return text;
-  return `${CURRENT_STATUS_LINE}\n${text.replace(/^\n+/, '')}`;
-}
-
-/**
- * Returns a tool result when the write must stop, otherwise null.
- *
- * `basis` (v21) adds attribution review on top of the existing confidence,
- * conflict and duplicate checks. Attribution reasons are never bypassed by
- * `force:true`: a forwarded/inferred user claim has to be confirmed by the user
- * (approved from the pending queue) rather than forced active. Since v22 an
- * explicit basis also needs `verifiedEvidence` — a quote the host matched
- * against the session transcript and bound to the new lines of this write —
- * before it can write an active user claim, and a profile-page write needs that
- * authority even when the model omits `basis` (`profileTarget`).
- */
-export async function reviewWrite({ paths, candidate, entries = [], force = false, action = 'save', file = '', name = '', content, description, source, config = {}, existing, basis = '', verifiedEvidence = '', profileTarget = false }) {
-  const decision = evaluateWrite({ candidate, entries, config });
-  // Check independently: neither a high similarity score nor force may hide
-  // a negation. A lexical conflict needs human review, not permanent rejection.
-  const conflict = detectConflict(candidate, entries);
-  const reasons = decision.action === 'low-confidence' ? [...decision.reasons] : [];
-  reasons.push(...basisReviewReasons({ basis, candidate, verifiedEvidence, profileTarget }));
-  if (conflict) reasons.push(conflict.reason);
-  if (reasons.length > 0) {
-    const queued = await queuePendingWrite(paths, {
-      action, file, name, candidate, content, description, source,
-      reasons,
-      ...(typeof existing?.raw === 'string' ? { expectedHash: memoryHash(existing.raw) } : {}),
-    });
-    return { ok: true, written: false, action: 'queued-review', pendingId: queued.id, reasons,
-      ...(basis !== '' ? { basis } : {}),
-      ...(conflict ? { existingFile: conflict.existingFile, conflicts: [{ file: conflict.existingFile, reason: conflict.reason }] } : {}),
-      hint: 'Queued for human review. Use /memory writes; approve with /memory approve <id>.' };
-  }
-  if (!force && decision.action === 'duplicate') {
-    return { ok: true, written: false, action: 'duplicate', existingFile: decision.existingFile, similarity: decision.similarity,
-      hint: `Not written: ${decision.existingFile} already covers this memory. Use memory_update, or force:true for an intentional duplicate.` };
-  }
-  return null;
 }

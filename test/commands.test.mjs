@@ -7,7 +7,7 @@
  * A complete slash line is also accepted and normalizes to the same result:
  * `parseCommandLine('/memory dream run --dry-run')`. For `/remember` the verb is
  * the command name and the flags/text stay in `args`; `parseRememberInput`
- * extracts `--type`/`--scope` and preserves the free-form text.
+ * extracts `--type` and preserves the free-form text.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -129,18 +129,15 @@ test('parseRememberInput extracts flags and preserves the message text', async (
 
   assert.deepEqual(parseRememberInput('plain note text'), {
     type: 'user',
-    scope: 'project',
     text: 'plain note text',
   });
 
-  const flagged = parseRememberInput('--type=feedback --scope=user use tabs for indentation');
+  const flagged = parseRememberInput('--type=feedback use tabs for indentation');
   assert.equal(flagged.type, 'feedback');
-  assert.equal(flagged.scope, 'user');
   assert.equal(flagged.text, 'use tabs for indentation');
 
-  const spaced = parseRememberInput('--type project --scope user never commit secrets');
+  const spaced = parseRememberInput('--type project never commit secrets');
   assert.equal(spaced.type, 'project');
-  assert.equal(spaced.scope, 'user');
   assert.equal(spaced.text, 'never commit secrets');
 
   const multiline = parseRememberInput('--type=reference line one\nline two');
@@ -149,6 +146,5 @@ test('parseRememberInput extracts flags and preserves the message text', async (
   assert.match(multiline.text, /line two/);
 
   assert.equal(parseRememberInput('').type, 'user', 'default type is user');
-  assert.equal(parseRememberInput('').scope, 'project', 'default scope is project');
   assert.equal(parseRememberInput('').text, '');
 });

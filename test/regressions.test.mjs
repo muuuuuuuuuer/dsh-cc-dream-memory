@@ -81,7 +81,7 @@ async function setupProject(t, { configOverrides = {}, git = false, workspaceNam
   }
   const config = mods.config.resolveConfig({ memoryRoot, ...configOverrides });
   const paths = mods.paths.buildPaths({ memoryRoot: config.memoryRoot, homeDir: home, workspaceDir });
-  const store = new mods.store.MemoryStore({ paths, config });
+  const store = new mods.store.MemoryStore({ paths, getConfig: () => config });
   await store.ensure();
   const state = new mods.state.ProjectState(paths);
   await state.load();
@@ -218,99 +218,22 @@ test('v2 config exposes the new autoMemoryEnabled / dream budget defaults', asyn
   const { config } = await core();
   const resolved = config.resolveConfig();
   assert.equal(resolved.autoMemoryEnabled, true, 'autoMemoryEnabled defaults to true');
-  assert.equal(resolved.dreamMaxFileChars, 20_000, 'dreamMaxFileChars defaults to 20000');
-  assert.equal(resolved.dreamMaxSessionChars, 12_000, 'dreamMaxSessionChars defaults to 12000 (v0.10.8)');
+  assert.equal(resolved.dreamMaxFileChars, 100_000, 'dreamMaxFileChars defaults to 100000 (Claude cookbook 100KB)');
   assert.equal(resolved.dreamMaxToolChars, 4_000, 'dreamMaxToolChars defaults to 4000');
   assert.equal(resolved.enabled, true, 'plugin master switch default stays true');
-  assert.equal(config.DEFAULTS.dreamMaxFileChars, 20_000);
-  assert.equal(config.DEFAULTS.dreamMaxSessionChars, 12_000);
+  assert.equal(config.DEFAULTS.dreamMaxFileChars, 100_000);
   assert.equal(config.DEFAULTS.dreamMaxToolChars, 4_000);
 
   const overridden = config.resolveConfig({
     autoMemoryEnabled: false,
     dreamMaxFileChars: 12_000,
-    dreamMaxSessionChars: 3000,
   });
   assert.equal(overridden.autoMemoryEnabled, false);
   assert.equal(overridden.dreamMaxFileChars, 12_000);
-  assert.equal(overridden.dreamMaxSessionChars, 3000);
 });
 
 // ---------------------------------------------------------------------------
 // P0-1: truncated input must never be written back
-// ---------------------------------------------------------------------------
-
-test('P0-1: validateDreamPlan drops writes to files truncated in the dream input', async () => {
-  const { dream, config } = await core();
-  const cfg = config.resolveConfig();
-  const plan = {
-    summary: 'tidy',
-    operations: [
-      {
-        op: 'write',
-        type: 'reference',
-        file: 'reference_api_notes.md',
-        name: 'api notes',
-        description: 'long reference',
-        body: 'shrunk body',
-      },
-      { op: 'write', type: 'user', name: 'short note', description: 'ok', body: 'safe body' },
-      { op: 'index', content: '- [api notes](reference_api_notes.md) — long reference\n' },
-    ],
-  };
-  const result = dream.validateDreamPlan(plan, {
-    config: cfg,
-    existingFiles: ['reference_api_notes.md', 'user_short_note.md'],
-    truncatedFiles: ['reference_api_notes.md'],
-  });
-  assert.equal(result.ok, true);
-  const writes = (result.plan?.operations ?? []).filter((operation) => operation.op === 'write');
-  assert.equal(
-    writes.some((operation) => operation.file === 'reference_api_notes.md'),
-    false,
-    'write to a truncated source file must be dropped',
-  );
-  assert.equal(
-    writes.some((operation) => operation.name === 'short note' || operation.file === 'user_short_note.md'),
-    true,
-    'writes to non-truncated files stay valid',
-  );
-  assert.match(result.dropped.join(' '), /truncat/i, 'the drop reason must mention truncation');
-});
-
-test('P0-1: a dream leaves a long page it was not asked to change byte-identical', async (t) => {
-  const env = await dreamRuntimeEnv(t, { dreamMaxFileChars: 2_000 });
-  const { runtime, pctx } = env;
-  const content = Array.from({ length: 800 }, (_, index) => `- fact ${index}: ${'x'.repeat(30)}`).join('\n');
-  const saved = await pctx.store.saveEntry({
-    name: 'api notes',
-    type: 'reference',
-    description: 'long reference',
-    content,
-  });
-  const before = await pctx.store.readEntry(saved.file);
-  assert.ok(
-    before.body.length > env.config.dreamMaxFileChars,
-    `fixture body (${before.body.length}) must exceed dreamMaxFileChars (${env.config.dreamMaxFileChars})`,
-  );
-  await scriptDream(env, {
-    sessions: { s1: ['Short note: run the tests first.'] },
-    claims: [claimOf('Short note: run the tests first.', { target: 'short notes' })],
-  });
-
-  const run = await runtime.dream({ pctx, force: true, trigger: 'manual' });
-  assert.equal(run.ran, true, `forced dream must run: ${JSON.stringify(run).slice(0, 300)}`);
-
-  const after = await pctx.store.readEntry(saved.file);
-  assert.equal(after.body, before.body, 'a page the dream was not asked to change must stay byte-identical');
-  assert.equal(after.body.length, before.body.length);
-  const entries = await pctx.store.listEntries();
-  assert.equal(entries.length, 2, 'the claim is written to its own page next to the untouched one');
-  assert.ok(entries.some((entry) => entry.file !== saved.file), 'a new page carries the claim');
-});
-
-// ---------------------------------------------------------------------------
-// P0-2: unicode names and non-destructive collisions
 // ---------------------------------------------------------------------------
 
 test('P0-2: two Chinese memory names become two distinct, readable files', async (t) => {
@@ -374,7 +297,7 @@ test('P0-2: two /remember notes with Chinese first lines do not collide', async 
         return () => definitions.delete(definition.name);
       },
     },
-    get: () => undefined,
+    get: (name) => (name === 'commands' ? commandCtx.commands : undefined),
   };
   const runtime = {
     config: proj.config,
@@ -382,9 +305,7 @@ test('P0-2: two /remember notes with Chinese first lines do not collide', async 
     forSessionId: async () => proj.pctx,
     storeFor: async () => proj.pctx,
     invalidateInjection() {},
-    dream: async () => ({ ran: false }),
-    applyPendingDream: async () => ({ applied: false }),
-    applyLastPlan: async () => ({ applied: false }),
+    canWriteMemory: () => true,
   };
   const dispose = registerCommands(commandCtx, runtime);
   t.after(() => {
@@ -542,185 +463,3 @@ test('P1: trashEntry soft-deletes into the project trash and removes the index l
 // ---------------------------------------------------------------------------
 // P1: dry-run -> applyLastPlan executes exactly the previewed plan
 // ---------------------------------------------------------------------------
-
-test('P1: dry-run previews a plan and applyLastPlan executes that same plan', async (t) => {
-  const env = await dreamRuntimeEnv(t);
-  const { runtime, pctx } = env;
-  await pctx.store.saveEntry({ name: 'existing', type: 'user', description: 'existing note', content: 'existing body' });
-  await scriptDream(env, { sessions: { 'session-1': ['部署前先跑测试。'] }, claims: [claimOf('部署前先跑测试。')] });
-  const entriesBefore = await pctx.store.listEntries();
-
-  const dry = await runtime.dream({ pctx, force: true, dryRun: true, trigger: 'manual' });
-  assert.equal(dry.ran, true, 'forced dry-run must run');
-  assert.equal(dry.applied, false, 'dry-run must not apply');
-  assert.equal(dry.dryRun, true);
-
-  const snapshot = pctx.state.snapshot();
-  assert.equal(typeof snapshot.lastPlanPath, 'string');
-  assert.ok(snapshot.lastPlanPath.length > 0, 'dry-run must record lastPlanPath in state');
-  assert.equal(snapshot.lastDreamMode, 'dry-run', 'state must record the dry-run mode');
-  assert.ok(await exists(snapshot.lastPlanPath), 'plan.json must exist on disk');
-
-  const savedPlan = await readJson(snapshot.lastPlanPath);
-  assert.equal(planField(savedPlan, 'applied'), false, 'plan.json must be marked applied:false');
-  const savedOperations = planOperations(savedPlan);
-  assert.ok(savedOperations.length >= 2, 'the plan keeps the write and index operations');
-  const savedWrite = savedOperations.find((operation) => operation.op === 'write');
-  assert.ok(savedWrite && typeof savedWrite.file === 'string', 'the write names its file');
-
-  // dry-run must not have touched memory
-  const entriesAfterDry = await pctx.store.listEntries();
-  assert.equal(entriesAfterDry.length, entriesBefore.length, 'dry-run must not write memory files');
-  assert.equal(await exists(path.join(pctx.paths.memoryDir, savedWrite.file)), false);
-
-  const applied = await runtime.applyLastPlan({ pctx });
-  assert.equal(applied.applied, true, `applyLastPlan failed: ${JSON.stringify(applied.error ?? applied)}`);
-
-  const after = await pctx.store.listEntries();
-  assert.ok(
-    after.some((entry) => entry.file === savedWrite.file),
-    `file planned by dry-run (${savedWrite.file}) must be written by applyLastPlan`,
-  );
-  const written = await pctx.store.readEntry(savedWrite.file);
-  assert.match(written.body, /部署前先跑测试/, 'the applied page carries the planned fact');
-  assert.match(await pctx.store.indexText(), new RegExp(escapeRegExp(savedWrite.file)));
-});
-
-// ---------------------------------------------------------------------------
-// P1: mid-apply failure rolls back the backup
-// ---------------------------------------------------------------------------
-
-test('P1: a failure in the middle of apply restores the backup and reports rolledBack', async (t) => {
-  const env = await dreamRuntimeEnv(t);
-  const { runtime, pctx } = env;
-  const original = await pctx.store.saveEntry({
-    name: 'old',
-    type: 'feedback',
-    description: 'original',
-    content: 'ORIGINAL BODY',
-  });
-  await scriptDream(env, {
-    sessions: { s1: ['请整理一下记忆文件', '合并前先写变更说明'] },
-    claims: [
-      claimOf('请整理一下记忆文件', { target: 'old' }),
-      claimOf('合并前先写变更说明', { target: 'brand new' }),
-    ],
-  });
-
-  const { store: wrappedStore, calls } = failingWriteStore(pctx.store);
-  pctx.store = wrappedStore;
-  const run = await runtime.dream({ pctx, force: true, trigger: 'manual' });
-
-  assert.equal(calls.length, 2, `the second write must fail; writes: ${JSON.stringify(calls)}`);
-  assert.equal(run.applied, false, 'a failed apply must not report success');
-  assert.equal(run.rolledBack, true, 'a failed apply must report rolledBack:true');
-  assert.ok(run.error, 'a failed apply must report the error');
-
-  const restored = await pctx.store.readEntry(original.file);
-  assert.equal(restored.body.trim(), 'ORIGINAL BODY', 'the pre-dream body must be restored from the backup');
-  assert.equal((await pctx.store.listEntries()).length, 1, 'files created by the failed apply are rolled back');
-  assert.doesNotMatch(await pctx.store.indexText(), /合并前先写变更说明/, 'the index must be restored as well');
-  const audit = await pctx.store.auditIndex();
-  assert.equal(audit.missing.length, 0);
-
-  const snapshot = pctx.state.snapshot();
-  assert.match(String(snapshot.lastError), /simulated disk failure/i, 'state must record the failure');
-  assert.equal(snapshot.consecutiveFailures, 1, 'failure counter must be incremented');
-  const changelog = await readFile(pctx.paths.changelogFile, 'utf8').catch(() => '');
-  assert.match(changelog, /rollback/i, 'changelog must record the rollback');
-});
-
-// ---------------------------------------------------------------------------
-// P2: review / pending proposal lifecycle
-// ---------------------------------------------------------------------------
-
-test('P2: review mode writes a pending proposal without clearing sessions; applyPending finalizes it', async (t) => {
-  const env = await dreamRuntimeEnv(t, { dreamMode: 'review' });
-  const { runtime, pctx } = env;
-  await pctx.store.saveEntry({ name: 'base', type: 'user', description: 'base note', content: 'base body' });
-  await scriptDream(env, { sessions: { 's-1': ['评审前先写变更说明。'] }, claims: [claimOf('评审前先写变更说明。')] });
-  await pctx.state.ensureSession('s-2', 2000);
-  const proposed = '评审前先写变更说明.md';
-
-  const run = await runtime.dream({ pctx, force: true, trigger: 'manual' });
-  assert.equal(run.ran, true, `review dream must run: ${JSON.stringify(run).slice(0, 300)}`);
-  assert.equal(run.applied, false, 'review mode must not apply');
-  assert.equal(run.mode, 'review');
-
-  const snapshot = pctx.state.snapshot();
-  assert.equal(typeof snapshot.pendingProposal, 'string');
-  assert.ok(snapshot.pendingProposal.length > 0, 'review must record pendingProposal');
-  assert.ok(await exists(snapshot.pendingProposal), 'pending proposal file must exist');
-  const proposal = await readJson(snapshot.pendingProposal);
-  assert.equal(planField(proposal, 'applied'), false, 'proposal must be marked applied:false');
-  assert.ok(planOperations(proposal).length >= 1, 'proposal must carry operations');
-
-  assert.deepEqual(
-    snapshot.sessionsSince.map((entry) => entry.id).sort(),
-    ['s-1', 's-2'],
-    'review mode must not clear sessionsSince',
-  );
-  assert.equal(snapshot.lastDreamAt, 0, 'review mode must not mark the dream as done');
-  assert.equal(await exists(path.join(pctx.paths.memoryDir, proposed)), false, 'review mode must not write memory files');
-
-  const second = await runtime.dream({ pctx, force: true, trigger: 'manual' });
-  assert.equal(second.ran, false, 'a second review run must not start while a proposal is pending');
-  assert.equal(second.skipped, true);
-  assert.equal(second.skipReason, 'pending-proposal');
-
-  const applied = await runtime.applyPendingDream({ pctx, agent: { id: 'agent-1' } });
-  assert.equal(applied.applied, true, `applyPendingDream failed: ${JSON.stringify(applied.error ?? applied)}`);
-  const afterSnapshot = pctx.state.snapshot();
-  assert.equal(afterSnapshot.pendingProposal, '', 'pendingProposal must be cleared after applying');
-  // s-2 has no transcript in this fixture, so the proposal never consulted it.
-  // Only consulted sessions clear.
-  assert.deepEqual(afterSnapshot.sessionsSince.map((entry) => entry.id), ['s-2'], 'only consulted sessions are cleared after apply');
-  assert.equal(await exists(path.join(pctx.paths.memoryDir, proposed)), true, 'the proposed page must be written by applyPending');
-  const audit = await pctx.store.auditIndex();
-  assert.equal(audit.missing.length, 0);
-});
-
-// ---------------------------------------------------------------------------
-// Third review round: stale plans, derived-name collisions, truncated deletes
-// ---------------------------------------------------------------------------
-
-test('R3: applyLastPlan refuses a plan once memory changed after the dry-run', async (t) => {
-  const env = await dreamRuntimeEnv(t);
-  const { runtime, pctx } = env;
-  const goal = await pctx.store.saveEntry({ name: 'goal', type: 'project', content: 'v1' });
-  await scriptDream(env, { sessions: { s1: ['The goal is to ship v1.'] }, claims: [claimOf('The goal is to ship v1.', { target: goal.file })] });
-
-  const dry = await runtime.dream({ pctx, force: true, dryRun: true, trigger: 'manual' });
-  assert.equal(dry.ran, true);
-  const planPath = pctx.state.snapshot().lastPlanPath;
-  const write = planOperations(await readJson(planPath)).find((operation) => operation.op === 'write');
-  assert.match(String(write?.baseHash), /^[0-9a-f]{64}$/, 'each write carries the hash of the page it was built on');
-
-  await pctx.store.updateEntry(goal.file, { content: 'v2 newer human edit' });
-  const applied = await runtime.applyLastPlan({ pctx });
-  assert.equal(applied.applied, false, 'a stale plan must not be applied');
-  assert.match(String(applied.error), /stale-plan/);
-  assert.match(String(applied.error), new RegExp(escapeRegExp(goal.file)), 'the error names the changed file');
-  assert.equal((await pctx.store.readEntry(goal.file)).body, 'v2 newer human edit', 'the newer edit survives');
-});
-
-test('R3: with deletes enabled, a file truncated in the input cannot be deleted', async () => {
-  const { dream, config } = await core();
-  const result = dream.validateDreamPlan(
-    {
-      summary: 'absorb big ref',
-      operations: [
-        { op: 'write', type: 'reference', file: 'reference_merged.md', name: 'merged', body: 'excerpt only' },
-        { op: 'delete', file: 'reference_big.md', reason: 'absorbed' },
-      ],
-    },
-    {
-      config: config.resolveConfig({ dreamAllowDelete: true }),
-      existingFiles: ['reference_big.md'],
-      truncatedFiles: ['reference_big.md'],
-    },
-  );
-  assert.equal(result.ok, true);
-  assert.equal(result.plan.operations.some((operation) => operation.op === 'delete'), false);
-  assert.match(result.dropped.join(' '), /truncated in the dream input; refusing to delete/);
-});

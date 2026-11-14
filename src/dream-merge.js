@@ -236,10 +236,22 @@ function supersededLine({ oldValue, date, citation }) {
 }
 
 /**
+ * The line a page keeps when two sources disagree and the dream cannot decide.
+ * Both values stay on the page, flagged so a person settles it instead of the
+ * losing claim disappearing into the run report.
+ */
+function conflictLine({ oldValue, newValue, citation }) {
+  return `- CONFLICT: "${oneLine(oldValue, 200)}" vs "${oneLine(newValue, 200)}" — the sources disagree; a person has to pick one. ${citation}`.trim();
+}
+
+/**
  * Merge verified claims into write operations.
+ * Every operation carries `proposals`: the keys of the facts it introduces
+ * (`claimKey`) or `retire:<file>`. A key in `rejected` was turned down by the
+ * human before and is never proposed again.
  * @param {{analyses:Array<{sessionId:string,claims?:object[],verify?:object[]}>,
  *   memoryPages?:Array<{file:string,name?:string,description?:string,type?:string,body?:string}>,
- *   indexText?:string, title?:string, allowLowConfidence?:boolean}} input
+ *   indexText?:string, title?:string, allowLowConfidence?:boolean, rejected?:Iterable<string>}} input
  * @returns {{operations:object[], review:object[], warnings:string[], pages:Array<object>, touched:string[]}}
  */
 export function mergeClaims({
@@ -248,7 +260,9 @@ export function mergeClaims({
   indexText = '',
   title = '',
   allowLowConfidence = false,
+  rejected = [],
 } = {}) {
+  const turnedDown = new Set(rejected);
   const pages = new Map();
   for (const page of Array.isArray(memoryPages) ? memoryPages : []) {
     if (!page || typeof page.file !== 'string' || page.file === '') continue;
@@ -288,9 +302,9 @@ export function mergeClaims({
         warnings.push(`claim without a citable position was skipped: ${oneLine(claim.text, 120)}`);
         continue;
       }
+      const key = claimKey(claim.text);
+      if (key.length < 4 || turnedDown.has(key)) continue;
       const target = resolveTarget({ claim, pages, byName, taken });
-      const key = normalizeForMatch(claim.text);
-      if (key.length < 4) continue;
       if (!grouped.has(target.file)) grouped.set(target.file, new Map());
       const bucket = grouped.get(target.file);
       if (!bucket.has(key)) {
@@ -321,9 +335,11 @@ export function mergeClaims({
     let nextType = page?.type ?? 'project';
     let nextName = page?.name ?? file.replace(/\.md$/u, '');
     const historyEntries = [];
+    const proposals = [];
 
-    for (const entry of bucket.values()) {
+    for (const [key, entry] of bucket) {
       const { claim, citations } = entry;
+      const descriptionBefore = nextDescription;
       const line = claimLine(claim, citations);
       const existingText = normalizeForMatch(lines.join('\n'));
       // A one-line summary for the first-turn index is a proposal in its own
@@ -334,7 +350,10 @@ export function mergeClaims({
       } else if (nextDescription === '') {
         nextDescription = descriptionFromClaim(claim);
       }
-      if (existingText.includes(normalizeForMatch(claim.text))) continue;
+      if (existingText.includes(normalizeForMatch(claim.text))) {
+        if (nextDescription !== descriptionBefore) proposals.push(key);
+        continue;
+      }
       if (entry.created) {
         nextType = typeFromClaim(claim);
         nextName = oneLine(claim.description, 90) || nextName;
@@ -363,11 +382,16 @@ export function mergeClaims({
           if (contradictsClaim(value, claim.text)) sameObject.push(index);
         });
         if (sameObject.length > 1) {
+          // The human reviews every change anyway: propose the new value next
+          // to the old ones and say why it could not replace one of them.
           review.push({
             file,
             claim: oneLine(claim.text, 200),
             reason: 'more than one line records a value for the same object',
           });
+          lines.splice(0, lines.length, ...appendToBody(lines, line));
+          changed = true;
+          proposals.push(key);
           continue;
         }
         if (sameObject.length === 1) {
@@ -377,6 +401,7 @@ export function mergeClaims({
           historyEntries.push(supersededLine({ oldValue, date: oneLine(claim.date, 20), citation: citations[0], claim }));
           corrected = true;
           changed = true;
+          proposals.push(key);
           continue;
         }
         // A value that names another object (a write timeout next to a read
@@ -388,18 +413,27 @@ export function mergeClaims({
           return (conflict === 'quantity' || conflict === 'negation') && !contradictsClaim(value, claim.text);
         });
         if (otherObject !== undefined) {
+          const otherValue = otherObject.replace(BULLET_RE, '').replace(/\s*\^\[[^\]]*\]\s*$/u, '').trim();
           review.push({
             file,
             claim: oneLine(claim.text, 200),
-            reason: `the page already records a different value for another object: "${oneLine(otherObject.replace(BULLET_RE, '').replace(/\s*\^\[[^\]]*\]\s*$/u, '').trim(), 120)}"`,
+            reason: `the page already records a different value for another object: "${oneLine(otherValue, 120)}"`,
           });
+          const marker = conflictLine({ oldValue: otherValue, newValue: claim.text, citation: citations[0] });
+          if (marker !== '' && !normalizeLight(lines.join('\n')).includes(normalizeLight(marker))) {
+            lines.splice(0, lines.length, ...appendToBody(lines, marker));
+            changed = true;
+            proposals.push(key);
+          }
           continue;
         }
         lines.splice(0, lines.length, ...appendToBody(lines, line));
         changed = true;
+        proposals.push(key);
         continue;
       }
       if (targets.length !== 1 || !BULLET_RE.test(lines[targets[0]])) {
+        // Propose the new value as its own line; the human decides.
         review.push({
           file,
           claim: oneLine(claim.text, 200),
@@ -407,6 +441,9 @@ export function mergeClaims({
             ? 'the contradicted line is no longer in the page'
             : 'the contradicted value matches more than one line',
         });
+        lines.splice(0, lines.length, ...appendToBody(lines, line));
+        changed = true;
+        proposals.push(key);
         continue;
       }
       const oldLine = lines[targets[0]];
@@ -420,12 +457,20 @@ export function mergeClaims({
           claim: oneLine(claim.text, 200),
           reason: `the new value does not restate the same quantity for the same object as "${oneLine(oldValue, 120)}"`,
         });
+        lines.splice(0, lines.length, ...appendToBody(lines, conflictLine({
+          oldValue,
+          newValue: claim.text,
+          citation: citations[0],
+        })));
+        changed = true;
+        proposals.push(key);
         continue;
       }
       lines[targets[0]] = line;
       historyEntries.push(supersededLine({ oldValue, date: oneLine(claim.date, 20), citation: citations[0], claim }));
       corrected = true;
       changed = true;
+      proposals.push(key);
     }
 
     if (!changed && !(descriptionChanged && page !== undefined)) continue;
@@ -443,14 +488,79 @@ export function mergeClaims({
       name: nextName,
       description: nextDescription,
       body,
+      proposals: [...new Set(proposals)],
       ...(page !== undefined ? { baseHash: pageBodyHash(page.body) } : {}),
     });
     touched.add(file);
   }
 
+  // A retire request says a page's topic belongs on another page. The host
+  // moves every fact line the target lacks into the target, deletes the page
+  // and leaves one `MOVED TO` line in the index, so nothing is lost and the
+  // old name still leads somewhere.
+  const moved = new Map();
+  for (const analysis of Array.isArray(analyses) ? analyses : []) {
+    for (const item of Array.isArray(analysis?.retire) ? analysis.retire : []) {
+      const file = text(item?.file).trim();
+      const target = text(item?.target).trim();
+      if (file === '' || target === '' || file === target || moved.has(file)) continue;
+      if (turnedDown.has(`retire:${file}`)) continue;
+      if (!pages.has(file)) {
+        review.push({ file, claim: '', reason: 'retire names a page that does not exist' });
+        continue;
+      }
+      if (!pages.has(target) && !touched.has(target)) {
+        review.push({ file, claim: '', reason: `retire target is not a page in this run: "${target}"` });
+        continue;
+      }
+      if (moved.has(target)) {
+        review.push({ file, claim: '', reason: `retire target is itself retired: "${target}"` });
+        continue;
+      }
+      // Rewriting and retiring the same page in one run is ambiguous.
+      if (touched.has(file)) {
+        review.push({ file, claim: '', reason: 'the page was also rewritten in this run, so it was not retired' });
+        continue;
+      }
+      moved.set(file, target);
+      const key = `retire:${file}`;
+      const targetOp = operations.find((op) => op.op === 'write' && op.file === target);
+      const targetPage = pages.get(target);
+      const targetBody = targetOp ? targetOp.body : text(targetPage?.body);
+      const moving = factLinesOf(pages.get(file).body).filter((line) => !bodyHasFact(targetBody, line));
+      if (moving.length > 0) {
+        let lines = bodyLines(targetBody);
+        for (const line of moving) lines = appendToBody(lines, line);
+        const body = `${lines.join('\n').replace(/\s+$/u, '')}\n`;
+        if (targetOp) {
+          targetOp.body = body;
+          targetOp.proposals = [...new Set([...(targetOp.proposals ?? []), key])];
+        } else {
+          operations.push({
+            op: 'write',
+            scope: 'project',
+            type: targetPage.type,
+            file: target,
+            name: targetPage.name,
+            description: targetPage.description,
+            body,
+            proposals: [key],
+            baseHash: pageBodyHash(targetPage.body),
+          });
+          touched.add(target);
+        }
+      }
+      // `into`: the retired page and its target are passed or rejected together.
+      operations.push({ op: 'delete', scope: 'project', file, proposals: [key], ...(moving.length > 0 ? { into: target } : {}) });
+      touched.add(file);
+    }
+  }
+
   if (operations.length > 0) {
     const merged = new Map(pages);
+    for (const [file] of moved) merged.delete(file);
     for (const op of operations) {
+      if (op.op !== 'write') continue;
       merged.set(op.file, {
         file: op.file,
         name: op.name,
@@ -459,34 +569,55 @@ export function mergeClaims({
         body: op.body,
       });
     }
-    addRelatedLinks(merged, operations);
+    addRelatedLinks(merged, operations.filter((op) => op.op === 'write'));
     const index = indexText === ''
-      ? buildMemoryIndex([...merged.values()], title)
+      ? buildMemoryIndex([...merged.values()], title, [...moved].map(([file, target]) => ({
+        file,
+        name: pages.get(file)?.name ?? file,
+        target,
+      })))
       : indexText;
     if (index.trim() !== '') operations.push({ op: 'index', content: index });
   }
 
-  return { operations, review, warnings, pages: [...pages.values()], touched: [...touched] };
+  return { operations, review, warnings, pages: [...pages.values()], touched: [...touched], moved: [...moved.keys()] };
 }
 
-/** Host-built index; the organizer used to do this. */
-export function buildMemoryIndex(pages, title = '') {
-  const groups = new Map();
-  for (const page of pages) {
-    if (!page || typeof page.file !== 'string') continue;
-    const key = oneLine(page.type) || 'project';
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(page);
-  }
+/** The fact lines of a page: its body above `## History`, minus status and headings. */
+function factLinesOf(body) {
+  const lines = bodyLines(body);
+  const history = historyIndex(lines);
+  return (history >= 0 ? lines.slice(0, history) : lines)
+    .map((line) => line.trimEnd())
+    .filter((line) => line.trim() !== '' && !STATUS_RE.test(line) && !/^\s*#/u.test(line) && !/^(?:Related|See also):/iu.test(line.trim()));
+}
+
+/** Does a body already state this fact line (citations and bullets ignored)? */
+function bodyHasFact(body, line) {
+  const fact = normalizeForMatch(line.replace(BULLET_RE, '').replace(/\s*\^\[[^\]]*\]\s*$/u, ''));
+  return fact.length < 4 || normalizeForMatch(body).includes(fact);
+}
+
+/** The key a fact is remembered by when the human rejects it. */
+export function claimKey(statement) {
+  return normalizeForMatch(statement);
+}
+
+/** Host-built index; the organizer used to do this. Flat, like `store.indexLine`. */
+export function buildMemoryIndex(pages, title = '', stubs = []) {
   const lines = [];
   if (oneLine(title) !== '') lines.push(`# ${oneLine(title)}`, '');
-  for (const key of [...groups.keys()].sort((a, b) => a.localeCompare(b))) {
-    lines.push(`## ${key}`, '');
-    for (const item of groups.get(key).sort((a, b) => String(a.name).localeCompare(String(b.name)))) {
-      const description = oneLine(item.description) === '' ? '' : ` — ${oneLine(item.description)}`;
-      lines.push(`- [${oneLine(item.name)}](${item.file})${description}`);
-    }
-    lines.push('');
+  const entries = pages
+    .filter((page) => page && typeof page.file === 'string')
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  for (const item of entries) {
+    const description = oneLine(item.description) === '' ? '' : ` — ${oneLine(item.description)}`;
+    lines.push(`- [${oneLine(item.name)}](${item.file})${description}`);
+  }
+  for (const stub of Array.isArray(stubs) ? stubs : []) {
+    const target = oneLine(stub?.target, 200).replace(/\.md$/u, '');
+    if (target === '') continue;
+    lines.push(`- [${oneLine(stub.name)}](${stub.file}) — MOVED TO [[${target}]]`);
   }
   return `${lines.join('\n').replace(/\n+$/u, '')}\n`;
 }

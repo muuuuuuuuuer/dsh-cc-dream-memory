@@ -15,8 +15,7 @@
  *   false positive never loses a memory.
  *
  * `scanSecrets` returns `{matches, hasDeny, hasWarn}`; each match carries its
- * `severity` and a 12-character `excerpt` (never the full secret). The legacy
- * `{matches}` shape stays valid for callers that only read matches.
+ * `severity` and a 12-character `excerpt` (never the full secret).
  *
  * @module dsh-cc-dream-memory/secrets
  */
@@ -140,7 +139,7 @@ export function scanSecrets(text) {
 /**
  * Normalize the configured scan mode.
  *
- * v11 keeps the field for backward compatibility:
+ * Modes:
  * - `off` disables the scan completely;
  * - `deny` refuses both deny- and warn-severity matches (the strict mode);
  * - `warn` (default) refuses deny-severity matches and only warns about the
@@ -156,18 +155,12 @@ export function secretScanMode(config) {
 }
 
 /**
- * Human-readable warning lines for one scan result (never the full secret).
- * Accepts either the legacy matches array or the full `scanSecrets` result.
- * @param {Array<{rule:string, excerpt:string, severity?:string}>|{matches?:Array}} matches
+ * Human-readable warning lines for scan matches (never the full secret).
+ * @param {Array<{rule:string, excerpt:string, severity?:string}>} matches
  * @returns {string[]}
  */
 export function secretWarnings(matches) {
-  const list = Array.isArray(matches)
-    ? matches
-    : matches && Array.isArray(matches.matches)
-      ? matches.matches
-      : [];
-  return list.map((match) => `secret-scan: rule ${match.rule} near "${match.excerpt}…"`);
+  return matches.map((match) => `secret-scan: rule ${match.rule} near "${match.excerpt}…"`);
 }
 
 /**

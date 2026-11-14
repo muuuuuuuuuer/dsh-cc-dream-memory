@@ -18,9 +18,11 @@ async function dream(env) {
     sessions: { s1: ['Use pnpm, not npm.', 'Releases go out on Fridays.'] },
     claims: [claimOf('Use pnpm, not npm.', { target: TOUCHED, kind: 'preference' }), claimOf('Releases go out on Fridays.')],
   });
-  const applied = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual' });
-  assert.equal(applied.applied, true, JSON.stringify(applied).slice(0, 400));
-  return applied;
+  const ready = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual' });
+  assert.equal(ready.ready, true, JSON.stringify(ready).slice(0, 400));
+  const switched = await env.runtime.switchDream({ pctx: env.pctx, agent: env.pctx.agent });
+  assert.equal(switched.ok, true, JSON.stringify(switched).slice(0, 400));
+  return switched;
 }
 
 async function seedEnv(t) {
@@ -75,7 +77,6 @@ test('v11 undo: dream meta records hashes/created/rewritten for touched files', 
   const batch = await batchWithMeta(env);
   assert.ok(batch, 'the apply batch meta.json must contain hashes');
   const { meta } = batch;
-  assert.equal(meta.operations.every((operation) => 'hashAfter' in operation), true, 'each operation carries hashAfter');
   assert.ok(meta.hashes && typeof meta.hashes === 'object');
   for (const file of [TOUCHED, CREATED]) {
     assert.match(String(meta.hashes[file]), /^sha256:[0-9a-f]{64}$/, `hash for ${file}`);
@@ -139,28 +140,19 @@ test('v11 undo: files created after the dream are not trashed by undo', async (t
   assert.equal(await exists(path.join(env.pctx.paths.memoryDir, newFile)), true, 'post-dream files stay in memory/');
 });
 
-test('v11 undo: legacy batches without hashes are listed but not undoable', async (t) => {
+test('v11 undo: a folder without switch metadata is neither history nor undoable', async (t) => {
   const env = await httpEnv(t);
-  const legacyDir = path.join(env.pctx.paths.dreamsDir, '2026-01-01T00-00-00');
-  await mkdir(legacyDir, { recursive: true });
-  await writeFile(path.join(legacyDir, 'MEMORY.md'), '', 'utf8');
-  await writeFile(
-    path.join(legacyDir, 'meta.json'),
-    JSON.stringify({ ts: '2026-01-01T00-00-00', kind: 'apply', appliedAt: 1, ops: 1, files: [] }),
-    'utf8',
-  );
+  const otherDir = path.join(env.pctx.paths.dreamsDir, '2026-01-01T00-00-00');
+  await mkdir(otherDir, { recursive: true });
+  await writeFile(path.join(otherDir, 'meta.json'), JSON.stringify({ kind: 'apply', appliedAt: 1, files: [] }), 'utf8');
 
   const res = await callHttp(env, { path: '/dream-history' });
   assert.equal(res.statusCode, 200, res.bodyText());
-  const items = res.json().items;
-  const legacy = items.find((item) => item.ts === '2026-01-01T00-00-00');
-  assert.ok(legacy, 'legacy batches remain listed');
-  assert.equal(legacy.hasMeta, true);
-  assert.equal(legacy.undoable, false, 'a batch without hashes is not undoable');
+  assert.deepEqual(res.json().items, []);
 
   const undo = await env.runtime.undoLastDream(env.pctx);
   assert.equal(undo.ok, false);
-  assert.equal(undo.error, 'legacy-batch');
+  assert.equal(undo.error, 'no-undoable-batch');
 });
 
 test('v11 undo: GET /dream-history marks an undone batch as undone and no longer undoable', async (t) => {

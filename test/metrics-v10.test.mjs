@@ -4,7 +4,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { commandEnv, httpEnv, callHttp, makeEnv, toolsEnv, sleep } from './v10-helpers.mjs';
+import { commandEnv, httpEnv, callHttp, makeEnv, toolsEnv, waitFor } from './v10-helpers.mjs';
 
 function todayKey() {
   return new Date().toISOString().slice(0, 10);
@@ -55,17 +55,21 @@ test('v10 metrics: adoption counts the first read of a file per session', async 
 
   await read.execute({ file: entry.file }, exec);
   await read.execute({ file: entry.file }, exec);
-  await sleep(120);
-  let metrics = await env.mods.metrics.readMetrics(env.pctx.paths);
-  assert.equal(metrics.entries[entry.file].reads, 2);
-  assert.equal(metrics.adoptions?.['adopt-session']?.[entry.file] ?? metrics.adoptions?.[entry.file] ?? 1, 1, 'the first read per session adopts');
+  await waitFor(async () => {
+    const metrics = await env.mods.metrics.readMetrics(env.pctx.paths);
+    return metrics.entries[entry.file]?.reads === 2 &&
+      metrics.adoptions?.count === 1 &&
+      metrics.adoptions.sessions['adopt-session']?.includes(entry.file);
+  });
 
   // A second session adopts it again.
   await read.execute({ file: entry.file }, { agent: { id: 'other-agent' }, sessionId: 'other-session' });
-  await sleep(120);
-  metrics = await env.mods.metrics.readMetrics(env.pctx.paths);
-  const bucket = metrics.daily?.[new Date().toISOString().slice(0, 10)];
-  assert.ok(Number(bucket?.adopted ?? 0) >= 2, 'daily adoption counter grows with sessions');
+  await waitFor(async () => {
+    const metrics = await env.mods.metrics.readMetrics(env.pctx.paths);
+    return metrics.daily?.[todayKey()]?.adopted === 2 &&
+      metrics.adoptions?.count === 2 &&
+      metrics.adoptions.sessions['other-session']?.includes(entry.file);
+  });
 });
 
 test('v10 metrics: dream quality fields and /metrics?days trend', async (t) => {

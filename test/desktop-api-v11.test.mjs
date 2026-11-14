@@ -1,19 +1,17 @@
 /**
- * v11 step 4: desktop API bridge via the webserver `index-inject` event.
+ * Desktop API bridge: the page gets {base, token} from `GET /api/cc-memory/bridge`.
  * Contract `docs/superpowers/specs/2026-11-07-v11-user-six-steps.md` §4.
  * os.tmpdir(); no LLM.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readdir } from 'node:fs/promises';
+import { readdir, writeFile } from 'node:fs/promises';
+import { prepareShadow, shadowDirOf } from '../src/dream-shadow.js';
 import path from 'node:path';
 import { runtimeEnv, exists } from './v10-helpers.mjs';
 import { httpEnv, callHttp } from './v10-helpers.mjs';
-import { loadModule, PLUGIN_ROOT } from './helpers.mjs';
+import { injectNow, loadModule, PLUGIN_ROOT } from './helpers.mjs';
 import { readFile } from 'node:fs/promises';
-
-const OWNER = { principal: { kind: 'owner' } };
-const VIEWER = { principal: { kind: 'share-viewer' } };
 
 /** Fake plugin context with a webServer service and an event bus. */
 function fakeCtx({ workspaceDir }) {
@@ -33,7 +31,7 @@ function fakeCtx({ workspaceDir }) {
     },
   };
   const services = { workingDirectory: { ensure: async () => workspaceDir }, webServer: server };
-  return {
+  const ctx = {
     server,
     services,
     get: (name) => services[name],
@@ -52,99 +50,44 @@ function fakeCtx({ workspaceDir }) {
         if (typeof dispose === 'function') dispose();
       };
     },
-    listenerCount(event) {
-      return (listeners.get(event) ?? new Set()).size;
-    },
   };
+  ctx.inject = injectNow(ctx);
+  return ctx;
 }
 
-function sidePanelRows(ctx) {
-  const rows = [];
-  ctx.emit('webserver/index-inject', rows, OWNER);
-  return rows;
-}
-
-function apiRow(rows) {
-  return rows.find((row) => row && row.name === '__CC_MEMORY_API__');
-}
-
-test('v11 desktop: index-inject pushes the API global for owner peers only', async (t) => {
+test('v11 desktop: the API route registers under the un-slashed prefix, without tapIndex', async (t) => {
   const env = await runtimeEnv(t);
   const http = await loadModule('../src/http.js', { requireExports: ['registerHttpApi'] });
   const ctx = fakeCtx({ workspaceDir: env.workspaceDir });
   const dispose = http.registerHttpApi(ctx, env.runtime);
-  t.after(() => {
-    if (typeof dispose === 'function') dispose();
-  });
-
-  assert.ok(ctx.listenerCount('webserver/index-inject') >= 1, 'a webserver/index-inject listener is registered');
-  assert.ok(ctx.server.registerCalls >= 1, 'the HTTP handler is still registered on the web server');
+  t.after(() => dispose?.());
+  assert.equal(ctx.server.registerCalls, 1, 'the HTTP handler is registered on the web server');
   assert.equal(
     ctx.server.registerPath,
     '/api/cc-memory',
     'the prefix route must have no trailing slash (Host prefix matching would never match it)',
   );
-  assert.equal(ctx.server.tapIndexCalls, 0, 'tapIndex is no longer used');
-
-  const ownerRows = [];
-  ctx.emit('webserver/index-inject', ownerRows, OWNER);
-  const row = apiRow(ownerRows);
-  assert.ok(row, `owner peers must receive the API row: ${JSON.stringify(ownerRows)}`);
-  assert.equal(row.kind, 'global');
-  assert.ok(row.value && typeof row.value === 'object');
-  assert.equal(row.value.base, '/api/cc-memory');
-  assert.equal(typeof row.value.token, 'string');
-  assert.ok(row.value.token.length >= 16, 'the row carries the API token');
-
-  const viewerRows = [];
-  ctx.emit('webserver/index-inject', viewerRows, VIEWER);
-  assert.equal(apiRow(viewerRows), undefined, 'non-owner (share-viewer) peers must not receive the token row');
-
-  // Fail closed: an unknown/peer-less environment is treated like a non-owner
-  // (a token must only be handed to a provably-owner browser peer).
-  const peerlessRows = [];
-  ctx.emit('webserver/index-inject', peerlessRows, undefined);
-  assert.equal(apiRow(peerlessRows), undefined, 'a peer-less/legacy host must not receive the token row');
+  assert.equal(ctx.server.tapIndexCalls, 0, 'tapIndex is not used');
 });
 
-test('v11 desktop: the API row token matches the persisted API token', async (t) => {
+test('v11 desktop: the API token is persisted next to the override file', async (t) => {
   const env = await runtimeEnv(t);
   const http = await loadModule('../src/http.js', { requireExports: ['registerHttpApi'] });
   const ctx = fakeCtx({ workspaceDir: env.workspaceDir });
   const dispose = http.registerHttpApi(ctx, env.runtime);
   t.after(() => dispose?.());
-
-  const rows = [];
-  ctx.emit('webserver/index-inject', rows, OWNER);
-  const row = apiRow(rows);
-  assert.ok(row);
-
   const tokenFile = path.join(path.dirname(env.runtime.overrideFile), '.api-token');
   assert.equal(await exists(tokenFile), true, 'the API token is persisted next to the override file');
-  const persisted = (await readFile(tokenFile, 'utf8')).trim();
-  assert.equal(row.value.token, persisted);
-});
-
-test('v11 desktop: no .api-tap.log diagnostic file is produced', async (t) => {
-  const env = await runtimeEnv(t);
-  const http = await loadModule('../src/http.js', { requireExports: ['registerHttpApi'] });
-  const ctx = fakeCtx({ workspaceDir: env.workspaceDir });
-  const dispose = http.registerHttpApi(ctx, env.runtime);
-  t.after(() => dispose?.());
-
-  const rows = [];
-  ctx.emit('webserver/index-inject', rows, OWNER);
-  const dir = path.dirname(env.runtime.overrideFile);
-  const names = await readdir(dir).catch(() => []);
+  assert.ok((await readFile(tokenFile, 'utf8')).trim().length >= 16);
+  const names = await readdir(path.dirname(env.runtime.overrideFile)).catch(() => []);
   assert.equal(names.some((name) => name.includes('api-tap')), false, `no api-tap log: ${names.join(', ')}`);
 });
 
-test('v11 desktop: http.js no longer taps the index or writes the api-tap log', async () => {
+test('v11 desktop: http.js hands the token out only through /bridge', async () => {
   const source = await readFile(path.join(PLUGIN_ROOT, 'src', 'http.js'), 'utf8');
-  assert.doesNotMatch(source, /\.tapIndex\s*\(/, 'tapIndex is no longer called');
-  assert.doesNotMatch(source, /appendFileSync\([^)]*api-tap/, 'no api-tap log is written');
-  assert.match(source, /webserver\/index-inject/, 'the bridge uses the index-inject event');
-  assert.match(source, /__CC_MEMORY_API__/, 'the injected global name is present');
+  assert.doesNotMatch(source, /\.tapIndex\s*\(/, 'tapIndex is not called');
+  assert.doesNotMatch(source, /index-inject/, 'no index row carries the token');
+  assert.match(source, /\/bridge/, 'the bridge route exists');
 });
 
 test('v12 desktop: /bridge returns the same base/token to a loopback GET (page-boot recovery)', async (t) => {
@@ -176,4 +119,33 @@ test('v12 desktop: the registered prefix actually matches the real Host prefix r
   assert.equal(matches('/api/cc-memory/status', registered), true, 'status route matches');
   assert.equal(matches('/api/cc-memory/bridge', registered), true, 'bridge route matches');
   assert.equal(matches('/api/cc-memory/status', '/api/cc-memory/'), false, 'a trailing-slash prefix never matches');
+});
+
+
+test('Dream preview reads the existing copy and index without switching', async (t) => {
+  const env = await httpEnv(t);
+  const { store, state, paths } = env.pctx;
+  const saved = await store.saveEntry({ name: 'Release note', type: 'project', content: 'Old release command' });
+  const { shadowStore } = await prepareShadow({ store, paths, config: env.runtime.config });
+  await shadowStore.updateEntry(saved.file, { content: 'New release command' });
+  await writeFile(path.join(shadowDirOf(paths), 'MEMORY.md'), 'Updated index');
+  await state.setShadowPending({
+    dir: shadowDirOf(paths),
+    runId: 'pending-1',
+    files: [{ file: saved.file, action: 'changed' }],
+  });
+  const get = async (file, runId = 'pending-1') => (await callHttp(env, {
+    path: '/dream-diff?' + new URLSearchParams({ sessionId: 's1', runId, file }),
+  })).json();
+
+  const note = await get(saved.file);
+  assert.equal(note.ok, true);
+  assert.match(note.before, /Old release command/);
+  assert.match(note.after, /New release command/);
+  assert.ok(note.addedLines.some(({ text }) => text === 'New release command'));
+  assert.ok(note.removedLines.some(({ text }) => text === 'Old release command'));
+  assert.equal((await get('MEMORY.md')).after, 'Updated index');
+  assert.equal((await get(saved.file, 'another-run')).error, 'stale-dream');
+  assert.equal((await get('../.state.json')).error, 'no-file');
+  assert.match((await store.readEntry(saved.file)).body, /Old release command/);
 });

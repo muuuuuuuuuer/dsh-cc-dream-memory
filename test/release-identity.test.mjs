@@ -14,7 +14,7 @@ const zh = JSON.parse(await read('locale/zh.json'));
 
 test('package.json carries the public identity', () => {
   assert.equal(pkg.name, 'dsh-cc-dream-memory');
-  assert.equal(pkg.version, '0.12.0');
+  assert.equal(pkg.version, '0.20.0');
   assert.equal(
     pkg.description,
     'Claude Code-style auto memory and reviewable Dream consolidation for DeepSeek Harness. Community plugin, not affiliated with Anthropic.',
@@ -54,8 +54,8 @@ test('the client module id and locale namespace follow the package name', async 
 });
 
 test('the Claude name is not the feature name in the interface', () => {
-  assert.equal(en.meta.title, 'Memory');
-  assert.equal(zh.meta.title, '记忆');
+  assert.equal(en['inbox.planTitle'], 'A Dream result is ready');
+  assert.equal(zh['inbox.planTitle'], 'Dream 结果已就绪');
   assert.doesNotMatch(JSON.stringify([en, zh]), /Claude/);
 });
 

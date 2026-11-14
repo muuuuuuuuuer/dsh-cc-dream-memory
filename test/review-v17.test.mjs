@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { makeEnv, toolsEnv } from './v10-helpers.mjs';
 
-test('v17 index budget: byte overflow keeps whole head and newest lines with CJK text', async (t) => {
+test('v17 index budget: byte overflow keeps whole head lines with CJK text', async (t) => {
   const env = await makeEnv(t, { indexMaxLines: 200, indexMaxBytes: 4096 });
   const lines = Array.from({ length: 40 }, (_, index) =>
     `- [记忆条目 ${index}](memory_${index}.md) — 这是用于测试中文索引字节预算的完整说明文字，不应被截断，编号 ${index}`);
@@ -12,8 +12,8 @@ test('v17 index budget: byte overflow keeps whole head and newest lines with CJK
   assert.equal(index.overflow, true);
   assert.ok(index.bytes <= 4096, `injected bytes ${index.bytes} exceed 4096`);
   assert.match(index.text, /\[记忆条目 0\]\(memory_0\.md\)/, 'oldest head survives');
-  assert.match(index.text, /\[记忆条目 39\]\(memory_39\.md\)/, 'newest line survives');
-  assert.match(index.text, /index truncated for budget/);
+  assert.doesNotMatch(index.text, /\[记忆条目 39\]\(memory_39\.md\)/, 'content past the limit is dropped');
+  assert.match(index.text, /index truncated at the read limit/);
   const rows = index.text.trimEnd().split('\n');
   for (const row of rows) {
     if (row.startsWith('<!--')) continue;

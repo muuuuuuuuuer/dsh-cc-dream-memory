@@ -7,11 +7,16 @@
  * is user speech, and of those a long structured message is labelled
  * `[user-pasted]`: it is material the user forwarded, not something they said.
  *
+ * Memory readers only need what bears on memory. A transcript keeps every user
+ * message verbatim, the one assistant message right before each user message
+ * (what the user was answering or correcting), and failed tool calls with their
+ * errors. Other assistant text, tool calls and tool output are left out: the
+ * repository already records code, paths and how a fix worked.
+ *
  * A transcript is read in event order and split into bounded chunks instead of
  * being sampled, so nothing in a long session is skipped for good: a chunk
  * reports the last event it fully covers (`lastSeq`) and a later pass resumes
- * from there. Each chunk carries its own tool budget: errors first, then
- * call/result pairs spread evenly across the chunk.
+ * from there; skipped events still count as covered.
  *
  * Every line start inside a block is escaped, so transcript content cannot
  * forge a `[user]` line or a date marker. Tool calls come from the `tool/call`
@@ -21,6 +26,8 @@
 
 const TOOL_ARGS_CLIP = 300;
 const TOOL_RESULT_CLIP = 600;
+/** The assistant message a user replies to is context, not the subject: keep its gist. */
+const ASSISTANT_CONTEXT_CLIP = 2000;
 const PASTE_MIN_CHARS = 800;
 const PASTE_MIN_LINES = 12;
 const PASTE_MIN_STRUCTURED_LINES = 4;
@@ -81,15 +88,17 @@ function localDate(time) {
 }
 
 /**
- * Turn one session's events into ordered blocks. Text blocks hold conversation;
- * tool blocks hold one call with its result.
+ * Turn one session's events into ordered blocks. Text blocks hold user messages
+ * and the assistant message each one answers; tool blocks hold one failed call
+ * with its error.
  * @param {Array<object>} events session event log.
  * @returns {{blocks:object[], userMessages:string[], userChars:number, maxSeq:number, lastAt:number}}
  */
 export function buildSessionTranscript(events) {
   const blocks = [];
   const userMessages = [];
-  const callBlocks = new Map();
+  const calls = new Map();
+  let pendingAssistant = null;
   let userChars = 0;
   let maxSeq = 0;
   let lastAt = 0;
@@ -114,54 +123,48 @@ export function buildSessionTranscript(events) {
       if (value === '') continue;
       userChars += value.length;
       userMessages.push(value);
+      if (pendingAssistant) {
+        text(pendingAssistant.event, 'assistant', clip(pendingAssistant.value, ASSISTANT_CONTEXT_CLIP));
+        pendingAssistant = null;
+      }
       text(event, looksPasted(value) ? 'user-pasted' : 'user', value);
       lastAt = Math.max(lastAt, Number(event.time) || 0);
     } else if (event.type === 'assistant/message') {
       const content = event.data?.message?.content ?? event.data?.content;
       const value = contentToText(content).trim();
       if (value === '') continue;
-      text(event, 'assistant', value);
+      // Kept only if a user message follows it.
+      pendingAssistant = { event, value };
       lastAt = Math.max(lastAt, Number(event.time) || 0);
     } else if (event.type === 'tool/call' && event.data && typeof event.data === 'object') {
       const name = typeof event.data.name === 'string' ? event.data.name : 'tool';
       const id = toolCallIdOf(event);
       const rawArgs = typeof event.data.arguments === 'string' ? event.data.arguments : JSON.stringify(event.data.arguments ?? {});
-      const block = {
-        kind: 'tool',
-        callSeq: Number(event.seq) || 0,
-        seq: Number(event.seq) || 0,
-        time: Number(event.time) || 0,
-        name,
-        call: `[tool-call] ${name} ${escapeToolText(clip(rawArgs, TOOL_ARGS_CLIP))}`,
-        result: '',
-        error: false,
-      };
-      blocks.push(block);
-      if (id !== '') callBlocks.set(id, block);
+      // A call only appears in the transcript if it fails.
+      if (id !== '') {
+        calls.set(id, {
+          seq: Number(event.seq) || 0,
+          name,
+          call: `[tool-call] ${name} ${escapeToolText(clip(rawArgs, TOOL_ARGS_CLIP))}`,
+        });
+      }
     } else if (event.type === 'tool/result' && event.data && typeof event.data === 'object') {
+      if (!isErrorResult(event)) continue;
       const value = contentToText(event.data.message?.content ?? event.data.content).trim();
       if (value === '') continue;
       const id = toolCallIdOf(event);
-      const error = isErrorResult(event);
-      const owner = id !== '' ? callBlocks.get(id) : undefined;
-      const render = (name) => `[${error ? 'tool-error' : 'tool-result'}] ${name}: ${escapeToolText(clip(value, TOOL_RESULT_CLIP))}`;
-      if (owner && owner.result === '') {
-        owner.result = render(owner.name);
-        owner.error = error;
-        owner.resultSeq = Number(event.seq) || 0;
-        owner.seq = Math.max(owner.seq, Number(event.seq) || 0);
-      } else {
-        blocks.push({
-          kind: 'tool',
-          resultSeq: Number(event.seq) || 0,
-          seq: Number(event.seq) || 0,
-          time: Number(event.time) || 0,
-          name: 'tool',
-          call: '',
-          result: render('tool'),
-          error,
-        });
-      }
+      const owner = id !== '' ? calls.get(id) : undefined;
+      blocks.push({
+        kind: 'tool',
+        callSeq: owner?.seq ?? (Number(event.seq) || 0),
+        resultSeq: Number(event.seq) || 0,
+        seq: Number(event.seq) || 0,
+        time: Number(event.time) || 0,
+        name: owner?.name ?? 'tool',
+        call: owner?.call ?? '',
+        result: `[tool-error] ${owner?.name ?? 'tool'}: ${escapeToolText(clip(value, TOOL_RESULT_CLIP))}`,
+        error: true,
+      });
     }
   }
   return { blocks, userMessages, userChars, maxSeq, lastAt };

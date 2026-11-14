@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildAnalyzerPrompt, parseAnalyzerReply } from '../src/dream-analyzer.js';
-import { verifyAnalysis } from '../src/dream-verifier.js';
+import { verifyAnalysis, verifyCheck } from '../src/dream-verifier.js';
 import { contradictsClaim, supportConflict, supportsStatement } from '../src/support.js';
 
 const TRANSCRIPT = [
@@ -12,86 +12,81 @@ const TRANSCRIPT = [
   '[tool-result] 3 tests passed',
 ].join('\n');
 
-test('analyzer prompt and reply are normalized', () => {
+test('the map prompt shows the memory index, never page bodies', () => {
   const prompt = buildAnalyzerPrompt({
     sessionId: 's1',
     transcript: TRANSCRIPT,
-    memoryPages: [{ file: 'project_testing.md', body: 'old fact' }],
+    memoryIndex: [{ file: 'project_testing.md', type: 'project', name: 'Testing', description: 'how tests run', body: 'OLD_BODY_TEXT' }],
     focus: 'testing',
   });
   assert.match(prompt, /Session: s1/);
   assert.match(prompt, /FOO=1/);
+  assert.match(prompt, /- project_testing\.md \(project\): Testing — how tests run/);
+  assert.doesNotMatch(prompt, /OLD_BODY_TEXT/);
   const parsed = parseAnalyzerReply(JSON.stringify({
     summary: 'testing changed',
     claims: [{ text: 'Tests need FOO=1', quote: 'FOO=1 make test', kind: 'command', confidence: 'high', target: 'project_testing.md' }],
-    patches: [{ file: 'project_testing.md', op: 'append', content: '- Tests need FOO=1', evidence: ['FOO=1 make test'] }],
-    verify: [{ file: 'project_testing.md', claim: 'old fact', result: 'contradicts', quote: 'FOO=1 make test' }],
+    retire: [{ file: 'project_old.md', target: 'project_testing.md' }],
   }));
   assert.equal(parsed.claims.length, 1);
-  assert.equal(parsed.patches.length, 1);
+  assert.deepEqual(parsed.retire, [{ file: 'project_old.md', target: 'project_testing.md' }]);
 });
 
 test('verifier drops claims without a transcript quote and keeps real ones', () => {
   const result = verifyAnalysis({
     transcript: TRANSCRIPT,
     sessionId: 's1',
-    memoryFiles: [{ file: 'project_testing.md', body: 'old fact' }],
+    memoryFiles: [{ file: 'project_testing.md' }],
     analysis: {
       summary: 's',
       claims: [
         { text: 'Tests need FOO=1', quote: 'FOO=1 make test', kind: 'command', confidence: 'high' },
         { text: 'invented', quote: 'not in transcript', kind: 'fact' },
       ],
-      patches: [
-        { file: 'project_testing.md', op: 'append', content: '- Tests need FOO=1', evidence: ['FOO=1 make test'] },
-        { file: '../bad.md', op: 'append', content: 'x' },
-      ],
-      verify: [
-        { file: 'project_testing.md', claim: 'old fact', result: 'contradicts', quote: 'FOO=1 make test' },
-        { file: 'project_testing.md', claim: 'Tests need FOO=1', result: 'holds', quote: 'FOO=1 make test' },
-      ],
     },
   });
   assert.equal(result.claims.length, 1);
   assert.equal(result.claims[0].source, 'user');
   assert.equal(result.claims[0].date, '2026-11-08');
-  assert.equal(result.patches.length, 1);
-  assert.equal(result.verify[0].result, 'unknown', 'a quote about something else cannot refute the claim');
-  assert.equal(result.verify[1].result, 'holds');
-  assert.equal(result.dropped.length, 2);
+  assert.equal(result.dropped.length, 1);
 });
 
-test('a verdict without a located quote cannot confirm anything', () => {
-  const result = verifyAnalysis({
-    transcript: '',
-    sessionId: 's1',
-    memoryFiles: [{ file: 'project_testing.md', body: 'old fact' }],
-    analysis: {
-      summary: 's',
-      claims: [],
-      patches: [],
-      verify: [{ file: 'project_testing.md', claim: 'old fact', result: 'holds' }],
-    },
+const PAGE = { file: 'project_ops.md', body: '- Timeout is 15 seconds. ^[s0#1]\n- Tests need FOO=1.' };
+const claimsOf = (...items) => new Map(items.map((item, index) => [`c${index + 1}`, { source: 'user', date: '2026-11-08', sessionId: 's1', ...item }]));
+
+test('a check verdict counts only for a verified claim and a line that is on the page', () => {
+  const claims = claimsOf({ text: 'Tests need FOO=1', quote: 'Tests need FOO=1' });
+  const { verify, warnings } = verifyCheck({
+    pages: [PAGE],
+    claims,
+    verdicts: [
+      { file: 'project_ops.md', line: '- Tests need FOO=1.', result: 'holds', claim: 'c1' },
+      { file: 'project_ops.md', line: 'a line that is not there', result: 'holds', claim: 'c1' },
+      { file: 'project_ops.md', line: '- Tests need FOO=1.', result: 'holds', claim: 'c9' },
+    ],
   });
-  assert.equal(result.verify.length, 1);
-  assert.equal(result.verify[0].result, 'unknown', 'an empty transcript cannot produce holds');
-  assert.equal(result.verify[0].source, undefined);
-  assert.match(result.warnings.join(' '), /downgraded to unknown/);
+  assert.equal(verify.length, 1);
+  assert.equal(verify[0].claim, 'Tests need FOO=1.');
+  assert.equal(verify[0].quote, 'Tests need FOO=1', 'the claim quote is the evidence');
+  assert.equal(verify[0].source, 'user');
+  assert.equal(warnings.length, 2);
 });
 
-test('a quote that states a different quantity cannot confirm the claim', () => {
-  const result = verifyAnalysis({
-    transcript: ['--- 2026-11-08 ---', '[user] The timeout is 90 seconds.', '[assistant] noted'].join('\n'),
-    sessionId: 's1',
-    memoryFiles: [{ file: 'project_ops.md', body: 'old fact' }],
-    analysis: {
-      summary: 's',
-      claims: [],
-      patches: [],
-      verify: [{ file: 'project_ops.md', claim: 'Timeout is 15 seconds', result: 'holds', quote: 'The timeout is 90 seconds.' }],
-    },
+test('holds needs the quote to state the line; a different quantity cannot confirm it', () => {
+  const claims = claimsOf({ text: 'The timeout is 90 seconds', quote: 'The timeout is 90 seconds.' });
+  const holds = verifyCheck({
+    pages: [PAGE],
+    claims,
+    verdicts: [{ file: 'project_ops.md', line: 'Timeout is 15 seconds.', result: 'holds', claim: 'c1' }],
   });
-  assert.equal(result.verify[0].result, 'unknown', 'a different value cannot confirm the claim');
+  assert.equal(holds.verify.length, 0, 'a different value cannot confirm the line');
+  const contradicts = verifyCheck({
+    pages: [PAGE],
+    claims,
+    verdicts: [{ file: 'project_ops.md', line: 'Timeout is 15 seconds.', result: 'contradicts', claim: 'c1' }],
+  });
+  assert.equal(contradicts.verify.length, 1, 'a replacement is a proposal the human reviews');
+  assert.equal(contradicts.verify[0].result, 'contradicts');
 });
 
 test('a condition or a quantity keeps the object it modifies', () => {

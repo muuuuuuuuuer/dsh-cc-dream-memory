@@ -15,12 +15,11 @@
  *      Settings — switches, what new conversations load, the memory rules,
  *                 trash/backup restore and storage.
  *  - `conversation.composer.dock` (id `cc-memory-status`, order 50): a small
- *    ambient chip (memory count, loaded notes and anything waiting), polled 60s.
+ *    ambient chip (memory count and anything waiting), polled 60s.
  *
- * Data comes from the silent HTTP API injected by the Host as
- * `window.__CC_MEMORY_API__ = { base, token }` — these requests never write
- * session-log command rows. Without that bridge the page falls back to slash
- * commands in read-only mode and says so in a banner.
+ * Data comes only from the silent HTTP API; the page gets its base and token
+ * from `GET /api/cc-memory/bridge`. These requests never write session-log
+ * command rows. Without the bridge the page says the service is unavailable.
  *
  * Styling uses the host design tokens only. `react` is the sole package that
  * may be required; the module must not import anything else.
@@ -38,614 +37,506 @@ window.__ModuleLoader__.load({
     // Dictionaries (mirrored 1:1 by locale/en.json and locale/zh.json).
     // -----------------------------------------------------------------------
     const EN = {
-      'view.title': 'Memory',
-      'tab.memories': 'Memories',
-      'tab.inbox': 'Inbox',
-      'tab.tidy': 'Dream',
-      'tab.settings': 'Settings',
-      'chip.label': 'Memory',
-      'chip.attention': '{n} to review',
-      'chip.loaded': '{n} loaded',
-      'chip.title': 'Memory for this project',
+  'about.dir': 'Memory folder',
+  'about.title': 'Storage',
+  'about.usage': 'Loaded {inject} times · read {reads} · saved {writes} · searched {searches}',
+  'about.version': 'Plugin version {v}',
+  'banner.autoMemoryOff': 'Auto memory is off: new conversations don\'t load memory and the agent can\'t save memories.',
+  'banner.backendStale': 'The memory plugin is still running older code than this page, so newer parts (trust marks, write details) fail. Quit DeepSeek Harness completely and open it again.',
+  'banner.noBackend': 'The memory service isn\'t available on this page. Reload the page; if it still fails, check that the plugin is installed.',
+  'banner.pluginOff': 'Memory is turned off: nothing is loaded, saved or dreamed.',
+  'banner.tokenExpired': 'The connection to the memory service expired. Reload the page to reconnect.',
+  'btn.back': 'Back',
+  'btn.cancel': 'Cancel',
+  'btn.clear': 'Clear search',
+  'btn.close': 'Close',
+  'btn.confirm': 'Click again to confirm',
+  'btn.confirmDelete': 'Delete for sure?',
+  'btn.copy': 'Copy path',
+  'btn.delete': 'Delete',
+  'btn.edit': 'Edit',
+  'btn.new': 'New',
+  'btn.refresh': 'Refresh',
+  'btn.reload': 'Reload page',
+  'btn.retry': 'Retry',
+  'btn.review': 'Review',
+  'btn.save': 'Save',
+  'btn.saving': 'Saving…',
+  'btn.turnOn': 'Turn on',
+  'chip.attention': '{n} to review',
+  'chip.label': 'Memory',
+  'chip.title': 'Memory for this project',
+  'detail.changed': 'Edited after it was verified. It stays out of the loaded set until a Dream verifies it again.',
+  'detail.conflict': 'Conflict',
+  'detail.created': 'Created {time}',
+  'detail.emptyBody': 'This memory has no details.',
+  'detail.history': 'Change history',
+  'detail.historyDream': 'Dream · {n} changes',
+  'detail.historyEmpty': 'No recorded changes yet.',
+  'detail.historyPending': 'Waiting in the inbox',
+  'detail.loading': 'Loading…',
+  'detail.missing': 'This memory no longer exists.',
+  'detail.session': 'From conversation {id}',
+  'detail.stale': 'Marked "{status}": left out of recall and of what new conversations load.',
+  'detail.superseded': 'Earlier values',
+  'detail.unverifiedIndex': 'Not verified by a Dream yet.',
+  'detail.updated': 'Updated {time}',
+  'detail.verified': 'Verified {date}: a Dream checked this exact text against the conversations it came from.',
+  'edit.conflict': 'Another window saved this note first. Your draft is still here; reload to see the newer version.',
+  'edit.content': 'Details',
+  'edit.contentPlaceholder': 'Markdown is supported. Ctrl+Enter saves.',
+  'edit.description': 'One-line summary',
+  'edit.descriptionHint': 'Shown in the index and in search results.',
+  'edit.editTitle': 'Edit memory',
+  'edit.name': 'Name',
+  'edit.namePlaceholder': 'e.g. Reply language',
+  'edit.nameRequired': 'Give the memory a name.',
+  'edit.newTitle': 'New memory',
+  'edit.reverifyHint': 'This note is verified. Saving a change means it leaves the loaded set until a Dream verifies it again.',
+  'edit.type': 'Type',
+  'edit.typeHint.feedback': 'Corrections and approaches you confirmed.',
+  'edit.typeHint.project': 'Decisions and ongoing work the code doesn\'t show.',
+  'edit.typeHint.reference': 'Where to find outside information.',
+  'edit.typeHint.user': 'Who you are and what you prefer.',
+  'err.backendStale': 'The plugin backend is older than this page and does not know this request. Quit DeepSeek Harness completely and open it again.',
+  'err.deleteDisabled': 'Deleting is turned off in the plugin config (dreamAllowDelete).',
+  'err.evidenceRejected': 'Some changes lack a checkable source, so nothing was applied:',
+  'err.locked': 'Another dream is running. Try again in a moment.',
+  'err.more': '… and {n} more',
+  'err.stale': 'Memory changed after this plan was made. Create a new plan.',
+  'error.load': 'Couldn\'t load memory',
+  'inbox.emptyBody': 'Nothing needs your decision right now.',
+  'inbox.emptyTitle': 'All clear',
+  'inbox.planBody': 'Memory stays exactly as it is until you switch to the new copy.',
+  'inbox.planTitle': 'A Dream result is ready',
+  'inbox.extractTitle': 'Auto-extracted notes are waiting',
+  'inbox.extractBody': '{n} proposed note(s) from a recent conversation. Accept keeps them through the normal save checks.',
+  'inbox.accept': 'Accept all',
+  'inbox.discard': 'Discard',
+  'inbox.acceptFailed': 'Only {applied} of {total} notes were saved; the rest failed their checks.',
+  'inbox.offTitle': 'Auto-extract is off',
+  'inbox.offBody': 'Turn it on in Settings to stage notes from recent conversations here for review.',
+  'inbox.emptyOffBody': 'Turn on Auto-extract in Settings to see proposed notes here before they reach memory.',
+  'inbox.lastExtract': 'Last attempt: {reason} · {time}',
+  'inbox.commandHint': 'From the conversation: /memory inbox accept <id>',
+  'notice.inboxAccepted': 'Accepted {n} note(s).',
+  'notice.inboxDiscarded': 'Proposal discarded.',
+  'list.emptyBody': 'Tell the agent "remember …" in a conversation, or add one yourself.',
+  'list.emptyTitle': 'No memories yet',
+  'list.filterEmpty': 'No memories match these filters.',
+  'load.index': 'New conversations load the index: {lines} of {maxLines} lines.',
+  'load.indexOver': 'New conversations load the index, but it is over budget and its end is cut off.',
+  'load.off': 'New conversations load no memory: auto memory is off.',
+  'load.recall': 'Matching notes are also attached to messages.',
+  'notes.appliesWhen': 'Applies when',
+  'notes.exception': 'Exception',
+  'notes.observed': 'Observed',
+  'notes.verify': 'How to check',
+  'notice.copied': 'Path copied.',
+  'notice.deleted': 'Moved to trash. You can restore it in Settings.',
+  'notice.done': 'Done.',
+  'notice.planDiscarded': 'Plan discarded.',
+  'notice.restored': 'Restored.',
+  'notice.rulesReset': 'Rules reset to the defaults.',
+  'notice.rulesSaved': 'Rules saved. They apply from the next request.',
+  'notice.saved': 'Saved.',
+  'notice.toggled': 'Updated.',
+  'readiness.backoff': 'The last attempt failed; it will retry later.',
+  'readiness.lock': 'A dream is running.',
+  'readiness.min-hours': 'Waiting for the {hours} h interval.',
+  'readiness.min-sessions': '{current} of {required} conversations so far.',
+  'readiness.pending-proposal': 'A plan is waiting for your review.',
+  'readiness.throttle': 'Checked recently; it will check again soon.',
+  'reason.mergeDependency': 'Its facts were meant to move into a change that cannot be applied, so deleting it would lose them.',
+  'reason.noCitation': 'A new line has no source citation: “{line}”',
+  'reason.noClaim': 'A citation does not match any quote the transcript verified.',
+  'reason.unsupported': 'The line says something other than the quote it cites: “{line}”',
+  'reason.userAttribution': 'It presents a requirement as the user’s without the user’s own words.',
+  'reason.userClass': 'A user or feedback note needs a quote the user typed; forwarded material does not count.',
+  'restore.all': 'Restore all',
+  'restore.backups': 'Before dreams',
+  'restore.empty': 'Nothing here.',
+  'restore.files': '{n} files',
+  'restore.hint': 'Deleted memories, and the copy taken before each dream.',
+  'restore.one': 'Restore',
+  'restore.title': 'Trash and backups',
+  'restore.trash': 'Trash',
+  'rules.count': '{n} / {max} characters',
+  'rules.hint': 'Optional guidance added to every request, like a CLAUDE.md for memory. Leave it empty to send nothing extra.',
+  'rules.placeholder': 'e.g.\n- Save deploy commands and who owns each service.\n- Skip one-off debugging steps.',
+  'rules.reset': 'Remove custom rules',
+  'rules.saveGlobal': 'Save for all projects',
+  'rules.saveProject': 'Save for this project',
+  'rules.source.default': 'Default',
+  'rules.source.global': 'All projects',
+  'rules.source.project': 'This project',
+  'rules.title': 'What to remember',
+  'search.empty': 'No memories match "{q}".',
+  'search.placeholder': 'Search memories',
+  'settings.autoDream': 'Auto dream',
+  'settings.autoDreamHint': 'Dream memory in the background from time to time.',
+  'settings.autoExtract': 'Auto-extract',
+  'settings.autoExtractHint': 'Every {n} turns, ask the model for notes worth keeping and stage them in the Inbox.',
+  'settings.extractDirect': 'Every few turns, save through the normal checks',
+  'settings.perAgent': 'Per-agent memory',
+  'settings.perAgentHint': 'Give delegated agents their own memory folder instead of the project memory.',
+  'settings.perAgentOff': 'Off',
+  'settings.perAgentOn': 'Every delegated agent with a preset name',
+  'settings.perAgentShared': 'Shared project memory (read/write)',
+  'settings.perAgentOnList': 'Only: {names}',
+  'settings.autoMemory': 'Auto memory',
+  'settings.autoMemoryHint': 'New conversations load memory, and the agent saves what is worth remembering.',
+  'settings.enabled': 'Memory',
+  'settings.enabledHint': 'Master switch for loading, saving and dreaming memory.',
+  'settings.indexBudget': 'Index size',
+  'settings.indexOver': 'The index is over budget, so its end isn\'t loaded. A dream shortens it.',
+  'settings.loading': 'What new conversations load',
+  'settings.loadingHint': 'Shown for reference. Change these in the plugin config.',
+  'settings.mode': 'At the start',
+  'settings.modeIndex': 'The whole index, MEMORY.md',
+  'settings.recall': 'During the conversation',
+  'settings.recallLexical': 'Word matching only; no model call',
+  'settings.recallModel': 'Model selector picks up to five notes per message',
+  'settings.recallNone': 'Off; the agent searches when it needs to',
+  'settings.recallOff': 'Nothing more; the agent searches when it needs to',
+  'settings.recallOn': 'Notes that match a message are attached to it (autoRecall)',
+  'settings.switches': 'Switches',
+  'settings.switchesHint': 'These apply to every project.',
+  'status.disputed': 'Disputed',
+  'status.retired': 'Retired',
+  'status.review-needed': 'Needs review',
+  'status.stale': 'Stale',
+  'status.superseded': 'Superseded',
+  'tab.inbox': 'Inbox',
+  'tab.memories': 'Memories',
+  'tab.settings': 'Settings',
+  'tab.tidy': 'Dream',
+  'tidy.applyPassed': 'Apply {n} passed',
+  'tidy.discarded': 'Rejected. These facts will not be proposed again.',
+  'tidy.estimateLine': 'Rough estimate: {tokens} of {limit} input tokens.',
+  'tidy.estimateNoLimit': 'Rough estimate: {tokens} input tokens.',
+  'tidy.estimateUnavailable': 'Could not estimate usage. Try again before starting Dream.',
+  'tidy.focus': 'Focus (optional)',
+  'tidy.focusPlaceholder': 'e.g. deployment notes, or the reply-language preference',
+  'tidy.generate': 'Estimate the run',
+  'tidy.historyTitle': 'Recent dreams',
+  'tidy.indexMeta': '{lines} / {maxLines} lines · {bytes} / {maxBytes}',
+  'tidy.intro': 'A dream reads the conversations it has not read yet, oldest first, and proposes changes to your memory. You pass or reject each change. A rejected fact is never proposed again, and a passed change can be undone under Recent dreams.',
+  'tidy.linked': 'goes together with {file}',
+  'tidy.memoryOnly': 'Tidy saved memory only (read no conversations)',
+  'tidy.memoryOnlyHint': 'Looks for pages about the same topic and proposes folding one into the other. No fact is lost.',
+  'tidy.op.create': 'new',
+  'tidy.op.delete': 'removed',
+  'tidy.op.index': 'index',
+  'tidy.before': 'Current memory',
+  'tidy.after': 'Dream copy',
+  'tidy.diffLoading': 'Loading changes…',
+  'tidy.diffError': 'Could not load changes. Close and reopen to retry.',
+  'tidy.emptyFile': '(no file content)',
+  'tidy.op.update': 'edited',
+  'tidy.opsCount': 'Changes: {n}',
+  'tidy.pass': 'Pass',
+  'tidy.ready': 'Ready: the next dream runs after the next conversation turn.',
+  'tidy.reject': 'Reject',
+  'tidy.rejectAll': 'Reject all',
+  'tidy.rejectHint': 'Rejected facts are remembered; no later dream proposes them again.',
+  'tidy.resultCounts': '{added} added, {changed} changed, {removed} removed',
+  'tidy.resultTitle': 'A dream result is waiting for your review',
+  'tidy.runAlready': 'A dream is already running for this project.',
+  'tidy.runCancel': 'Stop',
+  'tidy.runResume': 'Continue',
+  'tidy.runStarted': 'Dream started. You can keep working; the new copy appears when the run finishes.',
+  'tidy.runState.blocked': 'blocked',
+  'tidy.runState.cancelled': 'cancelled',
+  'tidy.runState.cancelling': 'cancelling',
+  'tidy.runState.failed': 'failed',
+  'tidy.runState.idle': 'idle',
+  'tidy.runState.running': 'running',
+  'tidy.runState.skipped': 'skipped',
+  'tidy.runTitle': 'This run',
+  'tidy.start': 'Start the dream run',
+  'tidy.switchConflict': 'memory changed while the dream ran: {files}',
+  'tidy.switched': 'Passed changes applied.',
+  'tidy.title': 'Dream: memory consolidation',
+  'tidy.undo': 'Undo',
+  'tidy.undoConflict': 'These files changed after the dream, so it can\'t be undone safely: {files}',
+  'tidy.undone': 'Undone. Memory is back to how it was before.',
+  'tidy.undoneTag': 'Undone',
+  'time.days': '{n} days ago',
+  'time.hours': '{n} h ago',
+  'time.justNow': 'just now',
+  'time.minutes': '{n} min ago',
+  'trust.all': 'Any status',
+  'trust.changed': 'Edited since verified',
+  'trust.stale': 'Outdated',
+  'trust.unverified': 'Unverified',
+  'trust.verified': 'Verified',
+  'type.all': 'All',
+  'type.feedback': 'Feedback',
+  'type.project': 'Project',
+  'type.reference': 'Reference',
+  'type.user': 'User',
+  'via.agent': 'Saved by the agent',
+  'via.command': 'Saved with /remember',
+  'via.import': 'Imported',
+  'via.tidy': 'Written by a dream',
+  'via.you': 'Edited by you',
+  'view.title': 'Memory',
+  'tidy.started': 'Dream started. You can keep working; the new copy appears when the run finishes.',
+};
 
-      'load.hot': 'New conversations load {n} of {total} notes: the verified ones used most.',
-      'load.hotNone': 'New conversations load no notes yet, because none is verified. The agent can still search all {total}.',
-      'load.index': 'New conversations load the index: {lines} of {maxLines} lines.',
-      'load.indexOver': 'New conversations load the index, but it is over budget and its end is cut off.',
-      'load.off': 'New conversations load no memory: auto memory is off.',
-      'load.recall': 'Matching notes are also attached to messages.',
+const ZH = {
+  'about.dir': '记忆目录',
+  'about.title': '存储',
+  'about.usage': '载入 {inject} 次 · 读取 {reads} · 写入 {writes} · 搜索 {searches}',
+  'about.version': '插件版本 {v}',
+  'banner.autoMemoryOff': '自动记忆已关闭：新会话不会载入记忆，智能体也不能保存记忆。',
+  'banner.backendStale': '记忆插件的后台还在运行旧代码，和这个页面对不上：可信度标记、待处理详情等新功能会出错。请完全退出 DeepSeek Harness 再重新打开。',
+  'banner.noBackend': '此页面连不上记忆服务。请刷新页面；如仍失败，检查插件是否已安装。',
+  'banner.pluginOff': '记忆功能已关闭：不会载入、保存或 Dream 记忆。',
+  'banner.tokenExpired': '与记忆服务的连接已失效，刷新页面即可重新连接。',
+  'btn.back': '返回',
+  'btn.cancel': '取消',
+  'btn.clear': '清除搜索',
+  'btn.close': '关闭',
+  'btn.confirm': '再点一次确认',
+  'btn.confirmDelete': '确认删除？',
+  'btn.copy': '复制路径',
+  'btn.delete': '删除',
+  'btn.edit': '编辑',
+  'btn.new': '新建',
+  'btn.refresh': '刷新',
+  'btn.reload': '刷新页面',
+  'btn.retry': '重试',
+  'btn.review': '去审阅',
+  'btn.save': '保存',
+  'btn.saving': '保存中…',
+  'btn.turnOn': '开启',
+  'chip.attention': '{n} 项待处理',
+  'chip.label': '记忆',
+  'chip.title': '本项目的记忆',
+  'detail.changed': '核实之后又被改过。在 Dream 重新核实之前，它不会被新会话载入。',
+  'detail.conflict': '冲突',
+  'detail.created': '创建于 {time}',
+  'detail.emptyBody': '这条记忆没有正文。',
+  'detail.history': '修改记录',
+  'detail.historyDream': 'Dream · {n} 项改动',
+  'detail.historyEmpty': '还没有修改记录。',
+  'detail.historyPending': '在待处理里等你确认',
+  'detail.loading': '加载中…',
+  'detail.missing': '这条记忆已不存在。',
+  'detail.session': '来自会话 {id}',
+  'detail.stale': '已标记为「{status}」：不参与召回，新会话也不会载入。',
+  'detail.superseded': '旧值',
+  'detail.unverifiedIndex': '还没有经过 Dream 核实。',
+  'detail.updated': '更新于 {time}',
+  'detail.verified': '{date} 已核实：Dream 用来源对话逐字核对过这段内容。',
+  'edit.conflict': '另一个窗口先保存了这条笔记。你的草稿还在；刷新后可以看到较新的版本。',
+  'edit.content': '详细内容',
+  'edit.contentPlaceholder': '支持 Markdown。Ctrl+Enter 保存。',
+  'edit.description': '一句话摘要',
+  'edit.descriptionHint': '会出现在索引和搜索结果里。',
+  'edit.editTitle': '编辑记忆',
+  'edit.name': '名称',
+  'edit.namePlaceholder': '例如：回复语言',
+  'edit.nameRequired': '请填写名称。',
+  'edit.newTitle': '新建记忆',
+  'edit.reverifyHint': '这条笔记已核实。保存修改后，它会退出常驻，直到 Dream 重新核实。',
+  'edit.type': '类型',
+  'edit.typeHint.feedback': '你纠正过的地方、确认过的做法。',
+  'edit.typeHint.project': '代码里看不出来的决定和进行中的工作。',
+  'edit.typeHint.reference': '外部信息在哪里找。',
+  'edit.typeHint.user': '你是谁、你的偏好。',
+  'err.backendStale': '插件后台比页面旧，不认识这个请求。请完全退出 DeepSeek Harness 再重新打开。',
+  'err.deleteDisabled': '插件配置关闭了删除（dreamAllowDelete）。',
+  'err.evidenceRejected': '有改动缺少可核对的来源，整批都没有应用：',
+  'err.locked': '另一次 Dream 正在进行，请稍后再试。',
+  'err.more': '……还有 {n} 条',
+  'err.stale': '方案生成后记忆又有改动，请重新生成方案。',
+  'error.load': '无法加载记忆',
+  'inbox.emptyBody': '现在没有需要你决定的事。',
+  'inbox.emptyTitle': '都处理完了',
+  'inbox.planBody': '在你切换过去之前，记忆不会有任何变化。',
+  'inbox.planTitle': 'Dream 结果已就绪',
+  'inbox.extractTitle': '有自动抽取的笔记待确认',
+  'inbox.extractBody': '来自最近对话的 {n} 条建议笔记。接受后会走正常保存检查。',
+  'inbox.accept': '全部接受',
+  'inbox.discard': '放弃',
+  'inbox.acceptFailed': '只保存了 {applied}/{total} 条，其余未通过检查。',
+  'inbox.offTitle': '自动抽取未开启',
+  'inbox.offBody': '在设置里开启后，最近对话里抽出的笔记会先出现在这里供你确认。',
+  'inbox.emptyOffBody': '在设置里开启「自动抽取」，新笔记会先出现在这里，确认后才进入记忆。',
+  'inbox.lastExtract': '上次尝试：{reason} · {time}',
+  'inbox.commandHint': '也可以在对话里：/memory inbox accept <id>',
+  'notice.inboxAccepted': '已接受 {n} 条笔记。',
+  'notice.inboxDiscarded': '已放弃这条建议。',
+  'list.emptyBody': '在对话里说「记住……」，或者自己新建一条。',
+  'list.emptyTitle': '还没有记忆',
+  'list.filterEmpty': '没有符合筛选条件的记忆。',
+  'load.index': '新会话载入索引：{lines}/{maxLines} 行。',
+  'load.indexOver': '新会话载入索引，但索引超出预算，末尾会被截掉。',
+  'load.off': '新会话不载入记忆：自动记忆已关闭。',
+  'load.recall': '相关笔记也会附在消息上。',
+  'notes.appliesWhen': '适用条件',
+  'notes.exception': '例外',
+  'notes.observed': '观察记录',
+  'notes.verify': '核对方法',
+  'notice.copied': '路径已复制。',
+  'notice.deleted': '已移到回收站，可在「设置」里恢复。',
+  'notice.done': '已完成。',
+  'notice.planDiscarded': '已放弃这个方案。',
+  'notice.restored': '已恢复。',
+  'notice.rulesReset': '已恢复默认规则。',
+  'notice.rulesSaved': '规则已保存，下一次请求起生效。',
+  'notice.saved': '已保存。',
+  'notice.toggled': '已更新。',
+  'readiness.backoff': '上次失败了，稍后会重试。',
+  'readiness.lock': '正在 Dream 中。',
+  'readiness.min-hours': '还没到 {hours} 小时的间隔。',
+  'readiness.min-sessions': '已有 {current}/{required} 次对话。',
+  'readiness.pending-proposal': '有一个方案在等你确认。',
+  'readiness.throttle': '刚检查过，稍后会再检查。',
+  'reason.mergeDependency': '它的内容本该并入一项不能应用的改动，删掉它会丢失这些内容。',
+  'reason.noCitation': '新增的一行没有来源引用：「{line}」',
+  'reason.noClaim': '引用对不上对话里任何已核实的原话。',
+  'reason.unsupported': '这一行和它引用的原话说的不是一回事：「{line}」',
+  'reason.userAttribution': '把要求说成是用户提的，但没有用户的原话。',
+  'reason.userClass': '用户/反馈类笔记必须有用户亲手打的原话，转发的材料不算。',
+  'restore.all': '全部恢复',
+  'restore.backups': 'Dream 前备份',
+  'restore.empty': '这里是空的。',
+  'restore.files': '{n} 个文件',
+  'restore.hint': '删除的记忆，以及每次 Dream 前留下的备份。',
+  'restore.one': '恢复',
+  'restore.title': '回收站与备份',
+  'restore.trash': '回收站',
+  'rules.count': '{n} / {max} 字符',
+  'rules.hint': '可选：附加到每次请求的记忆指引，相当于记忆版的 CLAUDE.md。留空则不额外发送任何内容。',
+  'rules.placeholder': '例如：\n- 记下部署命令和各服务的负责人。\n- 不要记一次性的调试步骤。',
+  'rules.reset': '删除自定义规则',
+  'rules.saveGlobal': '保存为全局',
+  'rules.saveProject': '保存到本项目',
+  'rules.source.default': '默认',
+  'rules.source.global': '全局',
+  'rules.source.project': '本项目',
+  'rules.title': '记忆规则',
+  'search.empty': '没有匹配「{q}」的记忆。',
+  'search.placeholder': '搜索记忆',
+  'settings.autoDream': '自动 Dream',
+  'settings.autoDreamHint': '定期在后台 Dream 记忆。',
+  'settings.autoExtract': '自动抽取',
+  'settings.autoExtractHint': '每隔 {n} 轮让模型找值得记住的笔记，先放进「待确认」。',
+  'settings.extractDirect': '每隔几轮，走正常检查后直接保存',
+  'settings.perAgent': '子代理独立记忆',
+  'settings.perAgentHint': '让子代理使用自己的记忆目录，而不是共享项目记忆。',
+  'settings.perAgentOff': '关闭',
+  'settings.perAgentOn': '所有带预设名的子代理',
+  'settings.perAgentShared': '共享项目记忆（可读可写）',
+  'settings.perAgentOnList': '仅：{names}',
+  'settings.autoMemory': '自动记忆',
+  'settings.autoMemoryHint': '新会话会载入记忆，智能体会自动保存值得记住的内容。',
+  'settings.enabled': '记忆功能',
+  'settings.enabledHint': '总开关：载入、保存和 Dream 记忆。',
+  'settings.indexBudget': '索引大小',
+  'settings.indexOver': '索引超出预算，末尾部分不会载入。Dream 可以压缩它。',
+  'settings.loading': '新会话载入什么',
+  'settings.loadingHint': '这里只做展示，要修改请改插件配置。',
+  'settings.mode': '会话开始时',
+  'settings.modeIndex': '完整索引 MEMORY.md',
+  'settings.recall': '会话进行中',
+  'settings.recallLexical': '只做词面匹配，不调用模型',
+  'settings.recallModel': '模型选择器按每条消息挑最多五条',
+  'settings.recallNone': '关闭，需要时由智能体自己搜索',
+  'settings.recallOff': '不额外附加，智能体需要时自己搜索',
+  'settings.recallOn': '和消息相关的笔记会附在消息上（autoRecall）',
+  'settings.switches': '开关',
+  'settings.switchesHint': '对所有项目生效。',
+  'status.disputed': '有争议',
+  'status.retired': '已停用',
+  'status.review-needed': '待复核',
+  'status.stale': '已过时',
+  'status.superseded': '已被取代',
+  'tab.inbox': '待处理',
+  'tab.memories': '记忆',
+  'tab.settings': '设置',
+  'tab.tidy': 'Dream',
+  'tidy.applyPassed': '应用通过的 {n} 项',
+  'tidy.discarded': '已不通过，这些内容以后不会再提出。',
+  'tidy.estimateLine': '粗略估计：{tokens} / {limit} 输入 token。',
+  'tidy.estimateNoLimit': '粗略估计：{tokens} 输入 token。',
+  'tidy.estimateUnavailable': '暂时无法估算消耗，请重试后再开始 Dream。',
+  'tidy.focus': '关注点（可选）',
+  'tidy.focusPlaceholder': '例如：部署相关的笔记，或回复语言偏好',
+  'tidy.generate': '估算这次运行',
+  'tidy.historyTitle': '最近 Dream',
+  'tidy.indexMeta': '{lines} / {maxLines} 行 · {bytes} / {maxBytes}',
+  'tidy.intro': 'Dream 会从旧到新读还没读过的对话，提出对记忆的修改。每一项修改由你决定通过或不通过。不通过的内容会被记住，以后不会再提出；通过的修改可以在「最近的 Dream」里撤销。',
+  'tidy.linked': '与 {file} 一起决定',
+  'tidy.memoryOnly': '只整理已有记忆（不读对话）',
+  'tidy.memoryOnlyHint': '找出主题相同的页面，提议把其中一页并入另一页，内容不会丢失。',
+  'tidy.op.create': '新建',
+  'tidy.op.delete': '删除',
+  'tidy.op.index': '索引',
+  'tidy.before': '当前记忆',
+  'tidy.after': 'Dream 副本',
+  'tidy.diffLoading': '正在读取差异…',
+  'tidy.diffError': '读取差异失败。收起后重新展开可重试。',
+  'tidy.emptyFile': '（无文件内容）',
+  'tidy.op.update': '修改',
+  'tidy.opsCount': '{n} 项改动',
+  'tidy.pass': '通过',
+  'tidy.ready': '条件已满足，下一轮对话结束后会自动 Dream。',
+  'tidy.reject': '不通过',
+  'tidy.rejectAll': '全部不通过',
+  'tidy.rejectHint': '不通过的内容会被记住，以后的 Dream 不会再提出。',
+  'tidy.resultCounts': '新增 {added}，修改 {changed}，删除 {removed}',
+  'tidy.resultTitle': 'Dream 结果等你审核',
+  'tidy.runAlready': '这个项目已经有一次 Dream 在运行。',
+  'tidy.runCancel': '停止',
+  'tidy.runResume': '继续',
+  'tidy.runStarted': 'Dream 已开始。你可以继续工作，运行结束后会出现新的副本。',
+  'tidy.runState.blocked': '被阻断',
+  'tidy.runState.cancelled': '已取消',
+  'tidy.runState.cancelling': '正在取消',
+  'tidy.runState.failed': '失败',
+  'tidy.runState.idle': '空闲',
+  'tidy.runState.running': '运行中',
+  'tidy.runState.skipped': '已跳过',
+  'tidy.runTitle': '本次运行',
+  'tidy.start': '开始整理',
+  'tidy.switchConflict': 'Dream 运行期间记忆被改动：{files}',
+  'tidy.switched': '已应用通过的修改。',
+  'tidy.title': 'Dream：记忆整合',
+  'tidy.undo': '撤销',
+  'tidy.undoConflict': '这些文件在 Dream 后又被修改过，无法安全撤销：{files}',
+  'tidy.undone': '已撤销，记忆恢复到 Dream 前。',
+  'tidy.undoneTag': '已撤销',
+  'time.days': '{n} 天前',
+  'time.hours': '{n} 小时前',
+  'time.justNow': '刚刚',
+  'time.minutes': '{n} 分钟前',
+  'trust.all': '全部状态',
+  'trust.changed': '核实后改过',
+  'trust.stale': '已过时',
+  'trust.unverified': '未核实',
+  'trust.verified': '已核实',
+  'type.all': '全部',
+  'type.feedback': '反馈',
+  'type.project': '项目',
+  'type.reference': '参考',
+  'type.user': '用户',
+  'via.agent': '由智能体保存',
+  'via.command': '通过 /remember 保存',
+  'via.import': '导入',
+  'via.tidy': '由 Dream 写入',
+  'via.you': '由你编辑',
+  'view.title': '记忆',
+  'tidy.started': 'Dream 已开始。你可以继续工作，运行结束后会出现新的副本。',
+};
 
-      'btn.refresh': 'Refresh',
-      'btn.reload': 'Reload page',
-      'btn.retry': 'Retry',
-      'btn.turnOn': 'Turn on',
-      'btn.new': 'New',
-      'btn.edit': 'Edit',
-      'btn.delete': 'Delete',
-      'btn.confirmDelete': 'Delete for sure?',
-      'btn.save': 'Save',
-      'btn.saving': 'Saving…',
-      'btn.cancel': 'Cancel',
-      'btn.close': 'Close',
-      'btn.back': 'Back',
-      'btn.clear': 'Clear search',
-      'btn.copy': 'Copy path',
-      'btn.confirm': 'Click again to confirm',
-      'btn.review': 'Review',
-
-      'banner.pluginOff': 'Memory is turned off: nothing is loaded, saved or dreamed.',
-      'banner.autoMemoryOff': "Auto memory is off: new conversations don't load memory and the agent can't save memories.",
-      'banner.apiMissing':
-        'This page opened before the memory plugin loaded, so it is read-only for now. Reload the page to edit.',
-      'banner.noBackend':
-        "The memory service isn't available on this page. Reload the page; if it still fails, check that the plugin is installed.",
-      'banner.tokenExpired': 'The connection to the memory service expired. Reload the page to reconnect.',
-      'banner.backendStale':
-        'The memory plugin is still running older code than this page, so newer parts (trust marks, write details) fail. Quit DeepSeek Harness completely and open it again.',
-      'error.load': "Couldn't load memory",
-
-      'type.all': 'All',
-      'type.user': 'User',
-      'type.feedback': 'Feedback',
-      'type.project': 'Project',
-      'type.reference': 'Reference',
-      'scope.project': 'This project',
-      'scope.user': 'All projects',
-
-      'trust.all': 'Any status',
-      'trust.hot': 'Loaded',
-      'trust.verified': 'Verified',
-      'trust.changed': 'Edited since verified',
-      'trust.unverified': 'Unverified',
-      'trust.stale': 'Outdated',
-      'status.stale': 'Stale',
-      'status.superseded': 'Superseded',
-      'status.disputed': 'Disputed',
-      'status.review-needed': 'Needs review',
-      'status.retired': 'Retired',
-
-      'search.placeholder': 'Search memories',
-      'search.empty': 'No memories match "{q}".',
-      'list.emptyTitle': 'No memories yet',
-      'list.emptyBody': 'Tell the agent "remember …" in a conversation, or add one yourself.',
-      'list.filterEmpty': 'No memories match these filters.',
-
-      'detail.loading': 'Loading…',
-      'detail.emptyBody': 'This memory has no details.',
-      'detail.updated': 'Updated {time}',
-      'detail.created': 'Created {time}',
-      'detail.session': 'From conversation {id}',
-      'detail.missing': 'This memory no longer exists.',
-      'detail.hot': 'Loaded into every new conversation.',
-      'detail.verified': 'Verified {date}: a Dream checked this exact text against the conversations it came from.',
-      'detail.changed':
-        'Edited after it was verified. It stays out of the loaded set until a Dream verifies it again.',
-      'detail.unverifiedHot':
-        'Not verified yet, so it is not loaded into new conversations. The agent can still find it by searching.',
-      'detail.unverifiedIndex': 'Not verified by a Dream yet.',
-      'detail.stale': 'Marked "{status}": left out of recall and of what new conversations load.',
-      'detail.conflict': 'Conflict',
-      'detail.superseded': 'Earlier values',
-      'detail.history': 'Change history',
-      'detail.historyEmpty': 'No recorded changes yet.',
-      'detail.historyDream': 'Dream · {n} changes',
-      'detail.historyPending': 'Waiting in the inbox',
-      'notes.appliesWhen': 'Applies when',
-      'notes.verify': 'How to check',
-      'notes.exception': 'Exception',
-      'notes.observed': 'Observed',
-      'via.agent': 'Saved by the agent',
-      'via.command': 'Saved with /remember',
-      'via.tidy': 'Written by a dream',
-      'via.you': 'Edited by you',
-      'via.import': 'Imported',
-
-      'edit.newTitle': 'New memory',
-      'edit.editTitle': 'Edit memory',
-      'edit.name': 'Name',
-      'edit.namePlaceholder': 'e.g. Reply language',
-      'edit.nameRequired': 'Give the memory a name.',
-      'edit.type': 'Type',
-      'edit.typeHint.user': 'Who you are and what you prefer.',
-      'edit.typeHint.feedback': 'Corrections and approaches you confirmed.',
-      'edit.typeHint.project': "Decisions and ongoing work the code doesn't show.",
-      'edit.typeHint.reference': 'Where to find outside information.',
-      'edit.description': 'One-line summary',
-      'edit.descriptionHint': 'Shown in the index and in search results.',
-      'edit.content': 'Details',
-      'edit.contentPlaceholder': 'Markdown is supported. Ctrl+Enter saves.',
-      'edit.reverifyHint':
-        'This note is verified. Saving a change means it leaves the loaded set until a Dream verifies it again.',
-
-      'inbox.hint': "Writes the agent wasn't sure about, and Dream plans, wait here until you decide.",
-      'inbox.emptyTitle': 'All clear',
-      'inbox.emptyBody': 'Nothing needs your decision right now.',
-      'inbox.planTitle': 'A Dream plan is ready',
-      'inbox.planBody': 'Nothing in memory changes until you review and apply it.',
-      'inbox.writesTitle': 'Writes to review',
-      'inbox.why': 'Why it is waiting',
-      'inbox.content': 'Proposed text',
-      'inbox.noContent': 'This request carries no text.',
-      'inbox.target': 'Changes {file}',
-      'inbox.action.save': 'New',
-      'inbox.action.update': 'Update',
-      'inbox.action.delete': 'Delete',
-      'inbox.approve.save': 'Save',
-      'inbox.approve.update': 'Apply',
-      'inbox.approve.delete': 'Delete',
-      'inbox.reject.save': 'Discard',
-      'inbox.reject.update': 'Discard',
-      'inbox.reject.delete': 'Keep note',
-
-      'notice.saved': 'Saved.',
-      'notice.deleted': 'Moved to trash. You can restore it in Settings.',
-      'notice.done': 'Done.',
-      'notice.discarded': 'Discarded.',
-      'notice.toggled': 'Updated.',
-      'notice.rulesSaved': 'Rules saved. They apply from the next request.',
-      'notice.rulesReset': 'Rules reset to the defaults.',
-      'notice.restored': 'Restored.',
-      'notice.copied': 'Path copied.',
-      'notice.planDiscarded': 'Plan discarded.',
-
-      'err.locked': 'Another dream is running. Try again in a moment.',
-      'err.stale': 'Memory changed after this plan was made. Create a new plan.',
-      'err.deleteDisabled': 'Deleting is turned off in the plugin config (dreamAllowDelete).',
-      'err.backendStale': 'The plugin backend is older than this page and does not know this request. Quit DeepSeek Harness completely and open it again.',
-      'err.evidenceRejected': 'Some changes lack a checkable source, so nothing was applied:',
-      'err.more': '… and {n} more',
-
-      'tidy.title': 'Dream: memory consolidation',
-      'tidy.intro':
-        'A dream reads your memories and recent conversations, merges duplicates, fixes outdated notes and verifies what still holds. You review every change before it is applied, and you can undo it under Recent dreams.',
-      'tidy.step.estimate': 'Estimate',
-      'tidy.step.plan': 'Plan',
-      'tidy.step.review': 'Review and apply',
-      'tidy.focus': 'Focus (optional)',
-      'tidy.focusPlaceholder': 'e.g. deployment notes, or the reply-language preference',
-      'tidy.focusShown': 'Focus: {focus}',
-      'tidy.generate': 'Start a dream',
-      'tidy.regenerate': 'Dream again',
-      'tidy.estimateTitle': 'Before you start',
-      'tidy.estimateTokens': '≈ {n} tokens',
-      'tidy.estimateInput': 'Rough input estimate: {n} tokens.',
-      'tidy.estimateLimit': 'Configured token limit: {n}.',
-      'tidy.estimateUnlimited': 'No token limit is configured.',
-      'tidy.estimateHint': 'Actual total usage can be higher. This input estimate is not a spending cap.',
-      'tidy.estimateUnavailable': 'Could not estimate usage. Try again before starting Dream.',
-      'tidy.generating': 'Dreaming: reading memories and recent conversations… this usually takes 1–2 minutes.',
-      'tidy.nothing': 'Nothing needs a dream right now.',
-      'tidy.planTitle': 'Proposed changes',
-      'tidy.proposal': 'Waiting for review',
-      'tidy.preview': 'Preview',
-      'tidy.v2': 'Dream v2',
-      'tidy.coverage': 'Read {processed} of {expected} conversations',
-      'tidy.coverageFailed': '{n} failed',
-      'tidy.coveragePartial': '{n} partly read',
-      'tidy.coverageBlocked': 'Not every conversation was read in full, so this plan cannot be applied. Dream again to retry.',
-      'tidy.planBlocked': 'This plan cannot be applied as a whole: {reason}',
-      'tidy.rejected': 'Can’t apply',
-      'tidy.rejectedNote': '{n} changes fail the checks apply runs, so they are left unselected. Expand one to see why.',
-      'tidy.noneApplicable': 'No change in this plan can be applied. Dream again, or discard the plan.',
-      'reason.noCitation': 'A new line has no source citation: “{line}”',
-      'reason.noClaim': 'A citation does not match any quote the transcript verified.',
-      'reason.unsupported': 'The line says something other than the quote it cites: “{line}”',
-      'reason.userAttribution': 'It presents a requirement as the user’s without the user’s own words.',
-      'reason.userClass': 'A user or feedback note needs a quote the user typed; forwarded material does not count.',
-      'reason.mergeDependency': 'Its facts were meant to move into a change that cannot be applied, so deleting it would lose them.',
-      'tidy.verifiedPages': '{n} pages will be marked verified',
-      'tidy.evidence': 'Evidence',
-      'tidy.evidenceCount': '{n} quotes',
-      'tidy.apply': 'Apply {n} selected',
-      'tidy.applyConfirm': 'Apply {n} changes?',
-      'tidy.applied': 'Applied {n} changes. You can undo this under Recent dreams.',
-      'tidy.selectAll': 'Select all',
-      'tidy.selectNone': 'Clear selection',
-      'tidy.discard': 'Discard plan',
-      'tidy.op.create': 'New',
-      'tidy.op.update': 'Edit',
-      'tidy.op.delete': 'Remove',
-      'tidy.op.index': 'Index',
-      'tidy.unchanged': 'no change',
-      'tidy.chars': '{before} → {after} chars',
-      'tidy.newChars': '{n} chars',
-      'tidy.before': 'Before',
-      'tidy.after': 'After',
-      'tidy.removedLines': 'Removed body lines',
-      'tidy.addedLines': 'Added body lines',
-      'tidy.truncated': 'Too long to rewrite safely, left as is: {files}',
-      'tidy.dropped': '{n} unsafe changes were left out of the plan.',
-  'tidy.reviewItems': '{n} claim(s) need a person to decide; nothing was written for them.',
-      'tidy.costExceeded': 'This plan went over the token limit.',
-      'tidy.last': 'Last dream {time}',
-      'tidy.never': 'Never dreamed',
-      'tidy.sessionsSince': '{n} conversations since',
-      'tidy.lastError': 'Last dream failed: {error}',
-    'tidy.runTitle': 'This run',
-    'tidy.runState.running': 'Running',
-    'tidy.runState.failed': 'Stopped with errors',
-    'tidy.runState.cancelled': 'Stopped',
-    'tidy.runState.blocked': 'Needs a retry',
-    'tidy.runUnits': '{done} of {total} parts analyzed',
-    'tidy.runFailed': '{n} parts failed and can be retried.',
-    'tidy.runCancel': 'Stop',
-    'tidy.runResume': 'Continue',
-    'tidy.runStarted': 'Dream started. You can keep working; the plan appears when the run finishes.',
-    'tidy.runAlready': 'A dream is already running for this project.',
-      'tidy.auto': 'Dream automatically',
-      'tidy.autoHint': 'Runs a dream in the background once {hours} h and {sessions} conversations have passed.',
-      'tidy.ready': 'Ready: the next dream runs after the next conversation turn.',
-      'tidy.pipeline.classic': 'Classic pipeline: one model pass over memory and conversations.',
-      'tidy.pipeline.v2': 'Dream v2: each conversation is analyzed and its quotes verified, then one organizer writes the plan.',
-      'tidy.indexMeta': '{lines} / {maxLines} lines · {bytes} / {maxBytes}',
-      'tidy.historyTitle': 'Recent dreams',
-      'tidy.opsCount': '{n} changes',
-      'tidy.undo': 'Undo',
-      'tidy.undone': 'Undone. Memory is back to how it was before.',
-      'tidy.undoneTag': 'Undone',
-      'tidy.undoConflict': "These files changed after the dream, so it can't be undone safely: {files}",
-      'readiness.min-hours': 'Waiting for the {hours} h interval.',
-      'readiness.min-sessions': '{current} of {required} conversations so far.',
-      'readiness.pending-proposal': 'A plan is waiting for your review.',
-      'readiness.lock': 'A dream is running.',
-      'readiness.backoff': 'The last attempt failed; it will retry later.',
-      'readiness.throttle': 'Checked recently; it will check again soon.',
-
-      'settings.switches': 'Switches',
-      'settings.switchesHint': 'These apply to every project.',
-      'settings.enabled': 'Memory',
-      'settings.enabledHint': 'Master switch for loading, saving and dreaming memory.',
-      'settings.autoMemory': 'Auto memory',
-      'settings.autoMemoryHint': 'New conversations load memory, and the agent saves what is worth remembering.',
-      'settings.autoDream': 'Auto dream',
-      'settings.autoDreamHint': 'Dream memory in the background from time to time.',
-      'settings.userMemory': 'Cross-project memory',
-      'settings.userMemoryHint': 'A separate memory shared by all projects, for things like your preferences.',
-      'settings.loading': 'What new conversations load',
-      'settings.loadingHint': 'Shown for reference. Change these in the plugin config.',
-      'settings.mode': 'At the start',
-      'settings.modeHot': 'The {n} most-used verified notes (injectHotOnly)',
-      'settings.modeIndex': 'The whole index, MEMORY.md',
-      'settings.recall': 'During the conversation',
-      'settings.recallOn': 'Notes that match a message are attached to it (autoRecall)',
-      'settings.recallOff': 'Nothing more; the agent searches when it needs to',
-      'settings.writeMode': 'Agent writes',
-      'settings.writeAuto': 'Saved directly; uncertain ones wait in the inbox',
-      'settings.writeConfirm': 'Every write waits in the inbox (writeMode: confirm)',
-      'settings.indexBudget': 'Index size',
-      'settings.indexOver': "The index is over budget, so its end isn't loaded. A dream shortens it.",
-      'settings.userBudget': 'Cross-project index',
-      'rules.title': 'What to remember',
-      'rules.hint': 'Guidance sent with every request about what is worth saving. The two safety rules are always kept.',
-      'rules.source.default': 'Default',
-      'rules.source.project': 'This project',
-      'rules.source.global': 'All projects',
-      'rules.saveProject': 'Save for this project',
-      'rules.saveGlobal': 'Save for all projects',
-      'rules.reset': 'Restore defaults',
-      'rules.count': '{n} / {max} characters',
-      'restore.title': 'Trash and backups',
-      'restore.hint': 'Deleted memories, and the copy taken before each dream.',
-      'restore.trash': 'Trash',
-      'restore.backups': 'Before dreams',
-      'restore.empty': 'Nothing here.',
-      'restore.files': '{n} files',
-      'restore.all': 'Restore all',
-      'restore.one': 'Restore',
-      'about.title': 'Storage',
-      'about.dir': 'Memory folder',
-      'about.usage': 'Loaded {inject} times · read {reads} · saved {writes} · searched {searches}',
-      'about.version': 'Plugin version {v}',
-
-      'time.justNow': 'just now',
-      'time.minutes': '{n} min ago',
-      'time.hours': '{n} h ago',
-      'time.days': '{n} days ago',
-    };
-
-    const ZH = {
-      'view.title': '记忆',
-      'tab.memories': '记忆',
-      'tab.inbox': '待处理',
-      'tab.tidy': 'Dream',
-      'tab.settings': '设置',
-      'chip.label': '记忆',
-      'chip.attention': '{n} 项待处理',
-      'chip.loaded': '载入 {n} 条',
-      'chip.title': '本项目的记忆',
-
-      'load.hot': '新会话载入 {n}/{total} 条：已核实、最常用的笔记。',
-      'load.hotNone': '新会话暂不载入笔记，因为还没有核实过的。智能体仍可搜索全部 {total} 条。',
-      'load.index': '新会话载入索引：{lines}/{maxLines} 行。',
-      'load.indexOver': '新会话载入索引，但索引超出预算，末尾会被截掉。',
-      'load.off': '新会话不载入记忆：自动记忆已关闭。',
-      'load.recall': '相关笔记也会附在消息上。',
-
-      'btn.refresh': '刷新',
-      'btn.reload': '刷新页面',
-      'btn.retry': '重试',
-      'btn.turnOn': '开启',
-      'btn.new': '新建',
-      'btn.edit': '编辑',
-      'btn.delete': '删除',
-      'btn.confirmDelete': '确认删除？',
-      'btn.save': '保存',
-      'btn.saving': '保存中…',
-      'btn.cancel': '取消',
-      'btn.close': '关闭',
-      'btn.back': '返回',
-      'btn.clear': '清除搜索',
-      'btn.copy': '复制路径',
-      'btn.confirm': '再点一次确认',
-      'btn.review': '去审阅',
-
-      'banner.pluginOff': '记忆功能已关闭：不会载入、保存或 Dream 记忆。',
-      'banner.autoMemoryOff': '自动记忆已关闭：新会话不会载入记忆，智能体也不能保存记忆。',
-      'banner.apiMissing': '页面在记忆插件加载前打开，目前只能查看。刷新页面后即可编辑。',
-      'banner.noBackend': '此页面连不上记忆服务。请刷新页面；如仍失败，检查插件是否已安装。',
-      'banner.tokenExpired': '与记忆服务的连接已失效，刷新页面即可重新连接。',
-      'banner.backendStale': '记忆插件的后台还在运行旧代码，和这个页面对不上：可信度标记、待处理详情等新功能会出错。请完全退出 DeepSeek Harness 再重新打开。',
-      'error.load': '无法加载记忆',
-
-      'type.all': '全部',
-      'type.user': '用户',
-      'type.feedback': '反馈',
-      'type.project': '项目',
-      'type.reference': '参考',
-      'scope.project': '本项目',
-      'scope.user': '跨项目',
-
-      'trust.all': '全部状态',
-      'trust.hot': '常驻',
-      'trust.verified': '已核实',
-      'trust.changed': '核实后改过',
-      'trust.unverified': '未核实',
-      'trust.stale': '已过时',
-      'status.stale': '已过时',
-      'status.superseded': '已被取代',
-      'status.disputed': '有争议',
-      'status.review-needed': '待复核',
-      'status.retired': '已停用',
-
-      'search.placeholder': '搜索记忆',
-      'search.empty': '没有匹配「{q}」的记忆。',
-      'list.emptyTitle': '还没有记忆',
-      'list.emptyBody': '在对话里说「记住……」，或者自己新建一条。',
-      'list.filterEmpty': '没有符合筛选条件的记忆。',
-
-      'detail.loading': '加载中…',
-      'detail.emptyBody': '这条记忆没有正文。',
-      'detail.updated': '更新于 {time}',
-      'detail.created': '创建于 {time}',
-      'detail.session': '来自会话 {id}',
-      'detail.missing': '这条记忆已不存在。',
-      'detail.hot': '每个新会话都会载入这条笔记。',
-      'detail.verified': '{date} 已核实：Dream 用来源对话逐字核对过这段内容。',
-      'detail.changed': '核实之后又被改过。在 Dream 重新核实之前，它不会被新会话载入。',
-      'detail.unverifiedHot': '还没核实，所以新会话不会载入它。智能体搜索时仍能找到。',
-      'detail.unverifiedIndex': '还没有经过 Dream 核实。',
-      'detail.stale': '已标记为「{status}」：不参与召回，新会话也不会载入。',
-      'detail.conflict': '冲突',
-      'detail.superseded': '旧值',
-      'detail.history': '修改记录',
-      'detail.historyEmpty': '还没有修改记录。',
-      'detail.historyDream': 'Dream · {n} 项改动',
-      'detail.historyPending': '在待处理里等你确认',
-      'notes.appliesWhen': '适用条件',
-      'notes.verify': '核对方法',
-      'notes.exception': '例外',
-      'notes.observed': '观察记录',
-      'via.agent': '由智能体保存',
-      'via.command': '通过 /remember 保存',
-      'via.tidy': '由 Dream 写入',
-      'via.you': '由你编辑',
-      'via.import': '导入',
-
-      'edit.newTitle': '新建记忆',
-      'edit.editTitle': '编辑记忆',
-      'edit.name': '名称',
-      'edit.namePlaceholder': '例如：回复语言',
-      'edit.nameRequired': '请填写名称。',
-      'edit.type': '类型',
-      'edit.typeHint.user': '你是谁、你的偏好。',
-      'edit.typeHint.feedback': '你纠正过的地方、确认过的做法。',
-      'edit.typeHint.project': '代码里看不出来的决定和进行中的工作。',
-      'edit.typeHint.reference': '外部信息在哪里找。',
-      'edit.description': '一句话摘要',
-      'edit.descriptionHint': '会出现在索引和搜索结果里。',
-      'edit.content': '详细内容',
-      'edit.contentPlaceholder': '支持 Markdown。Ctrl+Enter 保存。',
-      'edit.reverifyHint': '这条笔记已核实。保存修改后，它会退出常驻，直到 Dream 重新核实。',
-
-      'inbox.hint': '智能体拿不准的写入和 Dream 方案都放在这里，等你决定后才会生效。',
-      'inbox.emptyTitle': '都处理完了',
-      'inbox.emptyBody': '现在没有需要你决定的事。',
-      'inbox.planTitle': 'Dream 方案已就绪',
-      'inbox.planBody': '在你审阅并应用之前，记忆不会有任何改动。',
-      'inbox.writesTitle': '待确认的写入',
-      'inbox.why': '为什么要你确认',
-      'inbox.content': '拟写入的内容',
-      'inbox.noContent': '这条请求没有附带正文。',
-      'inbox.target': '修改 {file}',
-      'inbox.action.save': '新增',
-      'inbox.action.update': '修改',
-      'inbox.action.delete': '删除',
-      'inbox.approve.save': '保存',
-      'inbox.approve.update': '应用',
-      'inbox.approve.delete': '删除',
-      'inbox.reject.save': '丢弃',
-      'inbox.reject.update': '丢弃',
-      'inbox.reject.delete': '保留笔记',
-
-      'notice.saved': '已保存。',
-      'notice.deleted': '已移到回收站，可在「设置」里恢复。',
-      'notice.done': '已完成。',
-      'notice.discarded': '已丢弃。',
-      'notice.toggled': '已更新。',
-      'notice.rulesSaved': '规则已保存，下一次请求起生效。',
-      'notice.rulesReset': '已恢复默认规则。',
-      'notice.restored': '已恢复。',
-      'notice.copied': '路径已复制。',
-      'notice.planDiscarded': '已放弃这个方案。',
-
-      'err.locked': '另一次 Dream 正在进行，请稍后再试。',
-      'err.stale': '方案生成后记忆又有改动，请重新生成方案。',
-      'err.deleteDisabled': '插件配置关闭了删除（dreamAllowDelete）。',
-      'err.backendStale': '插件后台比页面旧，不认识这个请求。请完全退出 DeepSeek Harness 再重新打开。',
-      'err.evidenceRejected': '有改动缺少可核对的来源，整批都没有应用：',
-      'err.more': '……还有 {n} 条',
-
-      'tidy.title': 'Dream：记忆整合',
-      'tidy.intro':
-        'Dream 会读取现有记忆和最近的对话，合并重复、修正过时的记录，并核实仍然成立的内容。每项改动都先给你确认再应用，应用后也可以在「最近 Dream」里撤销。',
-      'tidy.step.estimate': '估算',
-      'tidy.step.plan': '生成方案',
-      'tidy.step.review': '审阅并应用',
-      'tidy.focus': '关注点（可选）',
-      'tidy.focusPlaceholder': '例如：部署相关的笔记，或回复语言偏好',
-      'tidy.focusShown': '关注点：{focus}',
-      'tidy.generate': '开始 Dream',
-      'tidy.regenerate': '重新 Dream',
-      'tidy.estimateTitle': '开始前确认',
-      'tidy.estimateTokens': '约 {n} token',
-      'tidy.estimateInput': '粗略估计输入约 {n} token。',
-      'tidy.estimateLimit': '已配置 token 上限：{n}。',
-      'tidy.estimateUnlimited': '未设置 token 上限。',
-      'tidy.estimateHint': '实际总消耗可能更高。这只是输入量的粗略估计，不是费用上限。',
-      'tidy.estimateUnavailable': '暂时无法估算消耗，请重试后再开始 Dream。',
-      'tidy.generating': 'Dream 正在读取记忆和最近的对话，通常需要 1–2 分钟…',
-      'tidy.nothing': '目前没有需要 Dream 的内容。',
-      'tidy.planTitle': 'Dream 方案',
-      'tidy.proposal': '待审',
-      'tidy.preview': '预览',
-      'tidy.v2': 'Dream v2',
-      'tidy.coverage': '读了 {processed}/{expected} 次对话',
-      'tidy.coverageFailed': '{n} 次失败',
-      'tidy.coveragePartial': '{n} 次只读了一部分',
-      'tidy.coverageBlocked': '有对话没有完整读完，这个方案不能应用。请重新 Dream。',
-      'tidy.planBlocked': '这个方案整体不能应用：{reason}',
-      'tidy.rejected': '不能应用',
-      'tidy.rejectedNote': '有 {n} 项改动过不了应用时的检查，已取消选择。展开可以看原因。',
-      'tidy.noneApplicable': '这个方案里没有能应用的改动。可以重新 Dream，或者放弃这个方案。',
-      'reason.noCitation': '新增的一行没有来源引用：「{line}」',
-      'reason.noClaim': '引用对不上对话里任何已核实的原话。',
-      'reason.unsupported': '这一行和它引用的原话说的不是一回事：「{line}」',
-      'reason.userAttribution': '把要求说成是用户提的，但没有用户的原话。',
-      'reason.userClass': '用户/反馈类笔记必须有用户亲手打的原话，转发的材料不算。',
-      'reason.mergeDependency': '它的内容本该并入一项不能应用的改动，删掉它会丢失这些内容。',
-      'tidy.verifiedPages': '应用后有 {n} 页会标记为已核实',
-      'tidy.evidence': '依据',
-      'tidy.evidenceCount': '{n} 条引文',
-      'tidy.apply': '应用所选 {n} 项',
-      'tidy.applyConfirm': '确认应用 {n} 项？',
-      'tidy.applied': '已应用 {n} 项改动，可以在「最近 Dream」里撤销。',
-      'tidy.selectAll': '全选',
-      'tidy.selectNone': '清空选择',
-      'tidy.discard': '放弃方案',
-      'tidy.op.create': '新增',
-      'tidy.op.update': '修改',
-      'tidy.op.delete': '删除',
-      'tidy.op.index': '索引',
-      'tidy.unchanged': '无变化',
-      'tidy.chars': '{before} → {after} 字',
-      'tidy.newChars': '{n} 字',
-      'tidy.before': '改前',
-      'tidy.after': '改后',
-      'tidy.removedLines': '将删除的正文行',
-      'tidy.addedLines': '将新增的正文行',
-      'tidy.truncated': '以下文件太长，方案不会改写：{files}',
-      'tidy.dropped': '有 {n} 项不安全的改动已被剔除。',
-  'tidy.reviewItems': '有 {n} 条结论需要人来判断，已暂不写入。',
-      'tidy.costExceeded': '这个方案超出了 token 上限。',
-      'tidy.last': '上次 Dream：{time}',
-      'tidy.never': '还没 Dream 过',
-      'tidy.sessionsSince': '之后有 {n} 次对话',
-      'tidy.lastError': '上次 Dream 失败：{error}',
-    'tidy.runTitle': '本次运行',
-    'tidy.runState.running': '进行中',
-    'tidy.runState.failed': '有部分未完成',
-    'tidy.runState.cancelled': '已停止',
-    'tidy.runState.blocked': '需要重试',
-    'tidy.runUnits': '已分析 {done}/{total} 段',
-    'tidy.runFailed': '{n} 段失败，可以继续重试。',
-    'tidy.runCancel': '停止',
-    'tidy.runResume': '继续',
-    'tidy.runStarted': 'Dream 已开始，你可以继续做事，完成后会出现计划。',
-    'tidy.runAlready': '这个项目已经有一次 Dream 在运行。',
-      'tidy.auto': '自动 Dream',
-      'tidy.autoHint': '距上次至少 {hours} 小时且有 {sessions} 次对话后，会在后台自动 Dream。',
-      'tidy.ready': '条件已满足，下一轮对话结束后会自动 Dream。',
-      'tidy.pipeline.classic': '经典流程：模型一次读完记忆和对话。',
-      'tidy.pipeline.v2': 'Dream v2：逐个分析对话并核对引文，再由一个整理器写出方案。',
-      'tidy.indexMeta': '{lines} / {maxLines} 行 · {bytes} / {maxBytes}',
-      'tidy.historyTitle': '最近 Dream',
-      'tidy.opsCount': '{n} 项改动',
-      'tidy.undo': '撤销',
-      'tidy.undone': '已撤销，记忆恢复到 Dream 前。',
-      'tidy.undoneTag': '已撤销',
-      'tidy.undoConflict': '这些文件在 Dream 后又被修改过，无法安全撤销：{files}',
-      'readiness.min-hours': '还没到 {hours} 小时的间隔。',
-      'readiness.min-sessions': '已有 {current}/{required} 次对话。',
-      'readiness.pending-proposal': '有一个方案在等你确认。',
-      'readiness.lock': '正在 Dream 中。',
-      'readiness.backoff': '上次失败了，稍后会重试。',
-      'readiness.throttle': '刚检查过，稍后会再检查。',
-
-      'settings.switches': '开关',
-      'settings.switchesHint': '对所有项目生效。',
-      'settings.enabled': '记忆功能',
-      'settings.enabledHint': '总开关：载入、保存和 Dream 记忆。',
-      'settings.autoMemory': '自动记忆',
-      'settings.autoMemoryHint': '新会话会载入记忆，智能体会自动保存值得记住的内容。',
-      'settings.autoDream': '自动 Dream',
-      'settings.autoDreamHint': '定期在后台 Dream 记忆。',
-      'settings.userMemory': '跨项目记忆',
-      'settings.userMemoryHint': '所有项目共用的一份记忆，适合放个人偏好。',
-      'settings.loading': '新会话载入什么',
-      'settings.loadingHint': '这里只做展示，要修改请改插件配置。',
-      'settings.mode': '会话开始时',
-      'settings.modeHot': '最常用的 {n} 条已核实笔记（injectHotOnly）',
-      'settings.modeIndex': '完整索引 MEMORY.md',
-      'settings.recall': '会话进行中',
-      'settings.recallOn': '和消息相关的笔记会附在消息上（autoRecall）',
-      'settings.recallOff': '不额外附加，智能体需要时自己搜索',
-      'settings.writeMode': '智能体写入',
-      'settings.writeAuto': '直接保存；拿不准的进待处理',
-      'settings.writeConfirm': '每次写入都进待处理（writeMode: confirm）',
-      'settings.indexBudget': '索引大小',
-      'settings.indexOver': '索引超出预算，末尾部分不会载入。Dream 可以压缩它。',
-      'settings.userBudget': '跨项目索引',
-      'rules.title': '记忆规则',
-      'rules.hint': '每次请求都会附带的「什么值得记」指引。两条安全规则始终保留。',
-      'rules.source.default': '默认',
-      'rules.source.project': '本项目',
-      'rules.source.global': '全局',
-      'rules.saveProject': '保存到本项目',
-      'rules.saveGlobal': '保存为全局',
-      'rules.reset': '恢复默认',
-      'rules.count': '{n} / {max} 字符',
-      'restore.title': '回收站与备份',
-      'restore.hint': '删除的记忆，以及每次 Dream 前留下的备份。',
-      'restore.trash': '回收站',
-      'restore.backups': 'Dream 前备份',
-      'restore.empty': '这里是空的。',
-      'restore.files': '{n} 个文件',
-      'restore.all': '全部恢复',
-      'restore.one': '恢复',
-      'about.title': '存储',
-      'about.dir': '记忆目录',
-      'about.usage': '载入 {inject} 次 · 读取 {reads} · 写入 {writes} · 搜索 {searches}',
-      'about.version': '插件版本 {v}',
-
-      'time.justNow': '刚刚',
-      'time.minutes': '{n} 分钟前',
-      'time.hours': '{n} 小时前',
-      'time.days': '{n} 天前',
-    };
-
-    const DICTIONARIES = { en: EN, zh: ZH };
+const DICTIONARIES = { en: EN, zh: ZH };
     /** Data contract this page expects from the backend (`/status.uiApi`). */
-    const UI_API = 3;
+    const UI_API = 4;
     const MONO =
       'var(--ds-font-family-code,ui-monospace,"Cascadia Code",SFMono-Regular,Menlo,Consolas,monospace)';
 
@@ -695,7 +586,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 .ccm-load{display:flex;align-items:center;gap:7px;margin-top:5px;font-size:12.5px;color:var(--ccm-fg2)}
 .ccm-load>svg{flex:none;color:var(--ccm-fg3)}
 .ccm-load[data-tone=warn]>svg{color:var(--ccm-warn)}
-.ccm-load[data-tone=hot]>svg{color:var(--ccm-accent)}
 .ccm-load-extra{color:var(--ccm-fg3)}
 .ccm-tabs{display:flex;gap:2px;margin:8px -4px 0;overflow-x:auto;scrollbar-width:none}
 .ccm-tabs::-webkit-scrollbar{display:none}
@@ -757,7 +647,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 .ccm-trust{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:99px;font-size:11px;font-weight:600;white-space:nowrap;
   color:var(--ccm-fg2);background:var(--ccm-hover)}
 .ccm-trust svg{flex:none}
-.ccm-trust[data-trust=hot]{color:var(--ccm-accent);background:color-mix(in srgb,var(--ccm-accent) 13%,transparent)}
 .ccm-trust[data-trust=verified]{color:var(--ccm-ok-fg);background:color-mix(in srgb,var(--ccm-ok) 14%,transparent)}
 .ccm-trust[data-trust=changed]{color:var(--ccm-warn-fg);background:color-mix(in srgb,var(--ccm-warn) 16%,transparent)}
 .ccm-trust[data-trust=stale]{color:var(--ccm-fg3);background:var(--ccm-hover);text-decoration:line-through;text-decoration-color:transparent}
@@ -821,8 +710,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 .ccm-trustline{display:flex;align-items:flex-start;gap:9px;margin-top:14px;padding:10px 12px;border-radius:9px;font-size:12.5px;line-height:1.55;
   color:var(--ccm-fg2);background:var(--ccm-hover)}
 .ccm-trustline>svg{flex:none;margin-top:2px}
-.ccm-trustline[data-trust=hot]{background:color-mix(in srgb,var(--ccm-accent) 8%,transparent)}
-.ccm-trustline[data-trust=hot]>svg{color:var(--ccm-accent)}
 .ccm-trustline[data-trust=verified]{background:color-mix(in srgb,var(--ccm-ok) 9%,transparent)}
 .ccm-trustline[data-trust=verified]>svg{color:var(--ccm-ok-fg)}
 .ccm-trustline[data-trust=changed]{background:color-mix(in srgb,var(--ccm-warn) 10%,transparent)}
@@ -916,7 +803,10 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 .ccm-op{border-top:1px solid var(--ccm-line)}
 .ccm-op-row{display:flex;align-items:center;gap:10px;padding:9px 12px 9px 16px}
 .ccm-op.is-muted .ccm-op-row{opacity:.55}
-.ccm-op.is-refused .ccm-op-file{color:var(--ccm-fg3)}
+.ccm-op.is-refused .ccm-op-file{color:var(--ccm-fg3);text-decoration:line-through}
+.ccm-op .ccm-seg{flex:none}
+.ccm-op .ccm-seg button[aria-pressed=true]:first-child{color:var(--ccm-ok-fg)}
+.ccm-op .ccm-seg button[aria-pressed=true]:last-child{color:var(--ccm-danger)}
 .ccm-check{display:flex;align-items:center;justify-content:center;flex:none;width:18px;height:18px;padding:0;border-radius:5px;
   border:1.5px solid var(--ccm-line2);background:var(--ccm-input);color:#fff;cursor:pointer;transition:background .12s,border-color .12s}
 .ccm-check[aria-checked=true]{background:var(--ccm-accent);border-color:var(--ccm-accent)}
@@ -1040,7 +930,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 .ccm-chip-dot{width:6px;height:6px;border-radius:99px;background:var(--dsw-alias-label-tertiary,#9aa0a6)}
 .ccm-chip-dot[data-on=true]{background:var(--dsw-static-green-500,#22c55e)}
 .ccm-chip-count{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary,#8a8f96)}
-.ccm-chip-hot{color:var(--dsw-static-blue-500,#3b82f6)}
 .ccm-chip-alert{font-weight:600;color:var(--dsw-static-amber-600,#b45309)}
 `;
 
@@ -1134,7 +1023,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         current: meta.current !== false,
         verified,
         verifiedOutdated: meta.verifiedOutdated === true,
-        hot: meta.hot === true,
       };
     }
 
@@ -1239,58 +1127,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       };
     }
 
-    /** One queued write from `/status.pendingWrites`. */
-    function normalizePendingWrite(item) {
-      const record = item && typeof item === 'object' ? item : {};
-      const candidate = record.candidate && typeof record.candidate === 'object' ? record.candidate : {};
-      const reasons = Array.isArray(record.reasons)
-        ? record.reasons
-            .map((reason) => {
-              if (typeof reason === 'string') return reason;
-              if (reason && typeof reason.message === 'string' && reason.message !== '') return reason.message;
-              if (reason && typeof reason.code === 'string') return reason.code;
-              return '';
-            })
-            .filter((reason) => reason !== '')
-        : [];
-      const source = record.source && typeof record.source === 'object' ? record.source : {};
-      return {
-        id: typeof record.id === 'string' ? record.id : '',
-        createdAt: asNumber(record.createdAt, 0),
-        action: record.action === 'update' || record.action === 'delete' ? record.action : 'save',
-        file: typeof record.file === 'string' ? record.file : '',
-        reasons,
-        source:
-          typeof record.source === 'string'
-            ? record.source
-            : typeof source.via === 'string'
-              ? source.via
-              : typeof source.tool === 'string'
-                ? source.tool
-                : '',
-        candidate: {
-          name: typeof candidate.name === 'string' ? candidate.name : '',
-          type: typeof candidate.type === 'string' ? candidate.type : 'user',
-          description: typeof candidate.description === 'string' ? candidate.description : '',
-          content: typeof candidate.content === 'string' ? candidate.content : null,
-        },
-      };
-    }
-
-    /** v9: `{count, items:[{id,createdAt,reasons,candidate}]}`. */
-    function normalizePendingWrites(raw) {
-      const record = raw && typeof raw === 'object' ? raw : {};
-      const source = record.result && typeof record.result === 'object' ? record.result : record;
-      const list = Array.isArray(source.items)
-        ? source.items
-        : Array.isArray(source.pendingWrites)
-          ? source.pendingWrites
-          : [];
-      const items = list.filter((item) => item && typeof item === 'object').map(normalizePendingWrite);
-      const rawCount = Number(source.count);
-      const count = Number.isFinite(rawCount) && rawCount >= 0 ? Math.trunc(rawCount) : items.length;
-      return { count, items };
-    }
 
     /** v9: dream readiness `{eligible,nextEligibleAt,reasons,gates}`. */
     function normalizeReadiness(raw) {
@@ -1325,7 +1161,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           minHours,
           minSessions,
           throttleMs: asNumber(gates.throttleMs, 0),
-          pendingProposal: Boolean(gates.pendingProposal),
+          pendingSwitch: Boolean(gates.pendingSwitch),
           lock: Boolean(gates.lock),
         },
       };
@@ -1400,29 +1236,21 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       };
     }
 
-    /** v10: `{items:[{ts,kind,appliedAt,ops,summary,files,undoable,hasMeta}]}`. */
+    /** GET /dream-history: `{items:[{ts,appliedAt,ops,summary,files,undoable,undone}]}`, newest first. */
     function normalizeDreamHistory(raw) {
-      const record = raw && typeof raw === 'object' ? raw : {};
-      const source = record.result && typeof record.result === 'object' ? record.result : record;
-      const list = Array.isArray(source.items) ? source.items : Array.isArray(source.batches) ? source.batches : [];
+      const list = raw && Array.isArray(raw.items) ? raw.items : [];
       const items = list
-        .filter((item) => item && typeof item === 'object')
-        .map((item) => {
-          const hasMeta = item.hasMeta === true || (item.meta !== undefined && item.meta !== null);
-          return {
-            ts: typeof item.ts === 'string' ? item.ts : typeof item.id === 'string' ? item.id : '',
-            kind: typeof item.kind === 'string' ? item.kind : '',
-            appliedAt: asNumber(item.appliedAt ?? item.at, 0),
-            ops: asNumber(item.ops, 0),
-            summary: typeof item.summary === 'string' ? item.summary : '',
-            files: Array.isArray(item.files) ? item.files.filter((file) => typeof file === 'string') : [],
-            hasMeta,
-            undoable: item.undoable === undefined ? hasMeta : item.undoable === true,
-            undone: item.undone === true,
-          };
-        })
-        .filter((item) => item.ts !== '');
-      return { items, total: asNumber(source.total, items.length) };
+        .filter((item) => item && typeof item === 'object' && typeof item.ts === 'string' && item.ts !== '')
+        .map((item) => ({
+          ts: item.ts,
+          appliedAt: asNumber(item.appliedAt, 0),
+          ops: asNumber(item.ops, 0),
+          summary: typeof item.summary === 'string' ? item.summary : '',
+          files: Array.isArray(item.files) ? item.files.filter((name) => typeof name === 'string') : [],
+          undoable: item.undoable === true,
+          undone: item.undone === true,
+        }));
+      return { items };
     }
 
     /** v10: ranked search `{query,total,items:[{file,name,description,type,score,snippets}]}`. */
@@ -1450,11 +1278,43 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
     }
 
     /** Normalize a /status payload (HTTP API and the command fallback share it). */
-    function normalizeStatus(raw) {
+    /** A dream result waiting for the human to switch to it or discard it. */
+function normalizePendingSwitch(raw) {
+  if (!raw || typeof raw !== 'object' || typeof raw.dir !== 'string' || raw.dir === '') return null;
+  const files = Array.isArray(raw.files)
+    ? raw.files
+        .filter((item) => item && typeof item.file === 'string' && item.file !== '')
+        .map((item) => ({
+          file: item.file,
+          action: item.action === 'added' || item.action === 'removed' ? item.action : 'changed',
+        }))
+    : [];
+  const counts = raw.counts && typeof raw.counts === 'object' ? raw.counts : {};
+  const counted = (name, action) => {
+    const value = Number(counts[name]);
+    if (Number.isFinite(value) && value >= 0) return value;
+    return files.filter((item) => item.action === action).length;
+  };
+  return {
+    dir: raw.dir,
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : '',
+    summary: typeof raw.summary === 'string' ? raw.summary : '',
+    runId: typeof raw.runId === 'string' ? raw.runId : '',
+    // A retired page and the page its facts moved into: one decision.
+    links: raw.links && typeof raw.links === 'object'
+      ? Object.fromEntries(Object.entries(raw.links).filter(([from, to]) => typeof from === 'string' && typeof to === 'string'))
+      : {},
+    added: counted('added', 'added'),
+    changed: counted('changed', 'changed'),
+    removed: counted('removed', 'removed'),
+    files,
+  };
+}
+
+function normalizeStatus(raw) {
       const record = raw && typeof raw === 'object' ? raw : {};
       const config = record.config && typeof record.config === 'object' ? record.config : {};
       const stateRecord = record.state && typeof record.state === 'object' ? record.state : {};
-      const userScope = record.userScope && typeof record.userScope === 'object' ? record.userScope : {};
       return {
         project: record.project && typeof record.project === 'object' ? record.project : {},
         config: {
@@ -1465,22 +1325,25 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           indexMaxLines: asNumber(config.indexMaxLines, 0),
           indexMaxBytes: asNumber(config.indexMaxBytes, 0),
           dreamAllowDelete: Boolean(config.dreamAllowDelete),
-          userMemoryEnabled: Boolean(config.userMemoryEnabled),
           minHours: asNumber(config.minHours, 0),
           minSessions: asNumber(config.minSessions, 0),
-          userIndexMaxLines: asNumber(config.userIndexMaxLines, 30),
-          userIndexMaxBytes: asNumber(config.userIndexMaxBytes, 4096),
           dreamMaxTotalTokens: asNumber(config.dreamMaxTotalTokens, 0),
           dreamCostMode:
             config.dreamCostMode === 'review' || config.dreamCostMode === 'block'
               ? config.dreamCostMode
               : 'warn',
-          writeMode: config.writeMode === 'confirm' ? 'confirm' : 'auto',
-          pendingProposalTtlHours: asNumber(config.pendingProposalTtlHours, 72),
-          dreamPipeline: 'v2',
+            dreamPipeline: 'v2',
           injectHotOnly: config.injectHotOnly === true,
           injectHotEntries: asNumber(config.injectHotEntries, 3),
-          autoRecall: config.autoRecall !== false,
+          recallMode: config.recallMode === 'off' || config.recallMode === 'model' ? config.recallMode : 'model',
+          autoExtract: config.autoExtract === true,
+          autoExtractEveryTurns: asNumber(config.autoExtractEveryTurns, 3),
+          autoExtractMaxItems: asNumber(config.autoExtractMaxItems, 3),
+          subagentMemory:
+            config.subagentMemory === 'shared' || config.subagentMemory === 'own' ? config.subagentMemory : 'off',
+          agentMemoryPresets: Array.isArray(config.agentMemoryPresets)
+            ? config.agentMemoryPresets.filter((name) => typeof name === 'string')
+            : [],
         },
         version: typeof record.version === 'string' ? record.version : '',
         uiApi: asNumber(record.uiApi, 0),
@@ -1525,10 +1388,12 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         injection: (() => {
           const injection = record.injection && typeof record.injection === 'object' ? record.injection : {};
           return {
-            hotOnly: injection.hotOnly === true || (injection.hotOnly === undefined && config.injectHotOnly === true),
-            hotLimit: asNumber(injection.hotLimit, asNumber(config.injectHotEntries, 3)),
-            hotFiles: Array.isArray(injection.hotFiles) ? injection.hotFiles.filter((file) => typeof file === 'string') : [],
-            autoRecall: injection.autoRecall === undefined ? config.autoRecall !== false : injection.autoRecall === true,
+            recallMode: injection.recallMode === 'off' || injection.recallMode === 'model' ? injection.recallMode : 'model',
+            autoExtract: injection.autoExtract === undefined ? config.autoExtract === true : injection.autoExtract === true,
+            subagentMemory:
+              injection.subagentMemory === 'shared' || injection.subagentMemory === 'own'
+                ? injection.subagentMemory
+                : config.subagentMemory,
           };
         })(),
         overrides: record.overrides && typeof record.overrides === 'object' ? record.overrides : {},
@@ -1543,18 +1408,34 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
               }
             : { text: '', lines: 0, bytes: 0, truncated: false, overflow: false },
         entries: Array.isArray(record.entries) ? record.entries.filter(isEntryLike).map(normalizeEntry) : [],
-        userScope: {
-          enabled: Boolean(userScope.enabled),
-          entries: Array.isArray(userScope.entries)
-            ? userScope.entries.filter(isEntryLike).map(normalizeEntry)
-            : [],
-          budgets: {
-            maxLines: asNumber(userScope.budgets && userScope.budgets.maxLines, asNumber(config.userIndexMaxLines, 30)),
-            maxBytes: asNumber(userScope.budgets && userScope.budgets.maxBytes, asNumber(config.userIndexMaxBytes, 4096)),
-            lines: asNumber(userScope.usage && userScope.usage.lines, 0),
-            bytes: asNumber(userScope.usage && userScope.usage.bytes, 0),
-          },
-        },
+        inbox: (() => {
+          const value = record.inbox && typeof record.inbox === 'object' ? record.inbox : {};
+          const items = Array.isArray(value.items)
+            ? value.items
+                .filter((item) => item && typeof item === 'object' && typeof item.id === 'string')
+                .map((item) => ({
+                  id: item.id,
+                  createdAt: asNumber(item.createdAt, 0),
+                  sessionId: typeof item.sessionId === 'string' ? item.sessionId : '',
+                  cwd: typeof item.cwd === 'string' ? item.cwd : '',
+                  trigger: typeof item.trigger === 'string' ? item.trigger : '',
+                  model: typeof item.model === 'string' ? item.model : '',
+                  status: typeof item.status === 'string' ? item.status : 'pending',
+                  count: asNumber(item.count, Array.isArray(item.items) ? item.items.length : 0),
+                  items: Array.isArray(item.items)
+                    ? item.items
+                        .filter((note) => note && typeof note === 'object')
+                        .map((note) => ({
+                          name: typeof note.name === 'string' ? note.name : '',
+                          type: typeof note.type === 'string' ? note.type : 'project',
+                          description: typeof note.description === 'string' ? note.description : '',
+                          content: typeof note.content === 'string' ? note.content : '',
+                        }))
+                    : [],
+                }))
+            : [];
+          return { count: asNumber(value.count, items.length), items };
+        })(),
         state: {
           lastDreamAt: asNumber(stateRecord.lastDreamAt, 0),
           lastDreamAttemptAt: asNumber(stateRecord.lastDreamAttemptAt, 0),
@@ -1563,9 +1444,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           lastDreamSessions: asNumber(stateRecord.lastDreamSessions, 0),
           lastDreamOps: asNumber(stateRecord.lastDreamOps, 0),
           lastDreamMode: typeof stateRecord.lastDreamMode === 'string' ? stateRecord.lastDreamMode : '',
-          lastPlanPath: typeof stateRecord.lastPlanPath === 'string' ? stateRecord.lastPlanPath : '',
-          pendingProposal:
-            typeof stateRecord.pendingProposal === 'string' ? stateRecord.pendingProposal : '',
+          pendingSwitch: normalizePendingSwitch(stateRecord.shadowPending),
           lastError: typeof stateRecord.lastError === 'string' ? stateRecord.lastError : '',
           consecutiveFailures: asNumber(stateRecord.consecutiveFailures, 0),
           sessionsSince: Array.isArray(stateRecord.sessionsSince)
@@ -1577,12 +1456,20 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           lastDreamCostExceeded: Boolean(
             stateRecord.lastDreamCostExceeded ?? stateRecord.costExceeded ?? false,
           ),
+          lastExtractAt: asNumber(stateRecord.lastExtractAt, 0),
+          lastExtractAttemptAt: asNumber(stateRecord.lastExtractAttemptAt, 0),
+          lastExtractCount: asNumber(stateRecord.lastExtractCount, 0),
+          lastExtractReason:
+            typeof stateRecord.lastExtractReason === 'string' ? stateRecord.lastExtractReason : '',
+          lastExtractError:
+            typeof stateRecord.lastExtractError === 'string' ? stateRecord.lastExtractError : '',
+          lastExtractTrigger:
+            typeof stateRecord.lastExtractTrigger === 'string' ? stateRecord.lastExtractTrigger : '',
         },
         changelogTail: typeof record.changelogTail === 'string' ? record.changelogTail : '',
         trashCount: asNumber(record.trashCount, 0),
         rules: normalizeRules(record.rules),
         metrics: normalizeMetrics(record.metrics),
-        pendingWrites: normalizePendingWrites(record.pendingWrites),
         readiness: normalizeReadiness(record.readiness),
         health: (() => {
           const candidate =
@@ -1629,16 +1516,15 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         },
         dreamHistory: normalizeDreamHistory(record.dreamHistory),
         subagentPolicy: {
-          injectSubagents:
-            record.subagentPolicy && typeof record.subagentPolicy === 'object'
-              ? record.subagentPolicy.injectSubagents !== false
-              : true,
           mode:
-            record.subagentPolicy && typeof record.subagentPolicy === 'object' && record.subagentPolicy.mode === 'off'
-              ? 'off'
-              : 'shared',
+            record.subagentPolicy && (record.subagentPolicy.mode === 'shared' || record.subagentPolicy.mode === 'own')
+              ? record.subagentPolicy.mode
+              : 'off',
+          agentMemoryPresets:
+            record.subagentPolicy && Array.isArray(record.subagentPolicy.agentMemoryPresets)
+              ? record.subagentPolicy.agentMemoryPresets.filter((name) => typeof name === 'string')
+              : [],
         },
-        degraded: record.__fallback === true,
       };
     }
 
@@ -1662,10 +1548,15 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
             : '';
       return {
         file: typeof record.file === 'string' ? record.file : '',
-        scope: record.scope === 'user' ? 'user' : 'project',
+        version: typeof record.version === 'string' ? record.version : '',
+        expectedHash: typeof record.expectedHash === 'string' ? record.expectedHash : '',
         frontmatter,
         body: typeof record.body === 'string' ? record.body : rawText,
         raw: rawText,
+        // The edit baseline: `expectedHash` goes back on save so the store can
+        // refuse an overwrite of a page another window changed meanwhile.
+        version: typeof record.version === 'string' ? record.version : '',
+        expectedHash: typeof record.expectedHash === 'string' ? record.expectedHash : '',
         via,
         sourceSession,
         created:
@@ -1683,86 +1574,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         .map((item) => ({ line: item.line, text: item.text })) : [];
     }
 
-    /** Normalize one v7 preview operation from `POST /dream {action:'preview'}`. */
-    function normalizePreviewOp(op, fallbackIndex) {
-      const meta = op && typeof op === 'object' ? op : {};
-      const index = asNumber(meta.index, fallbackIndex);
-      return {
-        index,
-        op: typeof meta.op === 'string' ? meta.op : 'write',
-        scope: meta.scope === 'user' ? 'user' : 'project',
-        file: typeof meta.file === 'string' ? meta.file : '',
-        type: typeof meta.type === 'string' ? meta.type : '',
-        before: typeof meta.before === 'string' ? meta.before : '',
-        after: typeof meta.after === 'string' ? meta.after : '',
-        removedLines: normalizePreviewLines(meta.removedLines),
-        addedLines: normalizePreviewLines(meta.addedLines),
-        changed: meta.changed === undefined ? true : Boolean(meta.changed),
-        evidence: normalizeEvidence(meta.evidence),
-        // Why apply-ops would refuse this operation ('' = it can be applied).
-        rejected: typeof meta.rejected === 'string' ? meta.rejected : '',
-      };
-    }
-
-    /** Op evidence: plain quote strings or `{statement, quote}` pairs. */
-    function normalizeEvidence(value) {
-      if (!Array.isArray(value)) return [];
-      return value
-        .map((item) => {
-          if (typeof item === 'string') return item.trim() === '' ? null : { statement: '', quote: item };
-          if (!item || typeof item !== 'object') return null;
-          const quote = typeof item.quote === 'string' ? item.quote : typeof item.text === 'string' ? item.text : '';
-          const statement = typeof item.statement === 'string' ? item.statement : '';
-          return quote === '' && statement === '' ? null : { statement, quote };
-        })
-        .filter(Boolean)
-        .slice(0, 40);
-    }
-
-    /** Normalize the v7 preview plan payload (`{path,summary,ops,...}`). */
-    function normalizePreviewPlan(raw) {
-      const record = raw && typeof raw === 'object' ? raw : {};
-      const source = record.result && typeof record.result === 'object' ? record.result : record;
-      const opsRaw = Array.isArray(source.ops) ? source.ops : [];
-      const usage = normalizeUsage(source.usage);
-      return {
-        path: typeof source.path === 'string' ? source.path : '',
-        summary: typeof source.summary === 'string' ? source.summary : '',
-        ops: opsRaw.map((op, index) => normalizePreviewOp(op, index)),
-        truncatedFiles: Array.isArray(source.truncatedFiles)
-          ? source.truncatedFiles.filter((file) => typeof file === 'string')
-          : [],
-        dropped: Array.isArray(source.dropped) ? source.dropped : [],
-        durationMs: asNumber(source.durationMs, 0),
-        inputChars: asNumber(source.inputChars, 0),
-        outputChars: asNumber(source.outputChars, 0),
-        usage,
-        costExceeded: Boolean(source.costExceeded),
-        warnings: Array.isArray(source.warnings) ? source.warnings.filter((item) => typeof item === 'string') : [],
-        // Dream v2 coverage: which conversations were read, and what gets verified.
-        v2: source.kind === 'dream-v2',
-        coverageComplete: source.coverageComplete === true,
-        expectedSessions: asNumber(source.expectedSessions, 0),
-        processedSessions: asNumber(source.processedSessions, 0),
-        failedSessions: Array.isArray(source.failedSessions) ? source.failedSessions.length : 0,
-        partialSessions: Array.isArray(source.partialSessions) ? source.partialSessions.length : 0,
-        verifiedFiles: Array.isArray(source.verifiedFiles) ? source.verifiedFiles.filter((file) => typeof file === 'string') : [],
-        evidenceWarnings: Array.isArray(source.evidenceWarnings)
-          ? source.evidenceWarnings.filter((item) => typeof item === 'string')
-          : [],
-        evidenceError: typeof source.evidenceError === 'string' ? source.evidenceError : '',
-        review: Array.isArray(source.review)
-          ? source.review
-              .filter((item) => item && typeof item === 'object')
-              .map((item) => ({
-                file: typeof item.file === 'string' ? item.file : '',
-                claim: typeof item.claim === 'string' ? item.claim : '',
-                reason: typeof item.reason === 'string' ? item.reason : '',
-              }))
-          : [],
-      };
-    }
-
     /** One `/file-history` response → `{changes:[...], refs:[...]}`. */
     function normalizeFileHistory(raw) {
       const record = raw && typeof raw === 'object' ? raw : {};
@@ -1773,7 +1584,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         refs: refs
           .filter((item) => item && typeof item === 'object')
           .map((item) => ({
-            type: item.type === 'pending' ? 'pending' : 'dream',
+            type: 'dream',
             id: typeof item.id === 'string' ? item.id : '',
             at: asNumber(item.appliedAt ?? item.createdAt, 0),
             ops: asNumber(item.ops, 0),
@@ -1806,68 +1617,10 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
     // Silent HTTP API client
     // -----------------------------------------------------------------------
 
-    /** Render a remote failure object as text. */
-    function remoteErrorMessage(error) {
-      if (typeof error === 'string') return error;
-      if (error && typeof error === 'object') {
-        const code = typeof error.code === 'string' && error.code !== '' ? error.code + ': ' : '';
-        if (typeof error.message === 'string' && error.message !== '') return code + error.message;
-      }
-      try {
-        return JSON.stringify(error);
-      } catch {
-        return 'remote call failed';
-      }
-    }
-
     /**
-     * Unwrap a `ctx.remote.commands.execute()` RemoteResult (degraded fallback
-     * mode only). Accepts the verified envelope plus bare result shapes.
-     */
-    function unwrapCommandResult(result) {
-      if (result === undefined || result === null) throw new Error('empty response from the host');
-      if (typeof result !== 'object') throw new Error('malformed response from the host');
-      if (result.ok === false) throw new Error(remoteErrorMessage(result.error));
-      let value = result.ok === true ? result.value : result;
-      if (value !== undefined && value !== null && typeof value === 'object' && 'ok' in value) {
-        if (value.ok === false) throw new Error(remoteErrorMessage(value.error));
-        value = value.value;
-      }
-      if (value === undefined || value === null) throw new Error('unknown or malformed command');
-      const commandResult =
-        value && typeof value === 'object' && value.result !== undefined ? value.result : value;
-      if (!commandResult || typeof commandResult !== 'object' || typeof commandResult.kind !== 'string') {
-        throw new Error('unexpected command result from the host');
-      }
-      if (commandResult.kind === 'success') {
-        return typeof commandResult.text === 'string' ? commandResult.text : '';
-      }
-      const text = typeof commandResult.text === 'string' ? commandResult.text.trim() : '';
-      throw new Error(text !== '' ? text : 'command failed');
-    }
-
-    /** The Host injects this into index.html; absent = fallback mode. */
-    function readApiConfig() {
-      try {
-        const bridge = typeof window !== 'undefined' ? window.__CC_MEMORY_API__ : undefined;
-        if (!bridge || typeof bridge !== 'object') return null;
-        if (typeof bridge.base !== 'string' || bridge.base === '') return null;
-        return {
-          base: bridge.base.replace(/\/+$/, ''),
-          token: typeof bridge.token === 'string' ? bridge.token : '',
-        };
-      } catch {
-        return null;
-      }
-    }
-
-    /**
-     * Last-resort bridge discovery for a page that started before the Host
-     * injected `__CC_MEMORY_API__` (cached desktop boot rows, plugin reloaded
-     * after the page loaded). The Host exposes the same {base, token} at
-     * `/api/cc-memory/bridge` (loopback + DSH auth gated), so a same-origin
-     * credentialed fetch can recover API mode without a reload. Only runs when
-     * the injected global is absent; failure keeps the command fallback.
+     * The one way the page learns the API base and token: a same-origin
+     * credentialed GET of `/api/cc-memory/bridge` (loopback only on the Host).
+     * `null` means the memory service is not reachable from this page.
      */
     async function discoverBridge() {
       try {
@@ -1883,9 +1636,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           if (!response.ok) return null;
           const data = await response.json();
           if (!data || data.ok !== true || typeof data.base !== 'string' || data.base === '') return null;
-          const bridge = { base: data.base, token: typeof data.token === 'string' ? data.token : '' };
-          window.__CC_MEMORY_API__ = bridge;
-          return { base: bridge.base.replace(/\/+$/, ''), token: bridge.token };
+          return { base: data.base.replace(/\/+$/, ''), token: typeof data.token === 'string' ? data.token : '' };
         } finally {
           if (timer !== undefined) clearTimeout(timer);
         }
@@ -1950,7 +1701,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
     }
 
     // -----------------------------------------------------------------------
-    // Backend: silent API first, slash-command fallback only when it is absent.
+    // Backend: the silent HTTP API is the only data path.
     // -----------------------------------------------------------------------
 
     function sessionIdOf(owner) {
@@ -1961,290 +1712,133 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       return undefined;
     }
 
-    function createBackend({ api, commandRunner, sessionId }) {
+    function createBackend({ api, sessionId }) {
       const sid = typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined;
-      const hasCommands = typeof commandRunner === 'function' && sid !== undefined;
-      const mode = api !== null ? 'api' : hasCommands ? 'commands' : 'none';
-      // Why the silent API is unavailable: the page needs a reload either way.
-      const reason = api !== null ? null : hasCommands ? 'bridge-missing' : 'no-backend';
-
-      /** Run one slash command (fallback mode only). */
-      async function command(line) {
-        if (!hasCommands) throw new Error('the command fallback is unavailable');
-        return commandRunner(sid, line);
-      }
+      const mode = api !== null ? 'api' : 'none';
+      const get = (endpoint, query = {}) => {
+        if (api === null) throw new Error('the memory service is unavailable');
+        return apiRequest(api, 'GET', endpoint, { query: { sessionId: sid, ...query } });
+      };
+      const post = (endpoint, body = {}) => {
+        if (api === null) throw new Error('the memory service is unavailable');
+        return apiRequest(api, 'POST', endpoint, { body: { sessionId: sid, ...body } });
+      };
 
       async function status() {
-        if (mode === 'api') {
-          const data = await apiRequest(api, 'GET', '/status', { query: { sessionId: sid } });
-          return normalizeStatus(data);
-        }
-        if (mode === 'commands') {
-          const text = await command('/memory json');
-          let payload;
-          try {
-            payload = JSON.parse(text);
-          } catch {
-            throw new Error('the host returned an unreadable memory payload');
-          }
-          if (!payload || typeof payload !== 'object' || payload.ok !== true) {
-            throw new Error(payload && typeof payload.error === 'string' ? payload.error : 'memory is unavailable');
-          }
-          payload.__fallback = true;
-          return normalizeStatus(payload);
-        }
-        throw new Error('the memory service is unavailable');
+        return normalizeStatus(await get('/status'));
       }
 
-      async function file(file, scope) {
-        const safeScope = scope === 'user' ? 'user' : 'project';
-        if (mode === 'api') {
-          const data = await apiRequest(api, 'GET', '/file', {
-            query: { sessionId: sid, file, scope: safeScope },
-          });
-          return normalizeFile(data);
-        }
-        const text = await command(
-          safeScope === 'user' ? '/memory show --scope=user ' + file : '/memory show ' + file,
-        );
-        return normalizeFile({ file, scope: safeScope, raw: text, body: text });
+      async function file(name) {
+        return normalizeFile(await get('/file', { file: name }));
       }
 
       async function saveRules(scope, text) {
-        if (mode !== 'api') throw new Error('rules editing requires the silent API');
-        const data = await apiRequest(api, 'POST', '/rules', {
-          body: { sessionId: sid, scope: scope === 'global' ? 'global' : 'project', text },
-        });
+        const data = await post('/rules', { scope: scope === 'global' ? 'global' : 'project', text });
         return normalizeRules(data.rules);
       }
 
-      /** Reset: clear both layered files so the built-in defaults win again. */
+      /** Saving empty text removes a layer; clear both so nothing extra is injected. */
       async function resetRules() {
-        if (mode === 'api') {
-          const cleared = [];
-          for (const scope of ['project', 'global']) {
-            try {
-              const data = await apiRequest(api, 'POST', '/rules', {
-                body: { sessionId: sid, scope, text: '' },
-              });
-              cleared.push(normalizeRules(data.rules));
-            } catch (error) {
-              // A layer that is already empty is fine; report anything else.
-              if (!(error && typeof error.message === 'string' && error.message.includes('empty'))) throw error;
-            }
-          }
-          return cleared.length > 0 ? cleared[cleared.length - 1] : null;
-        }
-        const text = await command('/memory rules reset');
-        return { text, source: 'default', projectPath: '', globalPath: '', maxChars: 0, notice: text };
+        await post('/rules', { scope: 'project', text: '' });
+        const data = await post('/rules', { scope: 'global', text: '' });
+        return normalizeRules(data.rules);
       }
 
       async function toggle(patch) {
-        if (mode === 'api') {
-          const data = await apiRequest(api, 'POST', '/toggle', { body: { sessionId: sid, ...patch } });
-          return {
-            overrides: data.overrides && typeof data.overrides === 'object' ? data.overrides : {},
-            config: data.config && typeof data.config === 'object' ? data.config : {},
-          };
-        }
-        if ('enabled' in patch) await command('/memory plugin ' + (patch.enabled ? 'on' : 'off'));
-        if ('autoMemoryEnabled' in patch) await command('/memory ' + (patch.autoMemoryEnabled ? 'on' : 'off'));
-        if ('autoDreamEnabled' in patch) {
-          await command('/memory dream ' + (patch.autoDreamEnabled ? 'on' : 'off'));
-        }
-        return { overrides: {}, config: {} };
-      }
-
-      async function dream(action, options = {}) {
-        if (mode === 'api') {
-          const body = { sessionId: sid, action };
-          const focus = options && typeof options.focus === 'string' ? options.focus.trim() : '';
-          if (focus !== '') body.focus = focus;
-          if (options && typeof options.runId === 'string' && options.runId !== '') body.runId = options.runId;
-          if (options && options.dryRun === true) body.dryRun = true;
-          const data = await apiRequest(api, 'POST', '/dream', { body });
-          return data.result;
-        }
-        const lines = {
-          'dry-run': '/memory dream run --dry-run',
-          run: '/memory dream run',
-          start: '/memory dream run',
-          status: '/memory dream status',
-          cancel: '/memory dream cancel',
-          resume: '/memory dream resume',
-          'apply-last': '/memory dream apply',
-          'apply-pending': '/memory dream apply',
-          reject: '/memory dream reject',
+        const data = await post('/toggle', patch);
+        return {
+          overrides: data.overrides && typeof data.overrides === 'object' ? data.overrides : {},
+          config: data.config && typeof data.config === 'object' ? data.config : {},
         };
-        const line = lines[action];
-        if (line === undefined) throw new Error('unknown dream action: ' + action);
-        const text = await command(line);
-        return { text };
       }
 
-      async function deleteFile(file, scope) {
-        if (mode === 'api') {
-          return apiRequest(api, 'POST', '/delete', {
-            body: { sessionId: sid, file, scope: scope === 'user' ? 'user' : 'project' },
-          });
-        }
-        const text = await command('/memory delete ' + file);
-        return { ok: true, text };
+      /** POST /dream: estimate, start, status, cancel, resume, switch, discard, undo. */
+      async function dream(action, options = {}) {
+        const body = { action };
+        const focus = typeof options.focus === 'string' ? options.focus.trim() : '';
+        if (focus !== '') body.focus = focus;
+        if (typeof options.runId === 'string' && options.runId !== '') body.runId = options.runId;
+        // v23: a confirmed run is pinned to the range it was priced for.
+        if (typeof options.inputId === 'string' && options.inputId !== '') body.inputId = options.inputId;
+        if (Array.isArray(options.inputRanges) && options.inputRanges.length > 0) body.inputRanges = options.inputRanges;
+        if (Array.isArray(options.reject) && options.reject.length > 0) body.reject = options.reject;
+        if (options.noSessions === true) body.noSessions = true;
+        return (await post('/dream', body)).result;
       }
 
-      /** v7: these operations need the silent API; say so explicitly otherwise. */
-      function requireApi(feature) {
-        if (mode !== 'api') throw new Error(feature + ' requires the silent memory API');
-        return api;
-      }
-
-      /** POST /dream {action:'preview'} → `{path,summary,ops,truncatedFiles,dropped}`. */
-      async function previewDream() {
-        requireApi('plan preview');
-        const data = await apiRequest(api, 'POST', '/dream', {
-          body: { sessionId: sid, action: 'preview' },
-        });
-        return normalizePreviewPlan(data.result === undefined ? data : data.result);
-      }
-
-      /** POST /dream {action:'apply-ops', indexes} → dream result. */
-      async function applySelected(indexes) {
-        requireApi('applying selected operations');
-        const list = (Array.isArray(indexes) ? indexes : [])
-          .map((value) => asNumber(value, -1))
-          .filter((value) => value >= 0);
-        const data = await apiRequest(api, 'POST', '/dream', {
-          body: { sessionId: sid, action: 'apply-ops', indexes: list },
-        });
-        return data.result === undefined ? data : data.result;
+      async function deleteFile(name) {
+        return post('/delete', { file: name });
       }
 
       /** GET /backups → `{items:[{id,at,files[]}]}`. */
       async function backups() {
-        requireApi('backup restore');
-        const data = await apiRequest(api, 'GET', '/backups', { query: { sessionId: sid } });
-        return { items: normalizeBackupList(data) };
+        return { items: normalizeBackupList(await get('/backups')) };
       }
 
       /** GET /trash → `{items:[{id,at,files[]}]}`. */
       async function trash() {
-        requireApi('trash restore');
-        const data = await apiRequest(api, 'GET', '/trash', { query: { sessionId: sid } });
-        return { items: normalizeBackupList(data) };
+        return { items: normalizeBackupList(await get('/trash')) };
       }
 
       /** POST /restore `{kind:'backup'|'trash',id,file?}` → `{restored,reconciled}`. */
-      async function restore(kind, id, file) {
-        requireApi('restoring files');
-        const body = {
-          sessionId: sid,
-          kind: kind === 'backup' ? 'backup' : 'trash',
-          id,
-        };
-        if (typeof file === 'string' && file !== '') body.file = file;
-        const data = await apiRequest(api, 'POST', '/restore', { body });
-        return data.result === undefined ? data : data.result;
+      async function restore(kind, id, name) {
+        const body = { kind: kind === 'backup' ? 'backup' : 'trash', id };
+        if (typeof name === 'string' && name !== '') body.file = name;
+        return post('/restore', body);
       }
 
-      /** POST /pending-writes `{action:'approve',id}` → approve one queued write. */
-      async function approveWrite(id) {
-        if (mode === 'api') {
-          const data = await apiRequest(api, 'POST', '/pending-writes', {
-            body: { sessionId: sid, action: 'approve', id },
-          });
-          return data.result === undefined ? data : data.result;
-        }
-        const text = await command('/memory approve ' + id);
-        return { text };
+      async function dreamDiff(runId, file) {
+        return get('/dream-diff', { runId, file });
       }
 
-      /** POST /pending-writes `{action:'reject',id}` → reject one queued write. */
-      async function rejectWrite(id) {
-        if (mode === 'api') {
-          const data = await apiRequest(api, 'POST', '/pending-writes', {
-            body: { sessionId: sid, action: 'reject', id },
-          });
-          return data.result === undefined ? data : data.result;
-        }
-        const text = await command('/memory reject ' + id);
-        return { text };
-      }
-
-      // -- v10: dream history / edit / merge / search / trend / transfer ------
-
-      /** GET /dream-history → `{items:[{ts,kind,appliedAt,ops,summary,undoable,undone}]}`, newest first. */
       async function dreamHistory() {
-        requireApi('dream history');
-        const data = await apiRequest(api, 'GET', '/dream-history', { query: { sessionId: sid } });
-        return normalizeDreamHistory(data);
+        return normalizeDreamHistory(await get('/dream-history'));
       }
 
-      /** POST /dream {action:'undo'} → undo the latest applied batch. */
-      async function undoDream() {
-        if (mode === 'api') {
-          const data = await apiRequest(api, 'POST', '/dream', {
-            body: { sessionId: sid, action: 'undo' },
-          });
-          return data.result === undefined ? data : data.result;
-        }
-        const text = await command('/memory dream undo');
-        return { text };
+      /** v21: staged auto-extract proposals (`list|accept|discard`). */
+      async function inbox(action = 'list', id = '') {
+        const act = String(action || 'list').toLowerCase();
+        if (act === 'list') return get('/inbox');
+        return post('/inbox', { action: act, id: String(id || '') });
       }
 
       /** POST /file — create or update one memory file (frontmatter + body). */
       async function saveFile(payload) {
-        requireApi('editing memory files');
         const body = {
-          sessionId: sid,
           name: String(payload && payload.name !== undefined ? payload.name : ''),
           type: String(payload && payload.type !== undefined ? payload.type : 'user'),
           description: String(payload && payload.description !== undefined ? payload.description : ''),
           content: String(payload && payload.content !== undefined ? payload.content : ''),
         };
         if (payload && typeof payload.file === 'string' && payload.file !== '') body.file = payload.file;
-        if (payload && payload.scope === 'user') body.scope = 'user';
-        const data = await apiRequest(api, 'POST', '/file', { body });
-        return data.result === undefined ? data : data.result;
+        // v23: the server refuses the write when the file moved since this baseline.
+        if (payload && typeof payload.expectedHash === 'string' && payload.expectedHash !== '') {
+          body.expectedHash = payload.expectedHash;
+        }
+        return post('/file', body);
       }
 
       /** GET /search → ranked `{query,total,items:[{file,name,type,score,snippets}]}`. */
       async function search(query, options = {}) {
-        requireApi('search');
-        const data = await apiRequest(api, 'GET', '/search', {
-          query: {
-            sessionId: sid,
-            q: String(query === undefined || query === null ? '' : query),
-            limit: String(asNumber(options.limit, 20)),
-            offset: String(asNumber(options.offset, 0)),
-            type: options.type === undefined || options.type === null ? '' : String(options.type),
-            scope: options.scope === 'user' ? 'user' : '',
-          },
+        const data = await get('/search', {
+          q: String(query === undefined || query === null ? '' : query),
+          limit: String(asNumber(options.limit, 20)),
+          offset: String(asNumber(options.offset, 0)),
+          type: options.type === undefined || options.type === null ? '' : String(options.type),
+          history: options.history === true ? '1' : '',
         });
         return normalizeSearch(data);
       }
 
-      // -- v21: inbox details and change history ------------------------------
-
-      /** GET /pending-writes?content=1 → queued writes with their proposed text. */
-      async function pendingDetails() {
-        requireApi('pending write details');
-        const data = await apiRequest(api, 'GET', '/pending-writes', { query: { sessionId: sid, content: '1' } });
-        return normalizePendingWrites(data);
-      }
-
       /** GET /file-history → dream batches and changelog lines that touched one file. */
       async function fileHistory(target) {
-        requireApi('change history');
-        const data = await apiRequest(api, 'GET', '/file-history', { query: { sessionId: sid, file: target } });
-        return normalizeFileHistory(data);
+        return normalizeFileHistory(await get('/file-history', { file: target }));
       }
 
       return {
         mode,
-        reason,
         sessionId: sid,
         status,
-        pendingDetails,
         fileHistory,
         file,
         saveRules,
@@ -2252,15 +1846,12 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         toggle,
         dream,
         deleteFile,
-        previewDream,
-        applySelected,
         backups,
         trash,
         restore,
-        approveWrite,
-        rejectWrite,
         dreamHistory,
-        undoDream,
+        dreamDiff,
+        inbox,
         saveFile,
         search,
       };
@@ -2507,7 +2098,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
     // Pure UI helpers (exposed on the internals hook for tests).
     // -----------------------------------------------------------------------
     const MEMORY_TYPES = ['user', 'feedback', 'project', 'reference'];
-    const TRUST_FILTERS = ['hot', 'verified', 'unverified', 'stale'];
+    const TRUST_FILTERS = ['verified', 'unverified', 'stale'];
     const STATUS_NAMES = ['stale', 'superseded', 'disputed', 'review-needed', 'retired'];
     const TABS = ['memories', 'inbox', 'tidy', 'settings'];
     const TYPE_COLORS = {
@@ -2581,7 +2172,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
     function trustOf(entry) {
       const record = entry && typeof entry === 'object' ? entry : {};
       if (record.current === false) return 'stale';
-      if (record.hot === true) return 'hot';
       if (record.verified && typeof record.verified === 'object') return 'verified';
       if (record.verifiedOutdated === true) return 'changed';
       return 'unverified';
@@ -2591,7 +2181,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
     function matchesTrust(entry, filter) {
       if (!TRUST_FILTERS.includes(filter)) return true;
       const trust = trustOf(entry);
-      if (filter === 'verified') return trust === 'verified' || trust === 'hot';
       if (filter === 'unverified') return trust === 'unverified' || trust === 'changed';
       return trust === filter;
     }
@@ -2733,13 +2322,14 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 
     function planWaiting(status) {
       const state = status && status.state ? status.state : {};
-      return Boolean(state.pendingProposal || state.lastPlanPath);
+      return Boolean(state.pendingSwitch && state.pendingSwitch.dir);
     }
 
-    /** Items waiting for the user: queued writes plus an unreviewed plan. */
+    /** Items waiting for the user: an unreviewed dream shadow + staged notes. */
     function attentionCount(status) {
       if (!status) return 0;
-      return asNumber(status.pendingWrites && status.pendingWrites.count, 0) + (planWaiting(status) ? 1 : 0);
+      const staged = status.inbox && Number.isFinite(status.inbox.count) ? status.inbox.count : 0;
+      return (planWaiting(status) ? 1 : 0) + Math.max(0, staged);
     }
 
     /**
@@ -2750,12 +2340,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       if (!status) return null;
       const config = status.config;
       if (!config.enabled || !config.autoMemoryEnabled) return { tone: 'warn', icon: 'alert', text: t('load.off') };
-      const total = status.entries.length;
-      if (status.injection.hotOnly) {
-        const n = status.entries.filter((entry) => entry.hot).length || status.injection.hotFiles.length;
-        if (n === 0) return { tone: 'warn', icon: 'pin', text: t('load.hotNone', { total }) };
-        return { tone: 'hot', icon: 'pin', text: t('load.hot', { n, total }) };
-      }
       const maxLines = config.indexMaxLines || 200;
       if (status.index.overflow || status.index.lines > maxLines) {
         return { tone: 'warn', icon: 'alert', text: t('load.indexOver') };
@@ -2944,12 +2528,12 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       return h('span', { className: 'ccm-tag', style: typeStyle(type) }, h('span', { className: 'ccm-dot' }), props.t('type.' + type));
     }
 
-    const TRUST_ICONS = { hot: 'pin', verified: 'shield', changed: 'edit', stale: 'archive', unverified: 'dot' };
+    const TRUST_ICONS = { verified: 'shield', changed: 'edit', stale: 'archive', unverified: 'dot' };
 
-    /** Trust pill; quiet (nothing) for unverified notes unless `always`. */
+    /** Trust pill; quiet (nothing) for unverified notes. */
     function TrustBadge(props) {
       const trust = trustOf(props.entry);
-      if (trust === 'unverified' && !props.always) return null;
+      if (trust === 'unverified') return null;
       const label =
         trust === 'stale'
           ? props.t(STATUS_NAMES.includes(props.entry.status) ? 'status.' + props.entry.status : 'trust.stale')
@@ -3022,7 +2606,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 
     /** The trust sentence under a note's title. */
     function TrustLine(props) {
-      const { entry, t, hotMode } = props;
+      const { entry, t } = props;
       const trust = trustOf(entry);
       let text;
       let iconName = TRUST_ICONS[trust];
@@ -3030,16 +2614,13 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       if (trust === 'stale') {
         const name = STATUS_NAMES.includes(entry.status) ? t('status.' + entry.status) : t('trust.stale');
         text = t('detail.stale', { status: name });
-      } else if (trust === 'hot') {
-        text = t('detail.hot');
-        if (entry.verified && entry.verified.date) lines.push(t('detail.verified', { date: entry.verified.date }));
       } else if (trust === 'verified') {
         text = t('detail.verified', { date: entry.verified.date || '—' });
       } else if (trust === 'changed') {
         text = t('detail.changed');
       } else {
         iconName = 'info';
-        text = hotMode ? t('detail.unverifiedHot') : t('detail.unverifiedIndex');
+        text = t('detail.unverifiedIndex');
       }
       return h(
         'div',
@@ -3109,7 +2690,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       const [query, setQuery] = React.useState('');
       const [type, setType] = React.useState('');
       const [trust, setTrust] = React.useState('');
-      const [scope, setScope] = React.useState('project');
       const [hits, setHits] = React.useState(() => new Map());
       const [selected, setSelected] = React.useState('');
       const [editor, setEditor] = React.useState(null);
@@ -3117,21 +2697,17 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       const [reloadKey, setReloadKey] = React.useState(0);
       const [history, setHistory] = React.useState({ open: false, phase: 'idle', data: null, error: '' });
 
-      const userEnabled = status.userScope.enabled;
-      const activeScope = userEnabled ? scope : 'project';
-      const entries = activeScope === 'user' ? status.userScope.entries : status.entries;
+      const entries = status.entries;
       const typeCounts = countByType(entries);
       const trustCounts = countByTrust(entries);
       const visible = filterEntries(entries, { query, type, trust, hits });
       const selectedEntry = entries.find((entry) => entry.file === selected) || null;
-      const hotMode = status.injection.hotOnly && activeScope === 'project';
       const idle = busy === '';
-      const canHistory = !readOnly && activeScope === 'project' && typeof backend.fileHistory === 'function';
+      const canHistory = !readOnly && typeof backend.fileHistory === 'function';
 
       // Another tab asked to open a note (e.g. the inbox's "Changes <file>").
       React.useEffect(() => {
         if (typeof props.focusFile !== 'string' || props.focusFile === '') return;
-        setScope('project');
         setEditor(null);
         setSelected(props.focusFile);
         if (typeof props.onFocused === 'function') props.onFocused();
@@ -3147,7 +2723,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         }
         let cancelled = false;
         const timer = setTimeout(() => {
-          backend.search(text, { limit: 50, type, scope: activeScope }).then(
+          backend.search(text, { limit: 50, type }).then(
             (result) => {
               if (cancelled) return;
               const map = new Map();
@@ -3163,7 +2739,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           cancelled = true;
           clearTimeout(timer);
         };
-      }, [query, type, activeScope, backend, readOnly]);
+      }, [query, type, backend, readOnly]);
 
       React.useEffect(() => {
         setHistory({ open: false, phase: 'idle', data: null, error: '' });
@@ -3177,7 +2753,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           file: current.file && current.file.file === selected ? current.file : null,
           error: '',
         }));
-        backend.file(selected, activeScope).then(
+        backend.file(selected).then(
           (file) => {
             if (!cancelled) setDoc({ phase: 'ready', file, error: '' });
           },
@@ -3189,7 +2765,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           cancelled = true;
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [selected, activeScope, backend, reloadKey]);
+      }, [selected, backend, reloadKey]);
 
       const open = (file) => {
         setEditor(null);
@@ -3202,7 +2778,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       const startEdit = () => {
         if (!doc.file) return;
         const front = doc.file.frontmatter || {};
-        const trusted = selectedEntry ? ['hot', 'verified'].includes(trustOf(selectedEntry)) : false;
+        const trusted = selectedEntry ? trustOf(selectedEntry) === 'verified' : false;
         setEditor({
           mode: 'edit',
           file: selected,
@@ -3213,6 +2789,9 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           content: doc.file.body,
           error: '',
           trusted,
+          // The version this draft started from; saving it back lets the store
+          // refuse to overwrite a page another window changed meanwhile.
+          expectedHash: typeof doc.file.expectedHash === 'string' ? doc.file.expectedHash : '',
         });
       };
       const patchEditor = (patch) => setEditor((current) => (current ? { ...current, ...patch } : current));
@@ -3227,11 +2806,29 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           type: editor.type,
           description: editor.description.trim(),
           content: editor.content,
-          scope: activeScope,
         };
-        if (editor.mode === 'edit') payload.file = editor.file;
-        const done = await run('save', () => backend.saveFile(payload), { success: t('notice.saved') });
-        if (!done) return;
+        if (editor.mode === 'edit') {
+          payload.file = editor.file;
+          payload.expectedHash = editor.expectedHash;
+        }
+        let conflict = '';
+        const done = await run('save', async () => {
+          try {
+            return await backend.saveFile(payload);
+          } catch (error) {
+            if (error && error.code === 'stale-write') {
+              // Keep the draft on screen and show the page as it is now.
+              conflict = t('edit.conflict');
+              setReloadKey((key) => key + 1);
+              return null;
+            }
+            throw error;
+          }
+        }, { success: t('notice.saved'), check: (value) => (value === null ? conflict : '') });
+        if (!done) {
+          if (conflict !== '') patchEditor({ error: conflict });
+          return;
+        }
         const file = done.value && typeof done.value.file === 'string' ? done.value.file : editor.file;
         setEditor(null);
         if (file) {
@@ -3240,7 +2837,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         }
       };
       const removeSelected = async () => {
-        const done = await run('delete', () => backend.deleteFile(selected, activeScope), { success: t('notice.deleted') });
+        const done = await run('delete', () => backend.deleteFile(selected), { success: t('notice.deleted') });
         if (done) setSelected('');
       };
       const toggleHistory = () => {
@@ -3327,34 +2924,14 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           );
         }),
         h('span', { className: 'ccm-spacer' }),
-        userEnabled
-          ? h(
-              'div',
-              { className: 'ccm-seg', role: 'group', 'aria-label': t('scope.project') + ' / ' + t('scope.user') },
-              ['project', 'user'].map((value) =>
-                h(
-                  'button',
-                  {
-                    key: value,
-                    type: 'button',
-                    'aria-pressed': activeScope === value ? 'true' : 'false',
-                    onClick: () => {
-                      setScope(value);
-                      setSelected('');
-                      setEditor(null);
-                    },
-                  },
-                  t('scope.' + value),
-                ),
-              ),
-            )
-          : null,
       );
 
       // Trust filter: only the states that actually occur, plus "any".
       const trustOptions = TRUST_FILTERS.filter((value) => trustCounts[value] > 0 || trust === value);
+      // One state that covers every note cannot narrow the list; skip the control.
+      const trustUseless = trust === '' && trustOptions.length === 1 && trustCounts[trustOptions[0]] === entries.length;
       const trustFilter =
-        trustOptions.length === 0
+        trustOptions.length === 0 || trustUseless
           ? null
           : h(
               'div',
@@ -3572,7 +3149,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
                   'li',
                   { key: ref.type + ref.id },
                   h('time', null, formatTime(ref.at) || ref.id),
-                  h('span', null, ref.type === 'pending' ? t('detail.historyPending') : t('detail.historyDream', { n: ref.ops })),
+                  h('span', null, t('detail.historyDream', { n: ref.ops })),
                 ),
               );
               if (rows.length === 0 && history.data.changelog.length === 0) {
@@ -3667,14 +3244,14 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
                   'div',
                   { className: 'ccm-detail-tags' },
                   h(TypeTag, { type: selectedEntry.type, t }),
-                  h(TrustBadge, { entry: selectedEntry, t, always: true }),
+                  h(TrustBadge, { entry: selectedEntry, t }),
                 )
               : null,
             h('h2', { className: 'ccm-detail-name' }, selectedEntry ? selectedEntry.name : selected),
             selectedEntry && selectedEntry.description
               ? h('p', { className: 'ccm-detail-desc' }, selectedEntry.description)
               : null,
-            selectedEntry ? h(TrustLine, { entry: selectedEntry, t, hotMode }) : null,
+            selectedEntry ? h(TrustLine, { entry: selectedEntry, t }) : null,
             body,
             historyBlock,
             h(
@@ -3709,33 +3286,48 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
     // Inbox tab: every decision waiting for the user in one place.
     // -----------------------------------------------------------------------
     function InboxTab(props) {
-      const { status, backend, t, busy, run, readOnly, goTo, openNote } = props;
-      const [details, setDetails] = React.useState(() => new Map());
-      const [openId, setOpenId] = React.useState('');
-      const items = status.pendingWrites.items;
+      const { status, backend, t, goTo, readOnly, busy, run } = props;
+      const [open, setOpen] = React.useState('');
       const waiting = planWaiting(status);
-      const isProposal = status.state.pendingProposal !== '';
+      const proposals = Array.isArray(status.inbox?.items) ? status.inbox.items : [];
+      const enableExtract = status.config?.autoExtract === true;
       const idle = busy === '';
 
-      // Proposed text is not part of /status; fetch it once per refresh.
-      React.useEffect(() => {
-        if (readOnly || items.length === 0 || typeof backend.pendingDetails !== 'function') return undefined;
-        let cancelled = false;
-        backend.pendingDetails().then(
-          (result) => {
-            if (!cancelled) setDetails(new Map(result.items.map((item) => [item.id, item])));
-          },
-          () => {
-            /* details are optional: the list still shows name and reasons */
-          },
-        );
-        return () => {
-          cancelled = true;
-        };
-      }, [status, readOnly, backend]);
+      const accept = (id) =>
+        run('inbox', () => backend.inbox('accept', id), {
+          success: (value) => t('notice.inboxAccepted', { n: value?.applied ?? 0 }),
+          check: (value) =>
+            value && value.ok === false
+              ? new Error(t('inbox.acceptFailed', {
+                  applied: value.applied ?? 0,
+                  total: (value.applied ?? 0) + (value.failed ?? 0),
+                }))
+              : '',
+        });
+      const discard = (id) =>
+        run('inbox', () => backend.inbox('discard', id), { success: t('notice.inboxDiscarded') });
 
-      if (items.length === 0 && !waiting) {
-        return h(EmptyState, { icon: 'check', tone: 'ok', title: t('inbox.emptyTitle'), text: t('inbox.emptyBody') });
+      if (!waiting && proposals.length === 0) {
+        const reason = status.state.lastExtractReason;
+        const time = formatTime(status.state.lastExtractAt || status.state.lastExtractAttemptAt);
+        return h(EmptyState, {
+          icon: enableExtract ? 'check' : 'inbox',
+          tone: enableExtract ? 'ok' : undefined,
+          title: enableExtract ? t('inbox.emptyTitle') : t('inbox.offTitle'),
+          text: enableExtract
+            ? reason && reason !== 'inbox'
+              ? t('inbox.lastExtract', { reason, time: time || '—' })
+              : t('inbox.emptyBody')
+            : t('inbox.emptyOffBody'),
+          action: enableExtract
+            ? null
+            : h(
+                'button',
+                { type: 'button', className: 'ccm-btn', onClick: () => goTo('settings') },
+                t('tab.settings'),
+                icon('chevron', 14),
+              ),
+        });
       }
 
       const planCard = waiting
@@ -3746,13 +3338,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
             h(
               'div',
               { className: 'ccm-setting-text' },
-              h(
-                'div',
-                { className: 'ccm-setting-name' },
-                t('inbox.planTitle'),
-                ' ',
-                h('span', { className: 'ccm-pill' + (isProposal ? ' ccm-pill-warn' : '') }, isProposal ? t('tidy.proposal') : t('tidy.preview')),
-              ),
+              h('div', { className: 'ccm-setting-name' }, t('inbox.planTitle')),
               h('div', { className: 'ccm-setting-hint' }, t('inbox.planBody')),
             ),
             h(
@@ -3764,215 +3350,139 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           )
         : null;
 
-      const writesCard =
-        items.length === 0
-          ? null
-          : h(
-              'section',
-              { className: 'ccm-card' },
-              h(
-                'div',
-                { className: 'ccm-card-head' },
-                h('span', { className: 'ccm-card-title' }, t('inbox.writesTitle')),
-                h('span', { className: 'ccm-badge' }, String(items.length)),
-              ),
-              h('p', { className: 'ccm-card-text' }, t('inbox.hint')),
-              items.map((item) => {
-                const full = details.get(item.id);
-                const content = full && typeof full.candidate.content === 'string' ? full.candidate.content : null;
-                const expanded = openId === item.id;
-                const action = item.action;
-                const approve = () =>
-                  run('approve', () => backend.approveWrite(item.id), { success: t('notice.done') });
-                return h(
-                  'div',
-                  { key: item.id, className: 'ccm-inbox-item' },
+      const proposalCards = proposals.map((proposal) => {
+        const expanded = open === proposal.id;
+        const names = proposal.items.map((note) => note.name).filter(Boolean);
+        return h(
+          'section',
+          { className: 'ccm-card', key: proposal.id },
+          h(
+            'div',
+            { className: 'ccm-card-head' },
+            h('span', { className: 'ccm-card-title' }, t('inbox.extractTitle')),
+            h('span', { className: 'ccm-card-sub' }, formatTime(proposal.createdAt) || proposal.id),
+          ),
+          h(
+            'p',
+            { className: 'ccm-card-text' },
+            t('inbox.extractBody', { n: proposal.count }),
+            names.length > 0 ? ' ' + names.slice(0, 4).join('、') : '',
+          ),
+          h(
+            'div',
+            { className: 'ccm-card-body' },
+            !expanded
+              ? null
+              : proposal.items.map((note, index) =>
                   h(
                     'div',
-                    { className: 'ccm-inbox-head' },
-                    h(TypeTag, { type: item.candidate.type, t }),
-                    h('span', { className: 'ccm-pill' + (action === 'delete' ? ' ccm-pill-danger' : '') }, t('inbox.action.' + action)),
-                    h('span', { className: 'ccm-inbox-name' }, item.candidate.name || item.file || item.id),
-                    h('span', { className: 'ccm-spacer' }),
-                    h('span', { className: 'ccm-row-time', title: formatTime(item.createdAt) }, ago(item.createdAt, t)),
+                    { key: index, style: { padding: '12px 0', borderTop: index > 0 ? '1px solid var(--ccm-line)' : 0 } },
+                    h(
+                      'div',
+                      { className: 'ccm-inbox-head' },
+                      h(TypeTag, { type: note.type, t }),
+                      h('span', { className: 'ccm-inbox-name' }, note.name),
+                    ),
+                    note.description ? h('div', { className: 'ccm-inbox-desc' }, note.description) : null,
+                    note.content ? h('pre', { className: 'ccm-pre', style: { marginTop: 8 } }, note.content) : null,
                   ),
-                  item.candidate.description ? h('div', { className: 'ccm-inbox-desc' }, item.candidate.description) : null,
-                  item.file && action !== 'save'
-                    ? h(
-                        'div',
-                        { className: 'ccm-inbox-desc' },
-                        h(
-                          'button',
-                          { type: 'button', className: 'ccm-link ccm-mono', onClick: () => openNote(item.file) },
-                          t('inbox.target', { file: item.file }),
-                        ),
-                      )
-                    : null,
-                  item.reasons.length > 0
-                    ? h(
-                        'div',
-                        { className: 'ccm-sub', style: { marginTop: 10 } },
-                        h('h3', { className: 'ccm-sub-title' }, t('inbox.why')),
-                        h(
-                          'ul',
-                          { className: 'ccm-reasons', style: { marginTop: 0 } },
-                          item.reasons.map((reason, index) => h('li', { key: index }, icon('alert', 12), h('span', null, reason))),
-                        ),
-                      )
-                    : null,
-                  action === 'delete'
-                    ? null
-                    : h(
-                        'div',
-                        { style: { marginTop: 8 } },
-                        h(
-                          'button',
-                          {
-                            type: 'button',
-                            className: 'ccm-fold ccm-fold-inline',
-                            'aria-expanded': expanded ? 'true' : 'false',
-                            onClick: () => setOpenId(expanded ? '' : item.id),
-                          },
-                          h('span', { className: 'ccm-chev' + (expanded ? ' is-open' : '') }, icon('chevron', 12)),
-                          t('inbox.content'),
-                        ),
-                        expanded
-                          ? content === null || content.trim() === ''
-                            ? h('div', { className: 'ccm-note' }, full ? t('inbox.noContent') : t('detail.loading'))
-                            : h('pre', { className: 'ccm-pre ccm-pre-after' }, truncatePreview(content))
-                          : null,
-                      ),
-                  readOnly
-                    ? null
-                    : h(
-                        'div',
-                        { className: 'ccm-inbox-foot' },
-                        action === 'delete'
-                          ? h(ConfirmButton, {
-                              small: true,
-                              tone: 'danger',
-                              className: 'ccm-btn-danger',
-                              icon: 'trash',
-                              label: t('inbox.approve.delete'),
-                              confirmLabel: t('btn.confirmDelete'),
-                              disabled: !idle,
-                              onConfirm: approve,
-                              t,
-                            })
-                          : h(
-                              'button',
-                              { type: 'button', className: 'ccm-btn ccm-btn-sm ccm-btn-primary', disabled: !idle, onClick: approve },
-                              icon('check', 14),
-                              t('inbox.approve.' + action),
-                            ),
-                        h(
-                          'button',
-                          {
-                            type: 'button',
-                            className: 'ccm-btn ccm-btn-sm',
-                            disabled: !idle,
-                            onClick: () => run('reject', () => backend.rejectWrite(item.id), { success: t('notice.discarded') }),
-                          },
-                          t('inbox.reject.' + action),
-                        ),
-                      ),
-                );
-              }),
-            );
+                ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'ccm-btn ccm-btn-sm ccm-btn-ghost',
+                'aria-expanded': expanded ? 'true' : 'false',
+                onClick: () => setOpen(expanded ? '' : proposal.id),
+              },
+              h('span', { className: 'ccm-chev' + (expanded ? ' is-open' : '') }, icon('chevron', 13)),
+              expanded ? t('btn.close') : t('btn.review'),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'ccm-foot' },
+            h('span', { className: 'ccm-spacer' }),
+            readOnly ? h('span', { className: 'ccm-card-sub' }, t('inbox.commandHint')) : null,
+            h(ConfirmButton, {
+              tone: 'danger',
+              className: 'ccm-btn-ghost',
+              label: t('inbox.discard'),
+              disabled: !idle || readOnly,
+              onConfirm: () => discard(proposal.id),
+              t,
+            }),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'ccm-btn ccm-btn-primary',
+                disabled: !idle || readOnly,
+                onClick: () => accept(proposal.id),
+              },
+              t('inbox.accept'),
+            ),
+          ),
+        );
+      });
 
-      return h(React.Fragment, null, planCard, writesCard);
+      return h(React.Fragment, null, planCard, ...proposalCards);
     }
+
 
     // -----------------------------------------------------------------------
     // Dream tab: estimate -> plan -> review and apply selected -> undo.
     // -----------------------------------------------------------------------
-    function Steps(props) {
-      const labels = [props.t('tidy.step.estimate'), props.t('tidy.step.plan'), props.t('tidy.step.review')];
-      const nodes = [];
-      labels.forEach((label, index) => {
-        if (index > 0) nodes.push(h('span', { key: 'line' + index, className: 'ccm-step-line', 'aria-hidden': 'true' }));
-        const state = index < props.current ? 'done' : index === props.current ? 'current' : 'todo';
-        nodes.push(
-          h(
-            'span',
-            { key: index, className: 'ccm-step', 'data-state': state, 'aria-current': state === 'current' ? 'step' : undefined },
-            h('span', { className: 'ccm-step-n' }, state === 'done' ? icon('check', 11) : String(index + 1)),
-            label,
-          ),
-        );
-      });
-      return h('div', { className: 'ccm-steps' }, nodes);
-    }
-
     function DreamTab(props) {
       const { status, backend, t, busy, run, notify, readOnly, refresh } = props;
-      const [preview, setPreview] = React.useState({ phase: 'idle', plan: null, error: '' });
-      const [picked, setPicked] = React.useState([]);
-      const [openOp, setOpenOp] = React.useState(-1);
       const [history, setHistory] = React.useState(status.dreamHistory.items);
       const [estimate, setEstimate] = React.useState(null);
       const [live, setLive] = React.useState(null);
       const [focus, setFocus] = React.useState('');
+      const [preview, setPreview] = React.useState(null);
+      // Files of the pending copy the human did not pass, per run.
+      const [rejected, setRejected] = React.useState({ runId: '', files: [] });
+      const [memoryOnly, setMemoryOnly] = React.useState(false);
       const state = status.state;
       const config = status.config;
-      const waiting = planWaiting(status);
-      const isProposal = state.pendingProposal !== '';
-      const planKey = state.pendingProposal || state.lastPlanPath;
+      const pending = state.pendingSwitch;
       const idle = busy === '';
-      const generating = busy === 'dry-run' || busy === 'start';
       const canRun = !readOnly && config.enabled && config.autoMemoryEnabled;
       // A background run reports its own progress; /status only carries a log.
       const runs = Array.isArray(status.dreamRuns) ? status.dreamRuns : [];
       const shownRun = live || runs[0] || null;
+      const running = Boolean(shownRun && (shownRun.status === 'running' || shownRun.status === 'cancelling'));
       const showRun = backend.mode === 'api' && shownRun !== null &&
-        (shownRun.status === 'running' || shownRun.status === 'failed' || shownRun.status === 'cancelled' || shownRun.status === 'blocked');
+        (shownRun.status === 'running' || shownRun.status === 'cancelling' || shownRun.status === 'failed' ||
+          shownRun.status === 'cancelled' || shownRun.status === 'blocked' || shownRun.status === 'skipped');
 
       React.useEffect(() => {
-        if (!showRun || shownRun.status !== 'running' || readOnly) return undefined;
+        if (!showRun || !running || readOnly) return undefined;
         let cancelled = false;
+        let polling = false;
         const timer = setInterval(() => {
+          if (polling) return;
+          polling = true;
           backend.dream('status', { runId: shownRun.runId }).then(
             (value) => {
               if (cancelled || !value) return;
               setLive(value);
-              // A finished run may have written a plan; reload the page data.
-              if (value.status !== 'running') refresh();
+              // A finished run leaves a result to switch to; reload the page data.
+              if (value.status !== 'running' && value.status !== 'cancelling') refresh();
             },
             () => {
               /* polling is best effort: the next tick retries */
             },
-          );
+          ).finally(() => {
+            polling = false;
+          });
         }, 2500);
         return () => {
           cancelled = true;
           clearInterval(timer);
         };
         // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [showRun, shownRun && shownRun.runId, shownRun && shownRun.status, readOnly, backend]);
-
-      React.useEffect(() => {
-        if (!waiting || readOnly) {
-          setPreview({ phase: 'idle', plan: null, error: '' });
-          return undefined;
-        }
-        let cancelled = false;
-        setPreview((current) => ({ phase: 'loading', plan: current.plan, error: '' }));
-        backend.previewDream().then(
-          (plan) => {
-            if (cancelled) return;
-            setPreview({ phase: 'ready', plan, error: '' });
-            setPicked(plan.ops.filter((op) => op.changed && op.rejected === '').map((op) => op.index));
-            setOpenOp(-1);
-          },
-          (error) => {
-            if (!cancelled) setPreview({ phase: 'error', plan: null, error: errorText(error, t) });
-          },
-        );
-        return () => {
-          cancelled = true;
-        };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-      }, [planKey, readOnly, backend]);
+      }, [showRun, running, shownRun && shownRun.runId, shownRun && shownRun.status, readOnly, backend]);
 
       // History is not part of /status; reload it whenever the status reloads.
       React.useEffect(() => {
@@ -3994,7 +3504,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       const generate = async () => {
         setEstimate(null);
         const done = await run('estimate', async () => {
-          const result = await backend.dream('estimate', { focus });
+          const result = await backend.dream('estimate', { focus, noSessions: memoryOnly });
           if (!result || result.rough !== true || !Number.isFinite(result.estimatedTokens) ||
               result.estimatedTokens < 0 || !Number.isFinite(result.limit) || result.limit < 0) {
             throw new Error(t('tidy.estimateUnavailable'));
@@ -4003,30 +3513,31 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         }, { refresh: false });
         if (done) setEstimate(done.value);
       };
+
       const startDream = async () => {
+        // v23: the confirmation covered a priced range; send it so a session
+        // that grew in between cannot add work the user did not approve.
+        const pinned = estimate && typeof estimate === 'object'
+          ? { inputId: typeof estimate.inputId === 'string' ? estimate.inputId : '', inputRanges: Array.isArray(estimate.ranges) ? estimate.ranges : null }
+          : {};
         setEstimate(null);
-        if (backend.mode === 'api') {
-          const started = await run('start', () => backend.dream('start', { focus, dryRun: true }), {
-            check: (result) => (result && result.ok === false ? result.error || 'failed' : ''),
-            refresh: false,
-          });
-          if (!started) return;
-          const value = started.value || {};
-          if (value.started === false) {
-            notify('ok', t('tidy.runAlready'));
-          } else {
-            notify('ok', t('tidy.runStarted'));
-          }
-          setLive({ ...value, status: value.status || 'running' });
+        const started = await run('start', () => backend.dream('start', { focus, noSessions: memoryOnly, ...pinned }), {
+          check: (result) => (result && result.ok === false ? result.error || 'failed' : ''),
+          refresh: false,
+        });
+        if (!started) return;
+        const value = started.value || {};
+        if (value.started === false) {
+          notify('ok', t('tidy.runAlready'));
           return;
         }
-        const done = await run('dry-run', () => backend.dream('dry-run', { focus }), {
-          check: (result) => (result && result.skipped ? result.skipReason || 'skipped' : result && result.error ? result.error : ''),
-        });
-        if (done && asNumber(done.value && done.value.ops, 0) === 0) notify('ok', t('tidy.nothing'));
+        notify('ok', t('tidy.runStarted'));
+        setLive({ ...value, status: value.status || 'running' });
       };
+
       const runAction = async (action, key) => {
-        const done = await run(key, () => backend.dream(action, { runId: shownRun ? shownRun.runId : '' }), {
+        if (!shownRun) return;
+        const done = await run(key, () => backend.dream(action, { runId: shownRun.runId }), {
           check: (result) => (result && result.ok === false ? result.error || 'failed' : ''),
           refresh: false,
         });
@@ -4036,23 +3547,39 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           setLive({ ...(shownRun || {}), ...value, status: value.status || 'running' });
           return;
         }
-        setLive({ ...(shownRun || {}), ...value, status: 'cancelled' });
+        setLive({ ...(shownRun || {}), ...value, status: action === 'cancel' ? 'cancelling' : 'cancelled' });
       };
-      const apply = async () => {
-        const indexes = [...picked].sort((left, right) => left - right);
-        await run('apply', () => backend.applySelected(indexes), {
+
+      const rejectedFiles = pending && rejected.runId === pending.runId ? rejected.files : [];
+      /** Toggle one file; a retired page and the page its facts moved into go together. */
+      const toggleReject = (target) => {
+        const together = new Set([target]);
+        for (const [from, to] of Object.entries(pending.links)) {
+          if (from === target) together.add(to);
+          if (to === target) together.add(from);
+        }
+        const next = rejectedFiles.includes(target)
+          ? rejectedFiles.filter((name) => !together.has(name))
+          : [...new Set([...rejectedFiles, ...together])];
+        setRejected({ runId: pending.runId, files: next });
+      };
+      const switchTo = () =>
+        run('switch', () => backend.dream('switch', { reject: rejectedFiles }), {
           check: (result) => {
-            if (result && (result.applied === true || (result.ok === true && result.applied !== false))) return '';
-            return (result && (result.error || result.skipReason)) || 'failed';
+            if (!result || result.ok === true) return '';
+            if (result.error === 'conflict' && Array.isArray(result.conflicts)) {
+              return t('tidy.switchConflict', { files: result.conflicts.map((item) => item.file).join(', ') });
+            }
+            return result.message || result.error || 'failed';
           },
-          success: (result) =>
-            t('tidy.applied', { n: asNumber(result && (result.ops ?? result.operations), indexes.length) }),
+          success: t('tidy.switched'),
         });
-      };
+
       const discard = () =>
-        run('reject', () => backend.dream('reject'), { success: t('notice.planDiscarded') });
+        run('discard', () => backend.dream('discard'), { success: t('tidy.discarded') });
+
       const undo = () =>
-        run('undo', () => backend.undoDream(), {
+        run('undo', () => backend.dream('undo'), {
           check: (result) => {
             if (!result || result.ok !== false) return '';
             if (result.error === 'conflict' && Array.isArray(result.conflicts)) {
@@ -4062,417 +3589,9 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           },
           success: t('tidy.undone'),
         });
-      const toggleOp = (index) =>
-        setPicked((current) => (current.includes(index) ? current.filter((value) => value !== index) : [...current, index]));
 
-      // ---- plan or intro ---------------------------------------------------
-      const plan = preview.plan;
-      const changedOps = plan ? plan.ops.filter((op) => op.changed) : [];
-      // Only operations apply-ops would accept can be selected.
-      const applicableOps = changedOps.filter((op) => op.rejected === '');
-      const rejectedCount = changedOps.length - applicableOps.length;
-      const allPicked = applicableOps.length > 0 && applicableOps.every((op) => picked.includes(op.index));
-      const blocked = Boolean(plan && ((plan.v2 && !plan.coverageComplete) || plan.evidenceError !== ''));
-      let main;
-      let step = 0;
-      if (!waiting || readOnly) {
-        step = generating ? 1 : 0;
-        main = h(
-          'section',
-          { className: 'ccm-card ccm-hero' },
-          h('div', { className: 'ccm-empty-icon' }, icon('sparkle', 22)),
-          h('div', { className: 'ccm-hero-title' }, t('tidy.title')),
-          h('p', { className: 'ccm-hero-text' }, generating ? t('tidy.generating') : t('tidy.intro')),
-          generating
-            ? h('div', { className: 'ccm-progress' })
-            : h(
-                React.Fragment,
-                null,
-                canRun
-                  ? h(
-                      Field,
-                      { label: t('tidy.focus') },
-                      h('input', {
-                        className: 'ccm-input',
-                        value: focus,
-                        disabled: !idle,
-                        placeholder: t('tidy.focusPlaceholder'),
-                        onChange: (event) => setFocus(event.target.value),
-                      }),
-                    )
-                  : null,
-                h(
-                  'button',
-                  { type: 'button', className: 'ccm-btn ccm-btn-primary', disabled: !idle || !canRun, onClick: generate },
-                  icon('sparkle', 15),
-                  t('tidy.generate'),
-                ),
-              ),
-        );
-      } else {
-        step = generating ? 1 : 2;
-        const pane = (label, text, className, wide) =>
-          h(
-            'div',
-            { key: label, className: wide ? 'ccm-diff-wide' : undefined },
-            h('div', { className: 'ccm-diff-label' }, label),
-            h('pre', { className: 'ccm-pre' + (className ? ' ' + className : '') }, truncatePreview(text) || '—'),
-          );
-        const notes = [];
-        if (plan && plan.evidenceError !== '') {
-          notes.push(h('div', { key: 'ev', className: 'ccm-note ccm-note-error' }, t('tidy.planBlocked', { reason: plan.evidenceError })));
-        } else if (plan && blocked) {
-          notes.push(h('div', { key: 'bl', className: 'ccm-note ccm-note-error' }, t('tidy.coverageBlocked')));
-        }
-        if (plan && !blocked && rejectedCount > 0) {
-          notes.push(h('div', { key: 'rj', className: 'ccm-note ccm-note-warn' }, t('tidy.rejectedNote', { n: rejectedCount })));
-        }
-        if (plan && plan.truncatedFiles.length > 0) {
-          notes.push(h('div', { key: 'tr', className: 'ccm-note' }, t('tidy.truncated', { files: plan.truncatedFiles.join(', ') })));
-        }
-        if (plan && plan.dropped.length > 0) {
-          notes.push(h('div', { key: 'dr', className: 'ccm-note' }, t('tidy.dropped', { n: plan.dropped.length })));
-        }
-        if (plan && plan.costExceeded) {
-          notes.push(h('div', { key: 'co', className: 'ccm-note ccm-note-error' }, t('tidy.costExceeded')));
-        }
-        if (plan && plan.review.length > 0) {
-          notes.push(h('div', { key: 'rv', className: 'ccm-note ccm-note-warn' }, t('tidy.reviewItems', { n: plan.review.length })));
-          plan.review.slice(0, 3).forEach((item, index) => {
-            notes.push(
-              h(
-                'div',
-                { key: 'rv' + index, className: 'ccm-note' },
-                `${item.file || '—'}: ${item.claim}${item.reason ? ` (${item.reason})` : ''}`,
-              ),
-            );
-          });
-        }
-        if (plan) {
-          [...plan.warnings, ...plan.evidenceWarnings].slice(0, 6).forEach((warning, index) => {
-            notes.push(h('div', { key: 'w' + index, className: 'ccm-note ccm-note-warn' }, warning));
-          });
-        }
-        const coverage =
-          plan && plan.v2
-            ? h(
-                'div',
-                { className: 'ccm-coverage' },
-                h(
-                  'span',
-                  { className: 'ccm-pill ' + (plan.coverageComplete ? 'ccm-pill-ok' : 'ccm-pill-warn') },
-                  icon(plan.coverageComplete ? 'check' : 'alert', 11),
-                  t('tidy.coverage', { processed: plan.processedSessions, expected: plan.expectedSessions }),
-                ),
-                plan.failedSessions > 0
-                  ? h('span', { className: 'ccm-pill ccm-pill-danger' }, t('tidy.coverageFailed', { n: plan.failedSessions }))
-                  : null,
-                plan.partialSessions > 0
-                  ? h('span', { className: 'ccm-pill ccm-pill-warn' }, t('tidy.coveragePartial', { n: plan.partialSessions }))
-                  : null,
-                plan.verifiedFiles.length > 0
-                  ? h(
-                      'span',
-                      { className: 'ccm-pill ccm-pill-ok' },
-                      icon('shield', 11),
-                      t('tidy.verifiedPages', { n: plan.verifiedFiles.length }),
-                    )
-                  : null,
-              )
-            : null;
-        main = h(
-          'section',
-          { className: 'ccm-card' },
-          h(
-            'div',
-            { className: 'ccm-card-head' },
-            h('span', { className: 'ccm-card-title' }, t('tidy.planTitle')),
-            h('span', { className: 'ccm-pill' + (isProposal ? ' ccm-pill-warn' : '') }, isProposal ? t('tidy.proposal') : t('tidy.preview')),
-            plan && plan.v2 ? h('span', { className: 'ccm-pill ccm-pill-accent' }, t('tidy.v2')) : null,
-            h('span', { className: 'ccm-spacer' }),
-            plan ? h('span', { className: 'ccm-card-sub' }, t('tidy.opsCount', { n: changedOps.length })) : null,
-          ),
-          plan && plan.summary ? h('p', { className: 'ccm-plan-summary' }, plan.summary) : null,
-          coverage,
-          preview.phase === 'loading' && !plan ? h('p', { className: 'ccm-plan-summary' }, t('detail.loading')) : null,
-          preview.phase === 'error' ? h('p', { className: 'ccm-plan-summary ccm-note-error' }, preview.error) : null,
-          plan && changedOps.length === 0 ? h('p', { className: 'ccm-plan-summary' }, t('tidy.nothing')) : null,
-          plan && changedOps.length > 0 && applicableOps.length === 0 && !blocked
-            ? h('p', { className: 'ccm-plan-summary ccm-note-warn' }, t('tidy.noneApplicable'))
-            : null,
-          plan
-            ? plan.ops.map((op) => {
-                const kind = opKind(op);
-                const checked = picked.includes(op.index);
-                const isOpen = openOp === op.index;
-                let delta;
-                if (!op.changed) delta = t('tidy.unchanged');
-                else if (kind === 'create') delta = t('tidy.newChars', { n: op.after.length });
-                else if (kind === 'delete') delta = t('tidy.newChars', { n: op.before.length });
-                else delta = t('tidy.chars', { before: op.before.length, after: op.after.length });
-                const refused = op.changed && op.rejected !== '';
-                return h(
-                  'div',
-                  { key: op.index, className: 'ccm-op' + (op.changed ? '' : ' is-muted') + (refused ? ' is-refused' : '') },
-                  h(
-                    'div',
-                    { className: 'ccm-op-row' },
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        role: 'checkbox',
-                        className: 'ccm-check',
-                        'aria-checked': checked ? 'true' : 'false',
-                        'aria-label': op.file || 'MEMORY.md',
-                        disabled: !op.changed || refused || !idle || blocked,
-                        title: refused ? reasonText(op.rejected, op.file, t) : undefined,
-                        onClick: () => toggleOp(op.index),
-                      },
-                      checked ? icon('check', 12) : null,
-                    ),
-                    h('span', { className: 'ccm-opkind', 'data-kind': kind }, t('tidy.op.' + kind)),
-                    h(
-                      'button',
-                      {
-                        type: 'button',
-                        className: 'ccm-op-toggle',
-                        'aria-expanded': isOpen ? 'true' : 'false',
-                        onClick: () => setOpenOp(isOpen ? -1 : op.index),
-                      },
-                      h('span', { className: 'ccm-op-file' }, op.file || 'MEMORY.md'),
-                      refused ? h('span', { className: 'ccm-pill ccm-pill-danger' }, icon('alert', 11), t('tidy.rejected')) : null,
-                      op.evidence.length > 0
-                        ? h('span', { className: 'ccm-pill ccm-pill-accent' }, t('tidy.evidenceCount', { n: op.evidence.length }))
-                        : null,
-                      h('span', { className: 'ccm-op-delta' }, delta),
-                      h('span', { className: 'ccm-chev' + (isOpen ? ' is-open' : '') }, icon('chevron', 14)),
-                    ),
-                  ),
-                  isOpen
-                    ? h(
-                        'div',
-                        { className: 'ccm-diff' },
-                        refused
-                          ? h(
-                              'div',
-                              { className: 'ccm-diff-wide ccm-callout' },
-                              h('div', { className: 'ccm-callout-title' }, icon('alert', 13), t('tidy.rejected')),
-                              h('div', null, reasonText(op.rejected, op.file, t)),
-                            )
-                          : null,
-                        kind !== 'create' ? pane(t('tidy.before'), op.before, '', kind === 'delete') : null,
-                        kind !== 'delete' ? pane(t('tidy.after'), op.after, 'ccm-pre-after', kind === 'create') : null,
-                        op.removedLines.length > 0
-                          ? h(
-                              'div',
-                              { className: 'ccm-diff-wide' },
-                              h('div', { className: 'ccm-diff-label' }, t('tidy.removedLines')),
-                              h('pre', { className: 'ccm-pre ccm-pre-removed' }, op.removedLines.map((item) => item.line + ': ' + item.text).join('\n')),
-                            )
-                          : null,
-                        op.addedLines.length > 0
-                          ? h(
-                              'div',
-                              { className: 'ccm-diff-wide' },
-                              h('div', { className: 'ccm-diff-label' }, t('tidy.addedLines')),
-                              h('pre', { className: 'ccm-pre ccm-pre-after' }, op.addedLines.map((item) => item.line + ': ' + item.text).join('\n')),
-                            )
-                          : null,
-                        op.evidence.length > 0
-                          ? h(
-                              'div',
-                              { className: 'ccm-diff-wide' },
-                              h('div', { className: 'ccm-diff-label' }, t('tidy.evidence')),
-                              h(
-                                'ul',
-                                { className: 'ccm-quotes' },
-                                op.evidence.map((item, index) =>
-                                  h(
-                                    'li',
-                                    { key: index },
-                                    item.statement ? h('div', null, item.statement) : null,
-                                    item.quote ? h('q', null, item.quote) : null,
-                                  ),
-                                ),
-                              ),
-                            )
-                          : null,
-                      )
-                    : null,
-                );
-              })
-            : null,
-          notes.length > 0 ? h('div', { className: 'ccm-notes' }, notes) : null,
-          h(
-            'div',
-            { className: 'ccm-foot' },
-            generating
-              ? h('div', { className: 'ccm-progress' })
-              : [
-                  applicableOps.length > 0
-                    ? h(ConfirmButton, {
-                        key: 'apply',
-                        className: 'ccm-btn-primary',
-                        icon: 'check',
-                        label: t('tidy.apply', { n: picked.length }),
-                        confirmLabel: t('tidy.applyConfirm', { n: picked.length }),
-                        disabled: !idle || picked.length === 0 || !canRun || blocked,
-                        onConfirm: apply,
-                        t,
-                      })
-                    : null,
-                  applicableOps.length > 1
-                    ? h(
-                        'button',
-                        {
-                          key: 'all',
-                          type: 'button',
-                          className: 'ccm-btn ccm-btn-ghost',
-                          disabled: !idle || blocked,
-                          onClick: () => setPicked(allPicked ? [] : applicableOps.map((op) => op.index)),
-                        },
-                        allPicked ? t('tidy.selectNone') : t('tidy.selectAll'),
-                      )
-                    : null,
-                  h('span', { key: 'sp', className: 'ccm-spacer' }),
-                  isProposal
-                    ? h(ConfirmButton, {
-                        key: 'discard',
-                        tone: 'danger',
-                        className: 'ccm-btn-ghost ccm-btn-danger',
-                        label: t('tidy.discard'),
-                        disabled: !idle,
-                        onConfirm: discard,
-                        t,
-                      })
-                    : h(
-                        'button',
-                        { key: 'regen', type: 'button', className: 'ccm-btn ccm-btn-ghost', disabled: !idle || !canRun, onClick: generate },
-                        icon('refresh', 14),
-                        t('tidy.regenerate'),
-                      ),
-                ],
-          ),
-        );
-      }
-
-      if (estimate) {
-        step = 0;
-        main = h(
-          'section',
-          { className: 'ccm-card' },
-          h('div', { className: 'ccm-card-head' }, h('span', { className: 'ccm-card-title' }, t('tidy.estimateTitle'))),
-          h('div', { className: 'ccm-card-body', style: { paddingBottom: 6 } },
-            h('div', { className: 'ccm-big' }, t('tidy.estimateTokens', { n: formatNumber(estimate.estimatedTokens) }))),
-          h('p', { className: 'ccm-plan-summary' }, t('tidy.estimateInput', { n: formatNumber(estimate.estimatedTokens) })),
-          h('p', { className: 'ccm-plan-summary' }, estimate.limit > 0
-            ? t('tidy.estimateLimit', { n: formatNumber(estimate.limit) }) : t('tidy.estimateUnlimited')),
-          focus.trim() !== '' ? h('p', { className: 'ccm-plan-summary' }, t('tidy.focusShown', { focus: focus.trim() })) : null,
-          h('p', { className: 'ccm-plan-summary ccm-setting-hint' }, t('tidy.estimateHint')),
-          h(
-            'div',
-            { className: 'ccm-foot' },
-            h(ConfirmButton, {
-              className: 'ccm-btn-primary', icon: 'sparkle', label: t('tidy.generate'),
-              disabled: !idle || !canRun, onConfirm: startDream, t,
-            }),
-            h('button', { type: 'button', className: 'ccm-btn', disabled: !idle, onClick: () => setEstimate(null) }, t('btn.cancel')),
-          ),
-        );
-      }
-
-      // ---- status: last run, auto switch, pipeline ---------------------------
-      const lastLine = [
-        t('tidy.sessionsSince', { n: state.sessionsSince }),
-        state.lastDreamAt && state.lastDreamOps ? t('tidy.opsCount', { n: state.lastDreamOps }) : '',
-      ]
-        .filter(Boolean)
-        .join(' · ');
-      const statusCard = h(
-        'section',
-        { className: 'ccm-card' },
-        h(
-          'div',
-          { className: 'ccm-setting' },
-          h(
-            'div',
-            { className: 'ccm-setting-text' },
-            h(
-              'div',
-              { className: 'ccm-setting-name' },
-              state.lastDreamAt ? t('tidy.last', { time: ago(state.lastDreamAt, t) }) : t('tidy.never'),
-            ),
-            h('div', { className: 'ccm-setting-hint' }, lastLine),
-            state.lastError ? h('div', { className: 'ccm-setting-hint ccm-note-error' }, t('tidy.lastError', { error: state.lastError })) : null,
-          ),
-        ),
-        h(
-          'div',
-          { className: 'ccm-setting' },
-          h(
-            'div',
-            { className: 'ccm-setting-text' },
-            h('div', { className: 'ccm-setting-name' }, t('tidy.auto')),
-            h(
-              'div',
-              { className: 'ccm-setting-hint' },
-              config.autoDreamEnabled
-                ? readinessText(status.readiness, config, t) ||
-                    t('tidy.autoHint', { hours: config.minHours || 24, sessions: config.minSessions || 5 })
-                : t('tidy.autoHint', { hours: config.minHours || 24, sessions: config.minSessions || 5 }),
-            ),
-          ),
-          h(Switch, {
-            checked: config.autoDreamEnabled,
-            label: t('tidy.auto'),
-            disabled: !idle || readOnly || !config.enabled,
-            onChange: (value) =>
-              run('toggle', () => backend.toggle({ autoDreamEnabled: value }), { success: t('notice.toggled') }),
-          }),
-        ),
-        h(
-          'div',
-          { className: 'ccm-setting' },
-          h('div', { className: 'ccm-setting-text' }, h('div', { className: 'ccm-setting-hint' }, t('tidy.pipeline.v2'))),
-        ),
-      );
-
-      // ---- recent dreams -----------------------------------------------------
-      const batches = history.filter((item) => item.kind !== '' || item.ops > 0).slice(0, 5);
-      const undoTarget = batches.find((item) => item.undoable);
-      const historyCard =
-        batches.length === 0
-          ? null
-          : h(
-              'section',
-              { className: 'ccm-card' },
-              h('div', { className: 'ccm-card-head' }, h('span', { className: 'ccm-card-title' }, t('tidy.historyTitle'))),
-              batches.map((item) =>
-                h(
-                  'div',
-                  { key: item.ts, className: 'ccm-hist' },
-                  h(
-                    'div',
-                    { className: 'ccm-row-main' },
-                    h('span', { className: 'ccm-row-name' }, item.summary || t('tidy.opsCount', { n: item.ops })),
-                    h(
-                      'span',
-                      { className: 'ccm-row-desc' },
-                      [formatTime(item.appliedAt) || item.ts, t('tidy.opsCount', { n: item.ops })].join(' · '),
-                    ),
-                  ),
-                  item.undone ? h('span', { className: 'ccm-pill' }, t('tidy.undoneTag')) : null,
-                  undoTarget && undoTarget.ts === item.ts && !readOnly
-                    ? h(ConfirmButton, { small: true, icon: 'undo', label: t('tidy.undo'), disabled: !idle, onConfirm: undo, t })
-                    : null,
-                ),
-              ),
-            );
-
-      // ---- background run: progress, stop, continue -------------------------
-      const runCounts = (shownRun && shownRun.counts) || {};
-      const runTotal = asNumber(shownRun && shownRun.input && shownRun.input.expectedUnits, 0);
+      const runStatus = shownRun ? shownRun.status || 'idle' : 'idle';
+      const runTone = runStatus === 'running' || runStatus === 'cancelling' ? ' ccm-pill-accent' : runStatus === 'failed' ? ' ccm-pill-danger' : '';
       const runCard = showRun
         ? h(
             'section',
@@ -4481,39 +3600,227 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
               'div',
               { className: 'ccm-card-head' },
               h('span', { className: 'ccm-card-title' }, t('tidy.runTitle')),
-              h(
-                'span',
-                { className: 'ccm-pill' + (shownRun.status === 'running' ? ' ccm-pill-warn' : shownRun.status === 'failed' ? ' ccm-pill-danger' : '') },
-                t('tidy.runState.' + shownRun.status),
-              ),
-              h('span', { className: 'ccm-spacer' }),
-              h('span', { className: 'ccm-card-sub' }, shownRun.runId || ''),
+              h('span', { className: 'ccm-pill' + runTone }, t('tidy.runState.' + runStatus)),
             ),
-            h('p', { className: 'ccm-plan-summary' }, t('tidy.runUnits', { done: asNumber(runCounts.done, 0), total: runTotal })),
-            asNumber(runCounts.failed, 0) > 0
-              ? h('p', { className: 'ccm-plan-summary ccm-note-warn' }, t('tidy.runFailed', { n: asNumber(runCounts.failed, 0) }))
+            shownRun.stage ? h('p', { className: 'ccm-card-text' }, shownRun.stage) : null,
+            shownRun.error ? h('p', { className: 'ccm-card-text ccm-note-error' }, String(shownRun.error)) : null,
+            running ? h('div', { className: 'ccm-card-body' }, h('div', { className: 'ccm-progress' })) : null,
+            running || runStatus === 'cancelled' || runStatus === 'failed'
+              ? h(
+                  'div',
+                  { className: 'ccm-foot' },
+                  running
+                    ? h('button', { type: 'button', className: 'ccm-btn', disabled: !idle || readOnly || runStatus === 'cancelling', onClick: () => runAction('cancel', 'cancel') }, t('tidy.runCancel'))
+                    : h('button', { type: 'button', className: 'ccm-btn', disabled: !idle || readOnly, onClick: () => runAction('resume', 'resume') }, icon('refresh', 14), t('tidy.runResume')),
+                )
               : null,
-            shownRun.error ? h('p', { className: 'ccm-plan-summary ccm-note-error' }, shownRun.error) : null,
+          )
+        : null;
+
+      const pendingFiles = pending ? [...pending.files.filter((item) => item.file !== 'MEMORY.md'),
+        { file: 'MEMORY.md', action: 'index' }] : [];
+      const decided = pending ? pending.files.filter((item) => item.file !== 'MEMORY.md') : [];
+      const passedCount = decided.filter((item) => !rejectedFiles.includes(item.file)).length;
+      const linkOf = (name) => {
+        if (!pending) return '';
+        if (pending.links[name]) return pending.links[name];
+        return Object.keys(pending.links).find((from) => pending.links[from] === name) || '';
+      };
+      async function openDiff(file) {
+        if (preview?.runId === pending.runId && preview.file === file) {
+          setPreview(null);
+          return;
+        }
+        const request = { runId: pending.runId, file };
+        setPreview(request);
+        let result;
+        try {
+          result = await backend.dreamDiff(request.runId, file);
+        } catch {
+          result = { failed: true };
+        }
+        setPreview((current) => current === request ? { ...request, result } : current);
+      }
+
+      const resultCard = pending
+        ? h(
+            'section',
+            { className: 'ccm-card' },
             h(
               'div',
-              { className: 'ccm-toolbar', style: { marginTop: 10 } },
-              shownRun.status === 'running'
-                ? h(
+              { className: 'ccm-card-head' },
+              h('span', { className: 'ccm-card-title' }, t('tidy.resultTitle')),
+              h('span', { className: 'ccm-spacer' }),
+              h(
+                'span',
+                { className: 'ccm-card-sub' },
+                t('tidy.resultCounts', {
+                  added: asNumber(pending.added, 0),
+                  changed: asNumber(pending.changed, 0),
+                  removed: asNumber(pending.removed, 0),
+                }),
+              ),
+            ),
+            pending.summary ? h('p', { className: 'ccm-plan-summary' }, String(pending.summary).slice(0, 400)) : null,
+            pendingFiles.map((item) => {
+              const kind = item.action === 'added' ? 'create' : item.action === 'removed' ? 'delete' : item.action === 'index' ? 'index' : 'update';
+              const expanded = preview?.runId === pending.runId && preview.file === item.file;
+              const detail = expanded ? preview.result : null;
+              const isRejected = rejectedFiles.includes(item.file);
+              const linked = kind === 'index' ? '' : linkOf(item.file);
+              return h(
+                'div',
+                { key: item.file, className: 'ccm-op' + (isRejected ? ' is-refused' : '') },
+                h(
+                  'div',
+                  { className: 'ccm-op-row' },
+                  h(
                     'button',
-                    { type: 'button', className: 'ccm-btn ccm-btn-ghost', disabled: !idle, onClick: () => runAction('cancel', 'cancel-run') },
-                    t('tidy.runCancel'),
-                  )
-                : h(
-                    'button',
-                    { type: 'button', className: 'ccm-btn', disabled: !idle, onClick: () => runAction('resume', 'resume-run') },
-                    icon('refresh', 14),
-                    t('tidy.runResume'),
+                    { type: 'button', className: 'ccm-op-toggle', 'aria-expanded': expanded, onClick: () => openDiff(item.file) },
+                    h('span', { className: 'ccm-chev' + (expanded ? ' is-open' : '') }, icon('chevron', 13)),
+                    h('span', { className: 'ccm-opkind', 'data-kind': kind }, t('tidy.op.' + kind)),
+                    h('span', { className: 'ccm-op-file' }, item.file),
+                    linked ? h('span', { className: 'ccm-op-delta' }, t('tidy.linked', { file: linked })) : null,
                   ),
+                  // The index follows the pages that pass; it is not decided on its own.
+                  kind === 'index'
+                    ? null
+                    : h(
+                        'div',
+                        { className: 'ccm-seg', role: 'group', 'aria-label': item.file },
+                        h('button', { type: 'button', 'aria-pressed': isRejected ? 'false' : 'true', disabled: !idle || readOnly, onClick: () => isRejected && toggleReject(item.file) }, icon('check', 12), t('tidy.pass')),
+                        h('button', { type: 'button', 'aria-pressed': isRejected ? 'true' : 'false', disabled: !idle || readOnly, onClick: () => !isRejected && toggleReject(item.file) }, icon('close', 12), t('tidy.reject')),
+                      ),
+                ),
+                expanded ? (detail && !detail.failed
+                  ? h('div', { className: 'ccm-diff' },
+                    ...['before', 'after'].map((side) => h('div', { key: side },
+                      h('div', { className: 'ccm-diff-label' }, t('tidy.' + side)),
+                      h('pre', { className: 'ccm-pre' }, detail[side]
+                        ? detail[side].split(/\r?\n/u).map((line, index) => {
+                          const changed = (side === 'before' ? detail.removedLines : detail.addedLines)?.some((item) => item.line === index + 1);
+                          return h('span', { key: index, className: changed ? (side === 'before' ? 'ccm-pre-removed' : 'ccm-pre-after') : undefined }, line, '\n');
+                        })
+                        : t('tidy.emptyFile')))))
+                  : h('p', { className: 'ccm-card-text', role: 'status' }, t(detail ? 'tidy.diffError' : 'tidy.diffLoading')))
+                  : null,
+              );
+            }),
+            h('div', { className: 'ccm-notes' }, h('div', { className: 'ccm-note' }, t('tidy.rejectHint'))),
+            h(
+              'div',
+              { className: 'ccm-foot' },
+              h('button', { type: 'button', className: 'ccm-btn ccm-btn-primary', disabled: !idle || readOnly || passedCount === 0, onClick: switchTo }, icon('check', 14), t('tidy.applyPassed', { n: passedCount })),
+              h('span', { className: 'ccm-spacer' }),
+              h(ConfirmButton, { tone: 'danger', className: 'ccm-btn-ghost ccm-btn-danger', label: t('tidy.rejectAll'), disabled: !idle || readOnly, onConfirm: discard, t }),
             ),
           )
         : null;
 
-      return h(React.Fragment, null, h(Steps, { current: step, t }), runCard, main, statusCard, historyCard);
+      const estimating = busy === 'estimate' || busy === 'start';
+      const hero = h(
+        'section',
+        { className: 'ccm-card ccm-hero' },
+        h('div', { className: 'ccm-empty-icon' }, icon('sparkle', 22)),
+        h('div', { className: 'ccm-hero-title' }, t('tidy.title')),
+        h('p', { className: 'ccm-hero-text' }, t('tidy.intro')),
+        canRun && !memoryOnly
+          ? h(
+              Field,
+              { label: t('tidy.focus') },
+              h('input', {
+                className: 'ccm-input',
+                value: focus,
+                disabled: !idle || running,
+                placeholder: t('tidy.focusPlaceholder'),
+                onChange: (event) => {
+                  setFocus(event.target.value);
+                  // The estimate priced the old focus; ask again for the new one.
+                  setEstimate(null);
+                },
+              }),
+            )
+          : null,
+        canRun
+          ? h(
+              'label',
+              { className: 'ccm-checkline' },
+              h('input', {
+                type: 'checkbox',
+                checked: memoryOnly,
+                disabled: !idle || running,
+                onChange: (event) => {
+                  setMemoryOnly(event.target.checked);
+                  setEstimate(null);
+                },
+              }),
+              h('span', null, t('tidy.memoryOnly')),
+            )
+          : null,
+        canRun && memoryOnly ? h('p', { className: 'ccm-help', style: { margin: 0 } }, t('tidy.memoryOnlyHint')) : null,
+        estimating ? h('div', { className: 'ccm-progress', style: { maxWidth: 520 } }) : null,
+        estimate
+          ? h(
+              React.Fragment,
+              null,
+              h(
+                'p',
+                { className: 'ccm-hero-text', style: { margin: 0 } },
+                estimate.limit > 0
+                  ? t('tidy.estimateLine', { tokens: formatNumber(estimate.estimatedTokens), limit: formatNumber(estimate.limit) })
+                  : t('tidy.estimateNoLimit', { tokens: formatNumber(estimate.estimatedTokens) }),
+              ),
+              h(
+                'div',
+                { className: 'ccm-toolbar' },
+                h(
+                  'button',
+                  { type: 'button', className: 'ccm-btn ccm-btn-primary', disabled: !idle || !canRun || running, onClick: startDream },
+                  icon('sparkle', 15),
+                  t('tidy.start'),
+                ),
+                h('button', { type: 'button', className: 'ccm-btn ccm-btn-ghost', disabled: !idle, onClick: () => setEstimate(null) }, t('btn.cancel')),
+              ),
+            )
+          : h(
+              'button',
+              { type: 'button', className: 'ccm-btn ccm-btn-primary', disabled: !idle || !canRun || running, onClick: generate },
+              icon('sparkle', 15),
+              t('tidy.generate'),
+            ),
+      );
+
+      const batches = history.slice(0, 5);
+      const undoTarget = batches.find((item) => item.undoable);
+      const historyCard = batches.length > 0
+        ? h(
+            'section',
+            { className: 'ccm-card' },
+            h('div', { className: 'ccm-card-head' }, h('span', { className: 'ccm-card-title' }, t('tidy.historyTitle'))),
+            batches.map((item) =>
+              h(
+                'div',
+                { key: item.ts, className: 'ccm-hist' },
+                h(
+                  'div',
+                  { className: 'ccm-row-main' },
+                  h('span', { className: 'ccm-row-desc', style: { color: 'var(--ccm-fg)' } }, item.summary || t('tidy.opsCount', { n: item.ops })),
+                  h(
+                    'span',
+                    { className: 'ccm-row-time' },
+                    [formatTime(item.appliedAt) || item.ts, t('tidy.opsCount', { n: item.ops })].join(' · '),
+                  ),
+                ),
+                item.undone ? h('span', { className: 'ccm-pill' }, t('tidy.undoneTag')) : null,
+                undoTarget && undoTarget.ts === item.ts && !readOnly
+                  ? h(ConfirmButton, { small: true, icon: 'undo', label: t('tidy.undo'), disabled: !idle, onConfirm: undo, t })
+                  : null,
+              ),
+            ),
+          )
+        : null;
+
+      return h(React.Fragment, null, runCard, resultCard, hero, historyCard);
     }
 
     // -----------------------------------------------------------------------
@@ -4535,7 +3842,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         ['enabled', 'settings.enabled', 'settings.enabledHint', config.enabled, false],
         ['autoMemoryEnabled', 'settings.autoMemory', 'settings.autoMemoryHint', config.autoMemoryEnabled, !config.enabled],
         ['autoDreamEnabled', 'settings.autoDream', 'settings.autoDreamHint', config.autoDreamEnabled, !config.enabled],
-        ['userMemoryEnabled', 'settings.userMemory', 'settings.userMemoryHint', config.userMemoryEnabled, !config.enabled],
+        ['autoExtract', 'settings.autoExtract', 'settings.autoExtractHint', config.autoExtract, !config.enabled || !config.autoMemoryEnabled],
       ];
 
       const rulesText = draft === null ? rules.text : draft;
@@ -4665,8 +3972,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       const maxLines = config.indexMaxLines || 200;
       const maxBytes = config.indexMaxBytes || 25600;
       const meter = budgetMeter(status.index.lines, status.index.bytes, maxLines, maxBytes, status.index.overflow);
-      const userBudget = status.userScope.budgets;
-      const userMeter = budgetMeter(userBudget.lines, userBudget.bytes, userBudget.maxLines, userBudget.maxBytes, false);
       const loadingCard = h(
         'section',
         { className: 'ccm-card' },
@@ -4680,11 +3985,25 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           'dl',
           { className: 'ccm-kv' },
           h('dt', null, t('settings.mode')),
-          h('dd', null, status.injection.hotOnly ? t('settings.modeHot', { n: status.injection.hotLimit }) : t('settings.modeIndex')),
+          h('dd', null, t('settings.modeIndex')),
           h('dt', null, t('settings.recall')),
-          h('dd', null, status.injection.autoRecall ? t('settings.recallOn') : t('settings.recallOff')),
-          h('dt', null, t('settings.writeMode')),
-          h('dd', null, config.writeMode === 'confirm' ? t('settings.writeConfirm') : t('settings.writeAuto')),
+          h(
+            'dd',
+            null,
+            config.recallMode === 'model' ? t('settings.recallModel') : t('settings.recallNone'),
+          ),
+          h('dt', null, t('settings.perAgent')),
+          h(
+            'dd',
+            null,
+            config.subagentMemory === 'shared'
+              ? t('settings.perAgentShared')
+              : config.subagentMemory === 'own'
+                ? config.agentMemoryPresets.length > 0
+                  ? t('settings.perAgentOnList', { names: config.agentMemoryPresets.join('、') })
+                  : t('settings.perAgentOn')
+                : t('settings.perAgentOff'),
+          ),
           h('dt', null, t('settings.indexBudget')),
           h(
             'dd',
@@ -4693,20 +4012,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
             h('div', { className: meter.className }, h('span', { style: { width: meter.width } })),
             meter.over ? h('div', { className: 'ccm-help', style: { marginTop: 4 } }, t('settings.indexOver')) : null,
           ),
-          status.userScope.enabled ? h('dt', null, t('settings.userBudget')) : null,
-          status.userScope.enabled
-            ? h(
-                'dd',
-                null,
-                t('tidy.indexMeta', {
-                  lines: userBudget.lines,
-                  maxLines: userBudget.maxLines,
-                  bytes: formatBytes(userBudget.bytes),
-                  maxBytes: formatBytes(userBudget.maxBytes),
-                }),
-                h('div', { className: userMeter.className }, h('span', { style: { width: userMeter.width } })),
-              )
-            : null,
         ),
       );
 
@@ -4731,7 +4036,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
                 'div',
                 { className: 'ccm-setting-text' },
                 h('div', { className: 'ccm-setting-name' }, t(name)),
-                h('div', { className: 'ccm-setting-hint' }, t(hint)),
+                h('div', { className: 'ccm-setting-hint' }, t(hint, { n: config.autoExtractEveryTurns || 1 })),
               ),
               h(Switch, {
                 checked: value,
@@ -4760,6 +4065,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
               className: 'ccm-textarea',
               rows: 9,
               value: rulesText,
+              placeholder: t('rules.placeholder'),
               disabled: readOnly,
               'aria-label': t('rules.title'),
               onChange: (event) => setDraft(event.target.value),
@@ -4888,23 +4194,37 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         return () => observer.disconnect();
       }, [load.phase]);
 
+      const refreshSeq = React.useRef(0);
+      const refreshInFlight = React.useRef(null);
       const refresh = React.useCallback(async () => {
         if (backend === null || backend.mode === 'none') {
           if (alive.current) setLoad({ phase: 'error', status: null, error: new Error('no-backend') });
           return null;
         }
-        try {
-          const status = await backend.status();
-          if (alive.current) setLoad({ phase: 'ready', status, error: null });
-          return status;
-        } catch (error) {
-          if (alive.current) {
-            setLoad((current) =>
-              current.status ? { ...current, error } : { phase: 'error', status: null, error },
-            );
+        // One poll at a time: a burst of clicks (or a timer tick landing on a
+        // slow request) shares the same read instead of queueing another one.
+        if (refreshInFlight.current !== null) return refreshInFlight.current;
+        const mine = refreshSeq.current + 1;
+        refreshSeq.current = mine;
+        const task = (async () => {
+          try {
+            const status = await backend.status();
+            // An older answer must never overwrite a newer list.
+            if (alive.current && mine === refreshSeq.current) setLoad({ phase: 'ready', status, error: null });
+            return status;
+          } catch (error) {
+            if (alive.current && mine === refreshSeq.current) {
+              setLoad((current) =>
+                current.status ? { ...current, error } : { phase: 'error', status: null, error },
+              );
+            }
+            return null;
+          } finally {
+            refreshInFlight.current = null;
           }
-          return null;
-        }
+        })();
+        refreshInFlight.current = task;
+        return task;
       }, [backend]);
 
       React.useEffect(() => {
@@ -5002,7 +4322,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
                   'span',
                   null,
                   summary.text,
-                  summary.tone !== 'warn' && status.injection.autoRecall
+                  summary.tone !== 'warn' && status.injection.recallMode === 'model'
                     ? h('span', { className: 'ccm-load-extra' }, ' ' + t('load.recall'))
                     : null,
                 ),
@@ -5046,15 +4366,13 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       const banners = [];
       if (backend === null || backend.mode === 'none') {
         banners.push(h(Banner, { key: 'nb', tone: 'error', text: t('banner.noBackend'), action: reloadButton(t) }));
-      } else if (backend.mode === 'commands') {
-        banners.push(h(Banner, { key: 'ro', text: t('banner.apiMissing'), action: reloadButton(t) }));
       }
       if (tokenExpired) {
         banners.push(h(Banner, { key: 'tk', tone: 'error', text: t('banner.tokenExpired'), action: reloadButton(t) }));
       }
       // The host keeps imported backend modules until it restarts, so a page
       // can be newer than the code answering it; say so once, up front.
-      if (status && !status.degraded && status.uiApi < UI_API) {
+      if (status && status.uiApi < UI_API) {
         banners.push(h(Banner, { key: 'stale', tone: 'error', text: t('banner.backendStale') }));
       }
       if (status && !readOnly) {
@@ -5175,7 +4493,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 
       React.useEffect(() => {
         if (backend === null || backend.mode === 'none') return undefined;
-        if (backend.mode === 'commands' && backend.sessionId === undefined) return undefined;
         let alive = true;
         const tick = async () => {
           try {
@@ -5198,7 +4515,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
       if (hidden || status === null) return null;
       const on = status.config.enabled !== false && status.config.autoMemoryEnabled !== false;
       const attention = attentionCount(status);
-      const loaded = status.injection.hotOnly ? status.entries.filter((entry) => entry.hot).length : -1;
       const summary = loadSummary(status, t);
       return h(
         React.Fragment,
@@ -5214,7 +4530,6 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           h('span', { className: 'ccm-chip-dot', 'data-on': on ? 'true' : 'false' }),
           h('span', null, t('chip.label')),
           h('span', { className: 'ccm-chip-count' }, String(status.entries.length)),
-          on && loaded >= 0 ? h('span', { className: 'ccm-chip-hot' }, '· ' + t('chip.loaded', { n: loaded })) : null,
           attention > 0 ? h('span', { className: 'ccm-chip-alert' }, '· ' + t('chip.attention', { n: attention })) : null,
         ),
       );
@@ -5270,7 +4585,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
     // -----------------------------------------------------------------------
     // Plugin body
     // -----------------------------------------------------------------------
-    const inject = ['slots', 'locale', 'remote', 'remote.commands'];
+    const inject = ['slots', 'locale'];
 
     async function apply(ctx) {
       const fallbackT = makeFallbackTranslate(ctx);
@@ -5290,26 +4605,10 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         console.warn('[cc-memory] locale bind failed:', formatError(error));
       }
 
-      // Silent HTTP API (preferred). The command runner exists only for the
-      // degraded fallback used when the Host does not inject the API bridge;
-      // normal page data never touches the session log. A page that started
-      // before the injection can recover the bridge from the loopback endpoint.
-      const api = readApiConfig() ?? (await discoverBridge());
-      let commandRunner = null;
-      try {
-        const remote = ctx.remote;
-        const commands = remote && remote.commands;
-        if (commands && typeof commands.execute === 'function') {
-          commandRunner = async (sessionId, line) => {
-            const result = await commands.execute(sessionId, line, []);
-            return unwrapCommandResult(result);
-          };
-        }
-      } catch (error) {
-        // eslint-disable-next-line no-console
-        console.warn('[cc-memory] command fallback unavailable:', formatError(error));
-      }
-      backendFactory = (sessionId) => createBackend({ api, commandRunner, sessionId });
+      // The silent HTTP API is the only data path; page data never touches the
+      // session log.
+      const api = await discoverBridge();
+      backendFactory = (sessionId) => createBackend({ api, sessionId });
       const backendFor = backendFactory;
       const labelT = boundT;
 
@@ -5376,16 +4675,14 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
           createBackend,
           renderMarkdown,
           renderInline,
-          resolveApiConfig: readApiConfig,
           apiRequest,
           normalizeMetrics,
-          normalizePendingWrites,
           normalizeReadiness,
           normalizeHealth,
           normalizeDreamHistory,
           normalizeSearch,
           normalizeTrend,
-          normalizePreviewPlan,
+          normalizePendingSwitch,
           normalizeFileHistory,
           filterEntries,
           countByType,

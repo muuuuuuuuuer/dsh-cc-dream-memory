@@ -2,9 +2,9 @@
  * Small LLM helper for the v2 dream pipeline.
  *
  * The host exposes `ctx.llm.stream`; this module turns one prompt into text,
- * accumulates usage, and retries once with a larger output budget when the
- * model stops on max-tokens. An optional retry prompt also allows a bounded
- * retry for a transport failure. It never writes memory or state.
+ * accumulates usage and can retry once. A supplied retry prompt reuses the
+ * original output budget for max-tokens and transport failures. It never
+ * writes memory or state.
  */
 
 const MAX_RETRY_TOKENS = 64_000;
@@ -24,14 +24,12 @@ function mergeUsage(total, usage) {
 }
 
 /**
- * Resolve the provider/model for one stage. An explicit pair wins; otherwise the
- * agent default selection is used, matching the existing dream engine.
+ * Use an explicit provider/model pair or the host default selection.
  * @param {object} ctx host context
- * @param {object} config resolved plugin config
  * @param {{provider?:string, model?:string}} [explicit]
  * @returns {{provider:string, model:string, reasoningEffort?:unknown}|null}
  */
-export function resolveModel(ctx, config, explicit = {}) {
+export function resolveModel(ctx, explicit = {}) {
   let llm;
   try {
     llm = ctx && typeof ctx.get === 'function' ? ctx.get('llm') : undefined;
@@ -60,7 +58,7 @@ export function resolveModel(ctx, config, explicit = {}) {
 }
 
 /**
- * Run one text completion with one max-tokens retry.
+ * Run a text completion with a bounded retry.
  * @param {{ctx:object, model:{provider:string,model:string,reasoningEffort?:unknown},
  *   prompt:string, system?:string, signal?:AbortSignal, purpose?:string,
  *   maxTokens?:number, retryPrompt?:()=>string, onUsage?:(usage:object|undefined)=>void}} options
@@ -140,7 +138,7 @@ export async function streamText({
   }
   if (first && first.finishKind !== 'max-tokens') return { ...first, usage: totalUsage };
   signal?.throwIfAborted();
-  const retry = first ? Math.max(base, Math.min(base * 2, MAX_RETRY_TOKENS)) : base;
+  const retry = first && !retryPrompt ? Math.max(base, Math.min(base * 2, MAX_RETRY_TOKENS)) : base;
   const second = await runOnce(retry, retryPrompt ? retryPrompt() : prompt);
   if (second.finishKind === 'max-tokens') {
     const message = first

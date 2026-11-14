@@ -14,26 +14,45 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { dreamReadiness } from './readiness.js';
+import { isProcessAlive } from './lock.js';
 import { gatherDreamInput, pruneProbeSessions } from './dream-input.js';
 import {
   costLimitStatus,
   dreamCostModeOf,
-  dreamV2CoverageError,
   estimateInputTokens,
   maxTotalTokensLimit,
   recordDreamEvent,
-  validateDreamPlan,
 } from './dream.js';
-import { ANALYZER_SYSTEM_PROMPT, buildAnalyzerPrompt, parseAnalyzerReply } from './dream-analyzer.js';
-import { stampVerification, SUPERSEDED_LINE_RE } from './memory-body.js';
+import {
+  applyShadowOperations,
+  clearShadow,
+  diffShadow,
+  prepareShadow,
+  shadowDirOf,
+} from './dream-shadow.js';
+import {
+  ANALYZER_SYSTEM_PROMPT,
+  CHECK_SYSTEM_PROMPT,
+  TIDY_SYSTEM_PROMPT,
+  buildAnalyzerPrompt,
+  buildCheckPrompt,
+  buildTidyPrompt,
+  parseAnalyzerReply,
+  parseCheckReply,
+  parseTidyReply,
+} from './dream-analyzer.js';
+import { stampVerification, SUPERSEDED_LINE_RE, CONFLICT_LINE_RE } from './memory-body.js';
 import { normalizeForMatch } from './dream-evidence.js';
 import { supportsStatement } from './support.js';
-import { verifyAnalysis } from './dream-verifier.js';import { buildEvidence, checkWriteOperations } from './dream-write-evidence.js';
+import { verifyAnalysis, verifyCheck } from './dream-verifier.js';
+import { buildEvidence, checkWriteOperations } from './dream-write-evidence.js';
 import { mergeClaims } from './dream-merge.js';
 import { buildIndex } from './wiki-core.js';
 import { scanSecrets, secretScanDecision, secretWarnings } from './secrets.js';
 import { resolveModel, streamText } from './llm-call.js';
 import {
+  digestOf,
   newRunId,
   readRunManifest,
   readUnitRecord,
@@ -156,25 +175,21 @@ async function acquireLock(file, ttlMs = LOCK_TTL_MS, { runId = '', takeOverRunI
     } catch (error) {
       if (error?.code !== 'EEXIST') return { ok: false, reason: errorMessage(error) };
       let stat;
-      let held = '';
+      let owner;
       try {
         stat = await fs.stat(file);
-        held = text(JSON.parse(await fs.readFile(file, 'utf8'))?.runId);
+        owner = JSON.parse(await fs.readFile(file, 'utf8'));
       } catch {
         if (!stat) continue;
       }
       const age = Date.now() - stat.mtimeMs;
-      // Resuming a run that this process no longer executes (crash, reload).
-      if (takeOverRunId !== '' && held === takeOverRunId) {
-        try {
-          await fs.unlink(file);
-        } catch {
-          return { ok: false, reason: 'locked', age };
-        }
-        continue;
+      const held = text(owner?.runId);
+      const ownerAlive = isProcessAlive(owner?.pid);
+      const resumingOwner = takeOverRunId !== '' && held === takeOverRunId;
+      if (ownerAlive || (age < ttlMs && !resumingOwner)) {
+        return { ok: false, reason: 'locked', age, runId: held };
       }
-      if (age < ttlMs) return { ok: false, reason: 'locked', age, runId: held };
-      // Stale lock: remove it once and retry.
+      // A dead run can resume immediately. Other orphaned locks must age out.
       try {
         await fs.unlink(file);
       } catch {
@@ -241,17 +256,58 @@ function splitUnitText(unit) {
 }
 
 function mergeVerified(parts) {
-  const merged = { summary: '', claims: [], patches: [], verify: [], warnings: [], verifiedFiles: [] };
+  const merged = { summary: '', claims: [], retire: [], warnings: [] };
   for (const part of parts) {
     if (!part) continue;
     merged.summary = [merged.summary, text(part.summary)].filter(Boolean).join(' ').trim();
     merged.claims.push(...(Array.isArray(part.claims) ? part.claims : []));
-    merged.patches.push(...(Array.isArray(part.patches) ? part.patches : []));
-    merged.verify.push(...(Array.isArray(part.verify) ? part.verify : []));
+    merged.retire.push(...(Array.isArray(part.retire) ? part.retire : []));
     merged.warnings.push(...(Array.isArray(part.warnings) ? part.warnings : []));
-    merged.verifiedFiles.push(...(Array.isArray(part.verifiedFiles) ? part.verifiedFiles : []));
   }
   return merged;
+}
+
+/**
+ * Group the pages the run's claims target into check calls of bounded size.
+ * Claims get short ids the check prompt can cite.
+ * @returns {{claims:Map<string,object>, batches:Array<{pages:object[], claims:object[]}>}}
+ */
+function checkBatches(analyses, memoryPages, maxChars = UNIT_CHARS) {
+  const pages = new Map(memoryPages.map((page) => [page.file, page]));
+  const claims = new Map();
+  const byFile = new Map();
+  for (const analysis of analyses) {
+    for (const claim of analysis.claims) {
+      const id = `c${claims.size + 1}`;
+      const entry = { ...claim, id, sessionId: analysis.sessionId };
+      claims.set(id, entry);
+      const target = text(claim.target);
+      if (!pages.has(target)) continue;
+      if (!byFile.has(target)) byFile.set(target, []);
+      byFile.get(target).push(entry);
+    }
+  }
+  const batches = [];
+  let current = { pages: [], claims: [], chars: 0 };
+  for (const [file, fileClaims] of byFile) {
+    const page = pages.get(file);
+    const chars = page.body.length + fileClaims.reduce((sum, claim) => sum + claim.text.length + claim.quote.length + 40, 0);
+    if (current.pages.length > 0 && current.chars + chars > maxChars) {
+      batches.push(current);
+      current = { pages: [], claims: [], chars: 0 };
+    }
+    current.pages.push(page);
+    current.claims.push(...fileClaims);
+    current.chars += chars;
+  }
+  if (current.pages.length > 0) batches.push(current);
+  return { claims, batches };
+}
+
+/** Characters of the check calls in the worst case: every page is targeted. */
+function checkCharsOf(memoryPages) {
+  const bodies = memoryPages.reduce((sum, page) => sum + page.body.length, 0);
+  return bodies === 0 ? 0 : CHECK_SYSTEM_PROMPT.length + bodies;
 }
 
 async function releaseLock(file) {
@@ -262,11 +318,22 @@ async function releaseLock(file) {
   }
 }
 
-/** Current project pages in the shape the analyzer prompt shows them. */
+/**
+ * Current project pages in the shape the analyzer prompt shows them.
+ * A page that cannot be read is reported, not silently dropped: the run is
+ * built from these bodies, so a missing page must block an apply.
+ */
 async function memoryPagesOf(store) {
   const pages = [];
+  const errors = [];
   for (const entry of await store.listEntries('project')) {
-    const read = await store.readEntry(entry.file, 'project').catch(() => undefined);
+    let read;
+    try {
+      read = await store.readEntry(entry.file, 'project');
+    } catch (error) {
+      errors.push(`memory ${entry.file}: ${errorMessage(error)}`);
+      continue;
+    }
     if (!read) continue;
     pages.push({
       file: entry.file,
@@ -276,20 +343,14 @@ async function memoryPagesOf(store) {
       body: read.body,
     });
   }
-  return pages;
+  return { pages, errors };
 }
 
 /** The transport units of one gathered session, in reading order. */
 function unitsOf(session) {
-  const units = Array.isArray(session?.chunks) && session.chunks.length > 0
-    ? session.chunks.map((chunk) => ({
-      text: chunk.text,
-      firstSeq: chunk.firstSeq,
-      lastSeq: chunk.lastSeq,
-      evidenceBlocks: chunk.evidenceBlocks,
-    }))
-    : [{ text: text(session?.excerpt), firstSeq: session?.baseSeq ?? null, lastSeq: null, evidenceBlocks: session?.evidenceBlocks }];
-  return units.filter((unit) => text(unit.text) !== '');
+  return (session?.chunks ?? [])
+    .map((chunk) => ({ text: chunk.text, firstSeq: chunk.firstSeq, lastSeq: chunk.lastSeq, evidenceBlocks: chunk.evidenceBlocks }))
+    .filter((unit) => text(unit.text) !== '');
 }
 
 /** The analyzer prompt input for one unit; the estimate counts the same prompt. */
@@ -298,9 +359,9 @@ function analyzerPromptInput(task, memoryPages, focus, config) {
     sessionId: task.sessionId,
     when: task.session?.at ? new Date(Number(task.session.at)).toISOString().slice(0, 10) : '',
     transcript: text(task.unit.text),
-    memoryPages,
+    memoryIndex: memoryPages,
     focus,
-    maxMemoryChars: Number(config.dreamAnalyzerMemoryChars) || 48_000,
+    maxMemoryChars: Number(config.dreamAnalyzerMemoryChars) || 12_000,
     maxTranscriptChars: Number.MAX_SAFE_INTEGER,
   };
 }
@@ -321,49 +382,23 @@ async function writeJson(file, value) {
  * Dream v2 engine.
  */
 export class DreamPipeline {
-  constructor({ ctx, runtime, config, getConfig, engine } = {}) {
+  /**
+   * @param {{ctx:object, runtime:{config:object, engine:() => Promise<object>, track:(p:Promise<any>) => any}}} options
+   */
+  constructor({ ctx, runtime } = {}) {
     this.ctx = ctx;
     this.runtime = runtime;
-    this._config = config && typeof config === 'object' ? config : {};
-    this._getConfig = typeof getConfig === 'function' ? getConfig : null;
-    this._engine = engine || null;
-    // Run ids executing in this process, whichever entry point started them
-    // (background start, a synchronous run or the scheduler).
-    this._liveRuns = new Set();
   }
+
+  #activeRuns = new Map();
 
   /** @returns {string[]} run ids a worker in this process is executing now. */
   liveRunIds() {
-    return [...this._liveRuns];
+    return Array.from(this.#activeRuns.values(), ({ runId }) => runId);
   }
 
   get config() {
-    if (this._getConfig) {
-      try {
-        const live = this._getConfig();
-        if (live && typeof live === 'object') return live;
-      } catch {
-        // fall through
-      }
-    }
-    return this._config;
-  }
-
-  async engine() {
-    if (this._engine) return this._engine;
-    if (!this.runtime || typeof this.runtime.engine !== 'function') throw new Error('dream engine unavailable');
-    this._engine = await this.runtime.engine();
-    return this._engine;
-  }
-
-  _stageModel() {
-    const config = this.config;
-    const explicit = { provider: config.dreamAnalyzerProvider, model: config.dreamAnalyzerModel };
-    if (!explicit.provider || !explicit.model) {
-      explicit.provider = config.dreamProvider;
-      explicit.model = config.dreamModel;
-    }
-    return resolveModel(this.ctx, config, explicit);
+    return this.runtime.config;
   }
 
   /**
@@ -389,7 +424,7 @@ export class DreamPipeline {
           ...promptInput,
           maxMemoryChars: Math.min(promptInput.maxMemoryChars, 12_000),
         });
-        const retry = `Compact retry: return only the most durable evidence. Use a one-sentence summary, at most 8 claims and 8 verdicts, and leave patches empty (the host merges claims into pages). Return empty arrays when appropriate.\n\n${compact}`;
+        const retry = `Compact retry: return the requested JSON object. Keep the summary short and preserve the evidence for each claim.\n\n${compact}`;
         stage.retries += 1;
         stats.input += retry.length;
         return retry;
@@ -404,41 +439,41 @@ export class DreamPipeline {
       sessionId: task.sessionId,
       memoryFiles: memoryPages,
       evidenceBlocks: task.unit.evidenceBlocks,
-      maxPatches: Number.MAX_SAFE_INTEGER,
-      maxPatchChars: Number(config.dreamMaxFileChars) || 20_000,
     });
     return { verified };
   }
 
   /**
-   * Start a run in the background and return its id immediately. A second
-   * start for the same project while one is active returns the active id
-   * instead of spawning a competing worker.
+   * The only way a run starts: in the background, returning its id at once.
+   * `done` resolves to the run's result for a caller that waits. A second start
+   * for the same project while one is active returns the active run instead of
+   * spawning a competing worker.
    */
   async start(options = {}) {
     const paths = options.pctx?.paths;
     if (!paths) return { ok: false, started: false, error: 'no-project' };
-    const key = paths.projectDir || paths.memoryDir;
-    const active = this._activeRuns?.get(key);
+    const key = paths.projectDir;
+    const active = this.#activeRuns.get(key);
     if (active) {
-      return { ok: true, started: false, reused: true, runId: active.runId, status: 'running' };
+      return { ok: true, started: false, reused: true, runId: active.runId, status: 'running', done: active.promise };
     }
     const runId = options.runId && options.runId !== '' ? options.runId : newRunId();
     const controller = new AbortController();
     const external = options.signal;
+    const onAbort = () => controller.abort(external.reason);
     if (external) {
       if (external.aborted) controller.abort(external.reason);
-      else external.addEventListener('abort', () => controller.abort(external.reason), { once: true });
+      else external.addEventListener('abort', onAbort, { once: true });
     }
-    this._activeRuns = this._activeRuns || new Map();
-    const promise = this.run({ ...options, runId, signal: controller.signal })
+    const promise = this.#run({ ...options, runId, signal: controller.signal })
       .catch((error) => ({ ran: false, error: errorMessage(error), runId }))
       .finally(() => {
-        if (this._activeRuns?.get(key)?.runId === runId) this._activeRuns.delete(key);
+        external?.removeEventListener('abort', onAbort);
+        this.#activeRuns.delete(key);
       });
-    this._activeRuns.set(key, { runId, controller, promise });
-    if (this.runtime && typeof this.runtime.track === 'function') this.runtime.track(promise);
-    return { ok: true, started: true, runId, status: 'running' };
+    this.#activeRuns.set(key, { runId, controller, promise });
+    this.runtime.track(promise);
+    return { ok: true, started: true, runId, status: 'running', done: promise };
   }
 
   /**
@@ -450,26 +485,36 @@ export class DreamPipeline {
     const config = this.config;
     const input = await gatherDreamInput({
       ctx: this.ctx,
-      store: pctx.store,
       config,
       workspaceDir: pctx.workspaceDir,
       state: pctx.state,
       noSessions: noSessions === true,
-      unboundedSessions: true,
       unitChars: UNIT_CHARS,
     });
-    const memoryPages = await memoryPagesOf(pctx.store);
+    const { pages: memoryPages, errors: memoryErrors } = await memoryPagesOf(pctx.store);
+    const errors = [...(input.errors ?? []), ...memoryErrors];
     const focusText = String(focus ?? '');
     let inputChars = 0;
     let sessions = 0;
+    let units = 0;
+    const ranges = [];
     for (const session of input.sessions) {
-      const units = unitsOf(session);
-      if (text(session?.id) === '' || units.length === 0) continue;
+      const sessionUnits = unitsOf(session);
+      if (text(session?.id) === '' || sessionUnits.length === 0) continue;
       sessions += 1;
-      for (const unit of units) {
+      units += sessionUnits.length;
+      // The estimate pins the range it priced: a session that grows before the
+      // start keeps the confirmed boundary instead of silently adding work.
+      ranges.push({ id: text(session.id), lastSeq: Number(session.maxSeq) || null });
+      for (const unit of sessionUnits) {
         inputChars += promptCharsOf({ sessionId: session.id, session, unit }, memoryPages, focusText, config);
       }
     }
+    if (sessions > 0) inputChars += checkCharsOf(memoryPages);
+    if (noSessions === true && memoryPages.length > 1) {
+      inputChars += TIDY_SYSTEM_PROMPT.length + buildTidyPrompt({ pages: memoryPages, maxChars: UNIT_CHARS * 2 }).length;
+    }
+    const inputId = digestOf(JSON.stringify({ focus: focusText, ranges }));
     return {
       estimatedTokens: estimateInputTokens(inputChars),
       inputChars,
@@ -477,49 +522,40 @@ export class DreamPipeline {
       costMode: dreamCostModeOf(config),
       rough: true,
       sessions,
-      warnings: input.errors ?? [],
+      units,
+      focus: focusText,
+      inputId,
+      ranges,
+      warnings: errors,
     };
   }
 
   /** Wait for an active run to finish; resolves immediately when it is not running. */
-  async settled(pctx, runId = '') {
-    const paths = pctx?.paths;
-    if (!paths) return { ok: false, error: 'no-project' };
-    const key = paths.projectDir || paths.memoryDir;
-    const active = this._activeRuns?.get(key);
-    if (active && (runId === '' || active.runId === runId)) {
-      await active.promise.catch(() => {});
-      return { ok: true, runId: active.runId };
-    }
-    return { ok: true, runId };
-  }
-
   /** Status of one run, or of the newest run for a project. */
   async status(pctx, runId = '') {
     const paths = pctx?.paths;
     if (!paths) return { ok: false, error: 'no-project' };
-    const key = paths.projectDir || paths.memoryDir;
-    const active = this._activeRuns?.get(key);
+    const key = paths.projectDir;
+    const active = this.#activeRuns.get(key);
     const wanted = runId !== '' ? runId : active?.runId || '';
     if (wanted !== '') {
       const manifest = await readRunManifest(runDirOf(paths, wanted));
-      const running = active?.runId === wanted || this._liveRuns.has(wanted);
+      const running = active?.runId === wanted;
       if (manifest) return { ok: true, running, ...summarizeRun(manifest, { running }) };
       if (active?.runId === wanted) return { ok: true, running: true, runId: wanted, status: 'starting', stage: 'prepare' };
       return { ok: false, error: 'unknown-run', runId: wanted };
     }
     const [newest] = await listRunManifests(paths, 1);
     if (!newest) return { ok: true, runId: '', status: 'none' };
-    const running = this._liveRuns.has(newest.manifest?.runId);
-    return { ok: true, running, ...summarizeRun(newest.manifest, { running }) };
+    return { ok: true, running: false, ...summarizeRun(newest.manifest, { running: false }) };
   }
 
   /** Stop an active run. Finished units stay on disk for a later resume. */
   async cancel(pctx, runId = '') {
     const paths = pctx?.paths;
     if (!paths) return { ok: false, error: 'no-project' };
-    const key = paths.projectDir || paths.memoryDir;
-    const active = this._activeRuns?.get(key);
+    const key = paths.projectDir;
+    const active = this.#activeRuns.get(key);
     if (!active) return { ok: false, error: 'not-running', runId };
     if (runId !== '' && active.runId !== runId) return { ok: false, error: 'not-running', runId };
     active.controller.abort(new Error('cancelled by user'));
@@ -534,12 +570,12 @@ export class DreamPipeline {
     const manifest = await readRunManifest(runDirOf(paths, runId));
     if (!manifest) return { ok: false, error: 'unknown-run', runId };
     if (manifest.status === 'done') return { ok: false, error: 'already-done', runId };
-    const key = paths.projectDir || paths.memoryDir;
-    const active = this._activeRuns?.get(key);
+    const key = paths.projectDir;
+    const active = this.#activeRuns.get(key);
     if (active) {
       // A run that just persisted its final status may still be unwinding.
       await active.promise.catch(() => {});
-      const stillActive = this._activeRuns?.get(key);
+      const stillActive = this.#activeRuns.get(key);
       if (stillActive) return { ok: false, error: 'running', runId: stillActive.runId };
     }
     return this.start({
@@ -548,7 +584,6 @@ export class DreamPipeline {
       runId,
       resume: true,
       force: true,
-      dryRun: manifest.dryRun === true,
       trigger: manifest.trigger || 'resume',
       reason: manifest.reason || 'resumed',
     });
@@ -556,34 +591,32 @@ export class DreamPipeline {
 
   /**
    * Run one v2 dream pass.
-   * @param {{pctx:object, agent?:object, force?:boolean, dryRun?:boolean, trigger?:string,
+   * @param {{pctx:object, force?:boolean, trigger?:string,
    *   reason?:string, signal?:AbortSignal, noSessions?:boolean, focus?:string,
    *   runId?:string, resume?:boolean}} options
    */
-  async run({
+  async #run({
     pctx,
-    agent,
     force = false,
-    dryRun = false,
     trigger = 'manual',
     reason = '',
     signal,
     noSessions = false,
     focus = '',
-    runId: requestedRunId = '',
+    runId: runRunId,
     resume = false,
+    inputId = '',
+    inputRanges = null,
   } = {}) {
     const startedAt = Date.now();
     const config = this.config;
     const base = {
       ran: false,
-      applied: false,
-      rolledBack: false,
-      mode: config.dreamMode === 'review' ? 'review' : 'apply',
-      dryRun: dryRun === true,
+      ready: false,
+      skipped: false,
       summary: '',
-      operations: 0,
-      filesTouched: 0,
+      counts: { added: 0, changed: 0, removed: 0 },
+      files: [],
       sessionsReviewed: 0,
       startedAt,
     };
@@ -593,79 +626,48 @@ export class DreamPipeline {
     const state = pctx?.state;
     const paths = pctx?.paths;
     if (!store || !state || !paths) return finish({ skipped: true, skipReason: 'no-project', error: 'no-project' });
-    // A requested run id means the caller already holds this run's identity
-    // (start/resume). Record the skip so `dream status` can explain it.
     const skip = async (extra) => {
-      if (requestedRunId !== '') {
-        const dir = runDirOf(paths, requestedRunId);
-        // A resume that cannot start keeps the stopped run's record (status,
-        // units, counts) so it can still be resumed once the blocker clears.
-        const existing = resume === true ? await readRunManifest(dir) : null;
-        const manifest = existing
-          ? { ...existing, skipReason: extra.skipReason, updatedAt: Date.now() }
-          : {
-            runId: requestedRunId,
-            projectId: paths.projectDirName || paths.projectId || '',
-            status: 'skipped',
-            stage: 'prepare',
-            trigger,
-            reason,
-            dryRun: dryRun === true,
-            startedAt,
-            updatedAt: Date.now(),
-            finishedAt: Date.now(),
-            skipReason: extra.skipReason,
-            error: text(extra.error),
-          };
-        await writeRunManifest(dir, shapeManifest(manifest)).catch((error) => warn('write run manifest', error));
-      }
-      return finish({ ...extra, skipped: true, runId: requestedRunId });
+      const dir = runDirOf(paths, runRunId);
+      // Keep a stopped run's record when a resume is blocked.
+      const existing = resume ? await readRunManifest(dir) : null;
+      const manifest = existing
+        ? { ...existing, skipReason: extra.skipReason, updatedAt: Date.now() }
+        : {
+          runId: runRunId,
+          projectId: paths.projectDirName || paths.projectId || '',
+          status: 'skipped',
+          stage: 'prepare',
+          trigger,
+          reason,
+          dryRun: false,
+          startedAt,
+          updatedAt: Date.now(),
+          finishedAt: Date.now(),
+          skipReason: extra.skipReason,
+          error: text(extra.error),
+        };
+      await writeRunManifest(dir, shapeManifest(manifest)).catch((error) => warn('write run manifest', error));
+      return finish({ ...extra, skipped: true, runId: runRunId });
     };
     if (signal?.aborted) return skip({ skipReason: 'aborted' });
     if (config.enabled === false) return skip({ skipReason: 'disabled' });
     if (config.autoMemoryEnabled === false) return skip({ skipReason: 'auto-memory-disabled' });
-    if (!force) {
-      // Probe-only sessions are not conversations; drop them before the
-      // minSessions gate so a few health checks cannot wake Dream.
-      try {
-        await pruneProbeSessions({ ctx: this.ctx, state });
-      } catch (error) {
-        warn('prune probe sessions', error);
-      }
-    }
-
-    const snapshot = typeof state.snapshot === 'function' ? state.snapshot() : {};
-    if (typeof snapshot.pendingProposal === 'string' && snapshot.pendingProposal !== '') {
-      return skip({ skipReason: 'pending-proposal', proposalPath: snapshot.pendingProposal });
-    }
-    if (!force) {
-      const lastDreamAt = Number(snapshot.lastDreamAt) || 0;
-      const minHours = Number(config.minHours) || 0;
-      if (lastDreamAt > 0 && Date.now() - lastDreamAt < minHours * 60 * 60 * 1000) {
-        return skip({ skipReason: 'hours', lastDreamAt });
-      }
-      const sessions = Array.isArray(snapshot.sessionsSince) ? snapshot.sessionsSince : [];
-      const distinct = new Set(sessions.map((item) => (typeof item === 'string' ? item : item?.id)).filter(Boolean));
-      const minSessions = Number(config.minSessions) || 0;
-      if (distinct.size < minSessions) {
-        return skip({ skipReason: 'sessions', sessionsSince: distinct.size, minSessions });
-      }
-    }
-
-    const runRunId = requestedRunId !== '' ? requestedRunId : newRunId(startedAt);
-    const lock = await acquireLock(paths.lockFile, Number(config.lockTtlMs) || LOCK_TTL_MS, {
+    const lock = await acquireLock(paths.lockFile, config.lockTtlMs, {
       runId: runRunId,
-      takeOverRunId: resume === true ? runRunId : '',
+      takeOverRunId: resume ? runRunId : '',
     });
-    if (!lock.ok) return skip({ skipReason: 'lock', lockAgeMs: lock.age, runId: lock.runId || '' });
-    this._liveRuns.add(runRunId);
+    if (!lock.ok) {
+      const blocked = { skipReason: 'lock', lockAgeMs: lock.age };
+      // An active worker owns this manifest, so a blocked resume cannot write it.
+      if (lock.runId === runRunId) return finish({ ...blocked, skipped: true, runId: runRunId });
+      return skip(blocked);
+    }
 
     let failure = true;
     const runDir = runDirOf(paths, runRunId);
     let manifestWrites = Promise.resolve();
     let failureManifest = null;
     let stage = 'prepare';
-    let plan = null;
     let usage = null;
     let inputChars = 0;
     let outputChars = 0;
@@ -679,7 +681,7 @@ export class DreamPipeline {
       projectId: paths.projectDirName || paths.projectId || '',
       trigger,
       reason,
-      dryRun: dryRun === true,
+      dryRun: false,
       startedAt,
       updatedAt: startedAt,
       status: 'running',
@@ -703,28 +705,41 @@ export class DreamPipeline {
       await manifestWrites;
       return runManifest;
     };
-    const priorManifest = resume === true ? await readRunManifest(runDir) : null;
-    if (priorManifest && typeof priorManifest === 'object') {
-      runManifest = shapeManifest({
-        ...priorManifest,
-        runId: runRunId,
-        status: 'running',
-        stage: 'prepare',
-        startedAt,
-        finishedAt: 0,
-        error: '',
-        blockedReason: '',
-        updatedAt: startedAt,
-      });
-    }
-    await saveManifest();
-
-    // Claim-level merge is the default: the host places every verified claim
-    // command, where a whole-library rewrite is the point.
-
     try {
-      if (typeof state.markDreamStart === 'function') await state.markDreamStart();
-      modelAnalyzer = this._stageModel('analyzer');
+      const snapshot = await state.read();
+      if (force && snapshot.shadowPending) {
+        return await skip({ skipReason: 'pending-switch', shadow: snapshot.shadowPending });
+      }
+      if (!force) {
+        const readiness = dreamReadiness(pctx, { config, checkLock: false });
+        const blocking = readiness.reasons.find(({ code }) => code !== 'min-sessions');
+        if (blocking) return await skip({ skipReason: blocking.code });
+        // Probe-only sessions must not count toward the automatic trigger.
+        await pruneProbeSessions({ ctx: this.ctx, state });
+        const afterPrune = dreamReadiness(pctx, { config, checkLock: false });
+        if (!afterPrune.eligible) return await skip({ skipReason: afterPrune.reasons[0].code });
+        await state.noteScan();
+      }
+      const priorManifest = resume === true ? await readRunManifest(runDir) : null;
+      if (priorManifest && typeof priorManifest === 'object') {
+        runManifest = shapeManifest({
+          ...priorManifest,
+          runId: runRunId,
+          status: 'running',
+          stage: 'prepare',
+          startedAt,
+          finishedAt: 0,
+          error: '',
+          blockedReason: '',
+          updatedAt: startedAt,
+        });
+      }
+      await saveManifest();
+      await state.markDreamStart();
+      modelAnalyzer = resolveModel(this.ctx, {
+        provider: config.dreamAnalyzerProvider,
+        model: config.dreamAnalyzerModel,
+      });
       if (!modelAnalyzer) {
         failure = false;
         await saveManifest({ status: 'skipped', skipReason: 'llm-unavailable', finishedAt: Date.now() });
@@ -735,21 +750,61 @@ export class DreamPipeline {
       await saveManifest({ stage, status: 'running' });
       const input = await gatherDreamInput({
         ctx: this.ctx,
-        store,
         config,
         workspaceDir: pctx.workspaceDir,
         state,
         noSessions: noSessions === true,
-        unboundedSessions: true,
         unitChars: UNIT_CHARS,
       });
-      const memoryPages = await memoryPagesOf(store);
+      const { pages: memoryPages, errors: memoryErrors } = await memoryPagesOf(store);
+      if (memoryErrors.length > 0) input.errors.push(...memoryErrors);
+      // v23: the estimate pins the range it priced. Sessions that grew (or
+      // appeared) between the estimate and the start must not change the work
+      // the user confirmed; a rewrite inside the pinned range is a stale input.
+      if (text(inputId) !== '') {
+        const pinned = Array.isArray(inputRanges) ? inputRanges : [];
+        const limits = new Map(pinned.map((range) => [text(range?.id), Number(range?.lastSeq)]));
+        const kept = [];
+        for (const session of input.sessions) {
+          const id = text(session?.id);
+          if (!limits.has(id)) continue;
+          const limitSeq = limits.get(id);
+          if (!Number.isFinite(limitSeq)) {
+            kept.push(session);
+            continue;
+          }
+          const units = unitsOf(session).filter((unit) => Number(unit.lastSeq) <= limitSeq);
+          if (units.length === 0) continue;
+          kept.push({ ...session, chunks: units, maxSeq: limitSeq });
+        }
+        const actual = digestOf(JSON.stringify({
+          focus: String(focus ?? ''),
+          ranges: kept.map((session) => ({ id: text(session.id), lastSeq: Number(session.maxSeq) || null })),
+        }));
+        if (actual !== inputId) {
+          failure = false;
+          await saveManifest({
+            status: 'skipped',
+            skipReason: 'input-changed',
+            error: 'the sessions changed since the estimate; run a new estimate before starting',
+            finishedAt: Date.now(),
+          });
+          return finish({
+            ok: false,
+            skipped: true,
+            error: 'stale-input',
+            skipReason: 'input-changed',
+            inputId: text(inputId),
+            runId: runRunId,
+          });
+        }
+        input.sessions = kept;
+      }
       const memoryChars = memoryPages.reduce((sum, page) => sum + page.body.length, 0);
       inputChars += memoryChars;
 
       const sessionIds = [];
       const reads = [];
-      const readMarks = new Map((Array.isArray(input.reads) ? input.reads : []).map((read) => [read.id, read]));
       const tasks = [];
       const expectedUnits = new Map();
       const manifestSessions = [];
@@ -765,7 +820,7 @@ export class DreamPipeline {
         if (usable.length === 0) continue;
         sessionIds.push(id);
         expectedUnits.set(id, usable.length);
-        reads.push({ id, seq: Number(readMarks.get(id)?.seq) || 0, complete: false });
+        reads.push({ id, seq: 0, complete: false });
         const record = { id, baseSeq: Number(session.baseSeq) || 0, lastSeq: Number(session.maxSeq) || null, units: [] };
         for (const unit of usable) {
           const unitId = unitIdOf({ sessionId: id, firstSeq: unit.firstSeq, lastSeq: unit.lastSeq, text: unit.text });
@@ -803,7 +858,8 @@ export class DreamPipeline {
       tokenLimit = maxTotalTokensLimit(config);
       estimatedTokens = estimateInputTokens(tasks
         .filter((task) => unitState.get(task.unitId)?.status !== 'done')
-        .reduce((sum, task) => sum + promptCharsOf(task, memoryPages, focus, config), 0));
+        .reduce((sum, task) => sum + promptCharsOf(task, memoryPages, focus, config), 0)
+        + (tasks.length > 0 ? checkCharsOf(memoryPages) : 0));
       if (costMode === 'block' && tokenLimit > 0 && estimatedTokens > tokenLimit) {
         failure = false;
         const message = `estimated ${estimatedTokens} tokens > limit ${tokenLimit} (dreamCostMode=block); no model was called`;
@@ -845,13 +901,12 @@ export class DreamPipeline {
       countUnits = countUnitsForRun;
       const applyVerified = (task, verified, meta = {}) => {
         if (!analyses.has(task.sessionId)) {
-          analyses.set(task.sessionId, { sessionId: task.sessionId, summary: '', claims: [], patches: [], verify: [], warnings: [] });
+          analyses.set(task.sessionId, { sessionId: task.sessionId, summary: '', claims: [], retire: [], warnings: [] });
         }
         const row = analyses.get(task.sessionId);
         row.summary = [row.summary, verified.summary].filter(Boolean).join(' ').trim();
         row.claims.push(...verified.claims);
-        row.patches.push(...verified.patches);
-        row.verify.push(...verified.verify);
+        row.retire.push(...(Array.isArray(verified.retire) ? verified.retire : []));
         row.warnings.push(...verified.warnings);
         row.lastSeq = Math.max(row.lastSeq ?? 0, task.unit.lastSeq ?? 0);
         row.units = (row.units || 0) + 1;
@@ -933,7 +988,7 @@ export class DreamPipeline {
             stateRow.error = reason;
           }
           analyzerStage.failures.push({ sessionId: task.sessionId, unitId: task.unitId, error: reason });
-          const row = analyses.get(task.sessionId) || { sessionId: task.sessionId, summary: '', claims: [], patches: [], verify: [], warnings: [], failures: 0 };
+          const row = analyses.get(task.sessionId) || { sessionId: task.sessionId, summary: '', claims: [], retire: [], warnings: [], failures: 0 };
           row.failures = (row.failures || 0) + 1;
           analyses.set(task.sessionId, row);
           await saveManifest({
@@ -944,13 +999,13 @@ export class DreamPipeline {
         }
       });
       analyzerStage.durationMs = Date.now() - analyzerStarted;
-      // A stop must not slide into the merge and apply a partial plan.
+      // A stop must not slide into the merge and write a partial copy.
       if (signal?.aborted) {
         const aborted = new Error('cancelled by user');
         aborted.name = 'AbortError';
         throw aborted;
       }
-      if (analyzerStage.calls === 0 && sessionIds.length === 0 && !input.deferredSessions?.length && !noSessions) {
+      if (analyzerStage.calls === 0 && sessionIds.length === 0 && input.deferredSessions.length === 0 && !noSessions) {
         // This run already owns its manifest (a sync run has no requested id),
         // so close it here or it would read as interrupted forever.
         await saveManifest({ status: 'skipped', skipReason: 'nothing-new', finishedAt: Date.now(), counts: countUnits() });
@@ -961,7 +1016,7 @@ export class DreamPipeline {
       // Merge per-session results and build coverage.
       const merged = [];
       const failedSessions = [];
-      const partialSessions = [...(input.deferredSessions ?? [])];
+      const partialSessions = [...input.deferredSessions];
       for (const sessionId of sessionIds) {
         const row = analyses.get(sessionId);
         if (!row || !row.units) {
@@ -980,17 +1035,41 @@ export class DreamPipeline {
             sessionId,
             summary: row.summary,
             claims: mergeUnique(row.claims, (item) => item.text),
-            patches: row.patches,
-            verify: row.verify,
+            verify: [],
+            retire: mergeUnique(row.retire ?? [], (item) => item.file),
             warnings: row.warnings,
           });
         } else {
           partialSessions.push(sessionId);
         }
       }
+      // A memory-only run reads no conversation: one tidy call looks for pages
+      // that cover the same topic and proposes folding one into the other.
+      const tidyStage = { name: 'tidy', model: analyzerStage.model, calls: 0, failures: [], durationMs: 0 };
       if (noSessions) {
         merged.length = 0;
         reads.length = 0;
+        const tidyStarted = Date.now();
+        if (memoryPages.length > 1) {
+          const prompt = buildTidyPrompt({ pages: memoryPages, maxChars: UNIT_CHARS * 2 });
+          tidyStage.calls += 1;
+          inputChars += TIDY_SYSTEM_PROMPT.length + prompt.length;
+          const reply = await streamText({
+            ctx: this.ctx,
+            model: modelAnalyzer,
+            system: TIDY_SYSTEM_PROMPT,
+            prompt,
+            signal,
+            maxTokens: Number(config.dreamAnalyzerMaxTokens) || 8192,
+            purpose: 'cc-memory-dream-tidy',
+            onUsage: (attemptUsage) => { usage = mergeUsage(usage, attemptUsage); },
+          });
+          outputChars += reply.text.length;
+          const retire = parseTidyReply(reply.text);
+          if (!retire) throw new Error('tidy reply was not JSON');
+          if (retire.length > 0) merged.push({ sessionId: '', summary: '', claims: [], verify: [], retire, warnings: [] });
+        }
+        tidyStage.durationMs = Date.now() - tidyStarted;
       }
 
       // Persist per-session analysis artifacts for replay and debugging.
@@ -1000,16 +1079,66 @@ export class DreamPipeline {
       }
 
       // Preserve analyzer diagnostics even when the merge produced nothing.
-      const expectedSessions = sessionIds.length + (input.deferredSessions?.length ?? 0);
+      const expectedSessions = sessionIds.length + input.deferredSessions.length;
       failureManifest = {
         startedAt,
-        dryRun: dryRun === true,
+        dryRun: false,
         expected: expectedSessions,
         processed: merged.length,
         failed: failedSessions,
         partial: partialSessions,
         stages: [analyzerStage],
       };
+      // Check: compare the claims with the saved lines of the pages they target.
+      // A failed check call leaves those pages unconfirmed; it never blocks the run.
+      const checkStage = { name: 'check', model: analyzerStage.model, calls: 0, failures: [], durationMs: 0 };
+      const checkWarnings = [];
+      const checkStarted = Date.now();
+      const { claims: claimsById, batches } = checkBatches(merged, memoryPages);
+      stage = 'check';
+      for (const batch of batches) {
+        if (signal?.aborted) break;
+        const prompt = buildCheckPrompt({ pages: batch.pages, claims: batch.claims });
+        checkStage.calls += 1;
+        inputChars += CHECK_SYSTEM_PROMPT.length + prompt.length;
+        try {
+          const reply = await streamText({
+            ctx: this.ctx,
+            model: modelAnalyzer,
+            system: CHECK_SYSTEM_PROMPT,
+            prompt,
+            signal,
+            maxTokens: Number(config.dreamAnalyzerMaxTokens) || 8192,
+            purpose: 'cc-memory-dream-check',
+            onUsage: (attemptUsage) => { usage = mergeUsage(usage, attemptUsage); },
+          });
+          outputChars += reply.text.length;
+          const verdicts = parseCheckReply(reply.text);
+          if (!verdicts) throw new Error('check reply was not JSON');
+          const batchIds = new Set(batch.claims.map((claim) => claim.id));
+          const checked = verifyCheck({
+            verdicts: verdicts.filter((verdict) => batchIds.has(verdict.claim)),
+            pages: batch.pages,
+            claims: claimsById,
+          });
+          checkWarnings.push(...checked.warnings);
+          for (const item of checked.verify) {
+            merged.find((analysis) => analysis.sessionId === item.sessionId)?.verify.push(item);
+          }
+        } catch (error) {
+          const reason = oneLine(errorMessage(error), 300);
+          checkStage.failures.push({ files: batch.pages.map((page) => page.file), error: reason });
+          checkWarnings.push(`check of ${batch.pages.map((page) => page.file).join(', ')} failed: ${reason}`);
+        }
+      }
+      checkStage.durationMs = Date.now() - checkStarted;
+      failureManifest.stages.push(checkStage, ...(noSessions ? [tidyStage] : []));
+      if (signal?.aborted) {
+        const aborted = new Error('cancelled by user');
+        aborted.name = 'AbortError';
+        throw aborted;
+      }
+
       const secretWarningsList = [];
       let operations = [];
       let reviewItems = [];
@@ -1022,6 +1151,8 @@ export class DreamPipeline {
         memoryPages,
         indexText: '',
         title: '',
+        allowLowConfidence: true,
+        rejected: (await state.read()).dreamRejected,
       });
       operations = mergedResult.operations;
       reviewItems = mergedResult.review;
@@ -1035,31 +1166,25 @@ export class DreamPipeline {
         if (decision.block) {
           throw new Error(`secret scan refused ${op.file}: a credential-like value would be persisted`);
         }
+        if (decision.warn === true) secretWarningsList.push(...secretWarnings(scanSecrets(op.body).matches));
       }
       organizerCounts.writes = operations.filter((op) => op.op === 'write').length;
       organizerCounts.indexEntries = operations.filter((op) => op.op === 'index').length;
       summaryText = operations.length > 0
-        ? `${merged.length} session(s) placed ${organizerCounts.writes} page change(s); ${reviewItems.length} item(s) need review`
+        ? `${merged.length} session(s) placed ${organizerCounts.writes} page change(s)${reviewItems.length > 0 ? `; ${reviewItems.length} claim(s) left for review` : ''}`
         : 'nothing new to remember';
 
-      // Final write gate: new lines must be backed by claims the
-      // analyzer actually verified. Pure consolidation (no transcripts read)
-      // has no fresh evidence and is exempt.
-      const evidence = buildEvidence(merged);
-      let evidenceWarnings = [];
-      // Pure consolidation has no fresh evidence, but moving an existing line is
-      // allowed; a genuinely new fact still needs a verified citation. Partial
-      // coverage is blocked before apply, so it keeps its preview path.
-      if (noSessions || (merged.length > 0 && failedSessions.length === 0 && partialSessions.length === 0)) {
-        const checked = checkWriteOperations({ operations, currentPages: memoryPages, evidence });
-        if (checked.dropped.length > 0) {
-          const error = new Error(`EVIDENCE_REJECTED: ${checked.dropped.slice(0, 5).join('; ')}`);
-          error.code = 'EVIDENCE_REJECTED';
-          error.dropped = checked.dropped;
-          throw error;
-        }
-        operations = checked.operations;
-        evidenceWarnings = checked.warnings;
+      // Evidence findings annotate the draft. Only supported writes may
+      // receive a host verification stamp.
+      const checked = checkWriteOperations({ operations, currentPages: memoryPages, evidence: buildEvidence(merged) });
+      const eligibleForStamp = new Set(checked.operations.filter(({ op }) => op === 'write').map(({ file }) => file));
+      const hasLowConfidence = merged.some((session) => session.claims.some((claim) => claim.confidence === 'low'));
+      const evidenceWarnings = [...checked.dropped, ...mergedResult.review.map(({ file, reason }) => file ? `${file}: ${reason}` : reason)];
+      if (hasLowConfidence || evidenceWarnings.length > 0) {
+        const reviewNotes = [];
+        if (hasLowConfidence) reviewNotes.push('includes low-confidence suggestions');
+        if (evidenceWarnings.length > 0) reviewNotes.push(`${evidenceWarnings.length} warning(s), first: ${oneLine(evidenceWarnings[0], 175)}`);
+        summaryText = `Review required: ${reviewNotes.join('; ')}. ${summaryText}`;
       }
 
       // Host-only verification stamp. A page qualifies only when *every* cited
@@ -1083,7 +1208,7 @@ export class DreamPipeline {
       if (verifiedClaims.length > 0) {
         const stampDate = new Date().toISOString().slice(0, 10);
         operations = operations.map((op) => {
-          if (op.op !== 'write') return op;
+          if (op.op !== 'write' || !eligibleForStamp.has(op.file)) return op;
           const claims = verifiedClaims.filter((item) => item.file === op.file);
           if (claims.length === 0 || !pageFullyVerified(op.body, claims)) return op;
           verifiedFiles.push(op.file);
@@ -1091,49 +1216,25 @@ export class DreamPipeline {
         });
       }
 
-      const validation = validateDreamPlan(
-        { summary: summaryText || `dream: ${operations.length} operation(s)`, operations },
-        {
-          config,
-          existingFiles: memoryPages.map((page) => ({ file: page.file, name: page.name, scope: 'project' })),
-          truncatedFiles: input.truncatedFiles,
-        },
-      );
-      if (!validation.ok) throw new Error(`invalid dream v2 plan: ${validation.error ?? 'unknown error'}`);
-      const coverageComplete = merged.length === expectedSessions && failedSessions.length === 0
-        && partialSessions.length === 0 && validation.dropped.length === 0 && (input.errors?.length ?? 0) === 0;
-      plan = {
-        ...validation.plan,
-        kind: 'dream-v2',
-        coverageVersion: 1,
-        coverageComplete,
-        createdAt: new Date().toISOString(),
-        dryRun: dryRun === true,
-        applied: false,
-        trigger,
-        reason,
-        verifiedFiles: [...new Set(verifiedFiles)],
-        // The verdict text each stamped fact was checked against; the apply
-        // layer re-checks the stored page against it before recording a
-        // verification, because the page also carries facts no verdict covered.
-        verifiedClaims: verifiedClaims.filter((item) => verifiedFiles.includes(item.file)),
-        provider: modelAnalyzer.provider,
-        model: modelAnalyzer.model,
-        sessions: [...sessionIds, ...(input.deferredSessions ?? [])],
-        reads: reads.filter((read) => read.complete === true),
-        droppedSessions: input.droppedSessions || [],
-        expectedSessions,
-        processedSessions: merged.length,
-        failedSessions,
-        partialSessions,
-        analysis: [...analyses.values()].map((row) => ({ ...row, patches: undefined })),
-        evidence,
-        evidenceWarnings,
-        evidenceRequired: merged.length > 0,
-        review: reviewItems,
-        warnings: [...(input.errors || []), ...analyzerStage.failures.map((failure) => `${failure.sessionId}: ${failure.error}`), ...secretWarningsList],
-        dropped: validation.dropped,
-      };
+      const warnings = [
+        ...(input.errors || []),
+        ...analyzerStage.failures.map((failure) => `${failure.sessionId}: ${failure.error}`),
+        ...checkWarnings,
+        ...secretWarningsList,
+        ...evidenceWarnings,
+      ];
+
+      // Cost is judged on what the run actually spent, before anything is
+      // written into the copy.
+      const cost = costLimitStatus(config, usage);
+      const costExceeded = cost.exceeded === true;
+      if (costExceeded) {
+        warnings.push(`cost-limit-exceeded: totalTokens ${cost.totalTokens} > limit ${cost.limit} (dreamCostMode=${costMode})`);
+      }
+      const coverageComplete = merged.length === expectedSessions
+        && failedSessions.length === 0
+        && partialSessions.length === 0
+        && (input.errors?.length ?? 0) === 0;
 
       const manifestBase = {
         kind: 'dream',
@@ -1141,7 +1242,6 @@ export class DreamPipeline {
         trigger,
         startedAt,
         finishedAt: 0,
-        dryRun: dryRun === true,
         expected: expectedSessions,
         coverageComplete,
         processed: merged.length,
@@ -1155,303 +1255,225 @@ export class DreamPipeline {
           indexEntries: organizerCounts.indexEntries,
           merge: 'host',
         },
-        stages: [analyzerStage],
-        operations: plan.operations.length,
-        dropped: validation.dropped,
+        stages: [analyzerStage, checkStage, ...(noSessions ? [tidyStage] : [])],
+        operations: operations.length,
+        warnings,
         applied: false,
       };
 
-      // Usage and cost travel with the plan so preview and a later apply report them.
-      const cost = costLimitStatus(config, usage);
-      const costExceeded = cost.exceeded === true;
-      Object.assign(plan, {
-        durationMs: Date.now() - startedAt,
-        inputChars,
-        outputChars,
-        usage,
-        costMode,
-        estimatedTokens,
-        limit: tokenLimit,
-        ...(costExceeded ? { costExceeded: true } : {}),
-      });
-      if (cost.warning !== '') plan.warnings.push(cost.warning);
-      const dreamMetrics = { durationMs: plan.durationMs, inputChars, outputChars, usage };
-      await recordDreamEvent(paths, { event: 'proposed', ops: plan.operations.length, planOps: plan.operations.length });
-      if (costExceeded) await state.noteCostExceeded?.(true);
-
-      // `block` refuses a plan whose real usage went over the limit: nothing is
-      // applied and the plan stays in the run folder for inspection only.
-      if (costExceeded && costMode === 'block' && !dryRun) {
+      // A blocked run writes nothing: the cost guard stops after the model has
+      // already answered, and a pending copy must not be produced then.
+      if (costExceeded && costMode === 'block') {
         const message = `cost-limit: totalTokens ${cost.totalTokens} > limit ${cost.limit} (dreamCostMode=block); nothing was applied`;
-        const planPath = path.join(runDir, 'plan.json');
-        const manifest = await saveManifest({
+        const blockedManifest = await saveManifest({
           ...manifestBase,
           stage: 'blocked',
           status: 'blocked',
           finishedAt: Date.now(),
-          planPath,
-          coverageComplete,
+          coverageComplete: false,
           counts: countUnits(),
           blockedReason: message,
           error: message,
         });
-        await writeJson(planPath, { ...plan, applied: false, manifest, blocked: true, blockedReason: message });
         await state.markDreamFailed(message);
-        await recordDreamEvent(paths, { event: 'failed', ...dreamMetrics, planOps: plan.operations.length, dropped: validation.dropped.length, rollback: false });
+        await state.noteCostExceeded(true);
+        await recordDreamEvent(paths, {
+          event: 'failed',
+          durationMs: Date.now() - startedAt,
+          inputChars,
+          outputChars,
+          usage,
+          planOps: operations.length,
+          rollback: false,
+        });
         failure = false;
         return finish({
           ok: false,
           ran: true,
-          applied: false,
+          ready: false,
           error: 'cost-limit',
           costExceeded: true,
           costMode,
           estimatedTokens,
           limit: cost.limit,
           totalTokens: cost.totalTokens,
-          blockedPlanPath: planPath,
-          summary: plan.summary,
+          summary: summaryText,
           sessionsReviewed: merged.length,
           runId: runRunId,
-          manifest,
-          warnings: plan.warnings,
+          manifest: blockedManifest,
+          warnings,
         });
       }
 
-      const coverageError = dreamV2CoverageError(plan);
-      if (dryRun || coverageError) {
-        const planPath = path.join(runDir, 'plan.json');
-        // A unit that ran out of retries is a failed run, not a plan the user
-        // simply cannot apply yet: resuming retries only those units.
-        const failedSessions = Array.isArray(plan.failedSessions) ? plan.failedSessions.length : 0;
-        const failedUnits = countUnits().failed;
-        const failedRun = !dryRun && failedUnits > 0;
-        const runStatus = failedRun ? 'failed' : coverageError ? 'blocked' : 'ready';
-        const manifest = await saveManifest({
+      // Every change waits for the human anyway, so a run offers what its
+      // completed sessions found. Failed, partial and deferred sessions keep
+      // their watermark and are read again next time. Only a run that
+      // completed nothing and failed somewhere stops here.
+      const unfinished = failedSessions.length + partialSessions.length;
+      if (unfinished > 0) {
+        warnings.push(`${unfinished} session(s) not finished in this run; they stay unread for the next one`);
+      }
+      if (merged.length === 0 && (failedSessions.length > 0 || analyzerStage.failures.length > 0)) {
+        const failedUnits = analyzerStage.failures.length;
+        const cause = analyzerStage.failures[0]?.error;
+        const message = cause
+          ? `${failedUnits} unit(s) failed: ${cause}`
+          : `${failedSessions.length + partialSessions.length} session(s) still need analysis`;
+        const failedManifest = await saveManifest({
           ...manifestBase,
-          stage: failedRun ? 'analyze' : coverageError ? 'blocked' : 'ready',
-          status: runStatus,
+          stage: 'analyze',
+          status: 'failed',
           finishedAt: Date.now(),
-          planPath,
-          coverageComplete,
+          coverageComplete: false,
           counts: countUnits(),
-          blockedReason: coverageError || '',
-          failedStage: failedRun ? 'analyze' : '',
-          error: failedRun
-            ? `${failedUnits} unit(s) failed; /memory dream resume ${runRunId} retries only those units`
-            : '',
+          error: message,
         });
-        await writeJson(planPath, {
-          ...plan,
-          applied: false,
-          manifest,
-          ...(coverageError ? { blocked: true, blockedReason: coverageError } : {}),
-        });
-        await state.setLastPlan(planPath, 'dry-run');
-        await state.clearDreamError();
+        await state.markDreamFailed(message);
         failure = false;
         return finish({
+          ok: false,
           ran: true,
-          applied: false,
-          dryRun: dryRun === true,
-          mode: 'apply',
-          summary: plan.summary,
-          operations: plan.operations.length,
-          filesTouched: 0,
+          ready: false,
+          error: message,
+          summary: summaryText,
           sessionsReviewed: merged.length,
           runId: runRunId,
-          planPath,
-          backupDir: runDir,
-          manifest,
-          ...(coverageError && !dryRun ? { error: coverageError } : {}),
-          usage,
-          inputChars,
-          outputChars,
-          review: plan.review ?? [],
-          provider: modelAnalyzer.provider,
-          model: modelAnalyzer.model,
-          warnings: plan.warnings,
+          manifest: failedManifest,
+          warnings,
         });
       }
 
-      // Review mode can also be requested by config; dry-run is checked first.
-      if (wantsReview(config) || (costExceeded && costMode === 'review')) {
-        const proposalPath = path.join(paths.pendingDir, `${timestampName(Date.now())}.json`);
+      // Only sessions this run finished move their watermark.
+      const completedIds = merged.map((analysis) => analysis.sessionId).filter(Boolean);
+
+      // Write the merged pages into a copy of the memory directory. A run never
+      // edits the live notes: it ends with a pending copy that the human either
+      // switches to or throws away.
+      stage = 'shadow';
+      const { shadowStore, base } = await prepareShadow({ store, paths, config });
+      const shadowed = await applyShadowOperations({ shadowStore, operations });
+      const diff = await diffShadow({ store, shadowStore });
+      const pageSummary = summaryText || `dream: ${operations.length} page change(s)`;
+      const finishedAt = Date.now();
+      if (diff.files.length === 0) {
+        await clearShadow(paths);
         const manifest = await saveManifest({
           ...manifestBase,
-          stage: 'review',
-          status: 'review',
-          finishedAt: Date.now(),
-          planPath: proposalPath,
+          stage: 'done',
+          status: 'skipped',
+          skipReason: 'nothing-new',
+          finishedAt,
+          applied: false,
           coverageComplete,
           counts: countUnits(),
-          error: '',
         });
-        // Keep plan.review (the claims left for a person) instead of a boolean
-        // `review` flag, which nothing reads.
-        await writeJson(proposalPath, { ...plan, manifest });
-        await state.setPendingProposal(proposalPath);
-        failure = false;
-        return finish({
-          ran: true,
-          applied: false,
-          mode: 'review',
-          summary: plan.summary,
-          proposalPath,
-          runId: runRunId,
-          manifest,
-          ...(costExceeded ? { costExceeded: true, reviewReason: 'cost-limit' } : {}),
-          warnings: plan.warnings,
-        });
-      }
-
-      const engine = await this.engine();
-      if (signal?.aborted) {
-        const aborted = new Error('cancelled by user');
-        aborted.name = 'AbortError';
-        throw aborted;
-      }
-      stage = 'apply';
-      const execution = await engine.executePlan({
-        store,
-        paths,
-        plan,
-        config,
-        operations: plan.operations,
-        skill: '',
-        changelog: {
-          at: Date.now(),
-          trigger,
-          sessions: sessionIds.length,
-          summary: plan.summary,
-          notes: '',
-          dropped: validation.dropped,
-          durationMs: Date.now() - startedAt,
+        await state.markDreamDone({
+          sessions: merged.length,
+          ops: 0,
+          files: 0,
+          summary: pageSummary,
+          mode: 'shadow',
+          durationMs: finishedAt - startedAt,
           inputChars,
           outputChars,
           usage,
           costExceeded,
-          costMode: config.dreamCostMode || 'warn',
-        },
-        meta: {
-          kind: 'dream-v2',
-          planOps: plan.operations.length,
-          summary: plan.summary,
-          // Session ids, not a count: undo reopens exactly these sessions.
-          sessions: [...sessionIds],
-          durationMs: Date.now() - startedAt,
-          inputChars,
-          outputChars,
-          usage,
-          costExceeded,
-          costMode: config.dreamCostMode || 'warn',
-          trigger,
-        },
-      });
-
-      // A page edited after the plan was built is a conflict the user must
-      // resolve, not a write to force: report it and keep the run resumable.
-      if (execution && execution.ok === false && execution.error === 'conflict') {
-        const error = new Error('a memory page changed since this plan was built; run a fresh dream');
-        error.code = 'CONFLICT';
-        error.conflicts = execution.conflicts;
-        throw error;
+        });
+        await state.clearSessions(completedIds, { reads: reads.filter((read) => completedIds.includes(read.id)) });
+        failure = false;
+        return finish({
+          ok: true,
+          ran: true,
+          ready: false,
+          skipped: true,
+          skipReason: 'nothing-new',
+          summary: pageSummary,
+          sessionsReviewed: merged.length,
+          runId: runRunId,
+          manifest,
+          warnings,
+        });
       }
-
-      // SKILL.md is applied inside executePlan so it shares the batch backup and
-      // undo metadata with the notes and index.
-      // Only sessions this run actually read may move their watermark; a session
-    // dropped from the input stays in `sessionsSince` so its turns are not lost.
-    await state.clearSessions(sessionIds, { reads });
-      await recordDreamEvent(paths, {
-        event: 'applied',
-        ops: execution.counts.write + execution.counts.delete + execution.counts.index,
-        ...dreamMetrics,
-        planOps: plan.operations.length,
-        dropped: validation.dropped.length,
+      const counts = {
+        added: diff.added.length,
+        changed: diff.changed.length,
+        removed: diff.removed.length,
+      };
+      await state.setShadowPending({
+        dir: shadowDirOf(paths),
+        createdAt: finishedAt,
+        runId: runRunId,
+        summary: pageSummary,
+        base,
+        files: diff.files,
+        counts,
+        sessions: completedIds,
+        // What each changed file proposes, so a rejection can be remembered.
+        proposals: Object.fromEntries(operations
+          .filter((op) => op.op === 'write' || op.op === 'delete')
+          .map((op) => [op.file, op.proposals ?? []])),
+        // A retired page and the page its facts moved into go together.
+        links: Object.fromEntries(operations.filter((op) => op.op === 'delete' && op.into).map((op) => [op.file, op.into])),
+        verifiedFiles: [...new Set(verifiedFiles)],
+        verifiedClaims: verifiedClaims.filter((item) => verifiedFiles.includes(item.file)),
       });
       await state.markDreamDone({
         sessions: merged.length,
-        ops: plan.operations.length,
-        files: execution.touched.size,
-        summary: plan.summary,
-        mode: 'apply',
-        durationMs: Date.now() - startedAt,
+        ops: shadowed.counts.write + shadowed.counts.delete + shadowed.counts.index,
+        files: shadowed.touched.size,
+        summary: pageSummary,
+        mode: 'shadow',
+        durationMs: finishedAt - startedAt,
         inputChars,
         outputChars,
         usage,
         costExceeded,
       });
-      await state.clearPendingProposal({ silent: true }).catch(() => {});
-      await state.clearLastPlan().catch(() => {});
-      try {
-        this.runtime?.invalidateAllInjections?.('dream-v2');
-      } catch {
-        // best effort
-      }
+      await state.clearSessions(completedIds, { reads: reads.filter((read) => completedIds.includes(read.id)) });
       const manifest = await saveManifest({
         ...manifestBase,
         stage: 'done',
-        status: 'done',
-        finishedAt: Date.now(),
-        applied: true,
+        status: 'ready',
+        finishedAt,
+        applied: false,
         coverageComplete,
         counts: countUnits(),
-        inputChars,
-        outputChars,
-        backupDir: execution.backupDir,
-        applyCounts: execution.counts,
+        applyCounts: shadowed.counts,
         error: '',
       });
       failure = false;
       return finish({
+        ok: true,
         ran: true,
-        applied: true,
-        mode: 'apply',
-        summary: plan.summary,
-        operations: execution.counts.write + execution.counts.delete + execution.counts.index,
-        filesTouched: execution.touched.size,
+        ready: true,
+        summary: pageSummary,
+        counts,
+        files: diff.files,
         sessionsReviewed: merged.length,
         runId: runRunId,
-        backupDir: execution.backupDir,
-        changelogPath: paths.changelogFile,
-        manifest,
         ...(costExceeded ? { costExceeded: true } : {}),
         usage,
         inputChars,
         outputChars,
         provider: modelAnalyzer.provider,
         model: modelAnalyzer.model,
-        warnings: plan.warnings,
+        manifest,
+        warnings,
       });
+
     } catch (error) {
       const detail = errorMessage(error);
       const message = stage === 'merge' ? `Dream merge: ${detail}` : detail;
       const cancelled = signal?.aborted === true || error?.name === 'AbortError';
-      // A failed write is recorded once, by handleApplyFailure below: calling
-      // markDreamFailed here too would count one failure twice and push the
-      // auto-dream backoff two steps for a single bad apply.
-      const applyFailure = stage === 'apply' && Boolean(error?.backupDir);
       try {
-        if (!applyFailure) await state.markDreamFailed(message);
+        await state.markDreamFailed(message);
       } catch (stateError) {
         warn('state.markDreamFailed', stateError);
       }
-      // A write that failed mid-apply rolled the batch back: record what was
-      // restored or skipped, as every other apply path does.
-      if (applyFailure) {
-        try {
-          await (await this.engine()).handleApplyFailure(state, store, error, {
-            trigger,
-            sessions: Array.isArray(plan?.sessions) ? plan.sessions.length : 0,
-            summary: plan?.summary ?? '',
-            notes: '',
-            dropped: Array.isArray(plan?.dropped) ? plan.dropped : [],
-          });
-        } catch (failureError) {
-          warn('record apply failure', failureError);
-        }
-      }
+      // Claude Code parity: a failed run keeps its partial output store so the
+      // human can inspect what it produced. The next run starts from a fresh
+      // copy anyway (prepareShadow clears it first).
+      const keptShadow = shadowDirOf(paths);
       if (!cancelled) {
         await recordDreamEvent(paths, {
           event: 'failed',
@@ -1459,9 +1481,9 @@ export class DreamPipeline {
           inputChars,
           outputChars,
           usage,
-          planOps: plan?.operations?.length ?? 0,
+          planOps: 0,
           dropped: 0,
-          rollback: error?.rolledBack === true,
+          rollback: false,
         });
       }
       const manifest = await saveManifest({
@@ -1484,16 +1506,10 @@ export class DreamPipeline {
         operations: 0,
         sessionsReviewed: 0,
         runId: runRunId,
+        shadow: { dir: keptShadow, kept: true },
         manifest,
-        ...(stage === 'apply' && error?.backupDir ? {
-          rolledBack: error?.rolledBack === true,
-          conflicts: Array.isArray(error?.rollbackConflicts) ? error.rollbackConflicts : [],
-          rollbackError: error?.rollbackError,
-          backupDir: error.backupDir,
-        } : {}),
       });
     } finally {
-      this._liveRuns.delete(runRunId);
       await releaseLock(paths.lockFile);
     }
   }
@@ -1511,8 +1527,8 @@ function pageFullyVerified(body, claims) {
   };
   const lines = String(body ?? '')
     .split(/\r?\n/u)
-    // Superseded lines are derived history, not claims about the present.
-    .filter((line) => /\^\[/u.test(line) && !SUPERSEDED_LINE_RE.test(line));
+    // Superseded and CONFLICT lines are derived, not claims about the present.
+    .filter((line) => /\^\[/u.test(line) && !SUPERSEDED_LINE_RE.test(line) && !CONFLICT_LINE_RE.test(line));
   if (lines.length === 0) return false;
   return lines.every((line) => claims.some((item) => contains(item.claim, line)
     || supportsStatement(item.claim, line, { minRatio: 0.5, minMatched: 2 })
@@ -1520,8 +1536,4 @@ function pageFullyVerified(body, claims) {
     // written carries the transcript's new value, so that is what has to match.
     || (item.result === 'contradicts' && (contains(item.quote, line)
       || supportsStatement(item.quote, line, { minRatio: 0.5, minMatched: 2 })))));
-}
-
-function wantsReview(config) {
-  return config.dreamMode === 'review';
 }

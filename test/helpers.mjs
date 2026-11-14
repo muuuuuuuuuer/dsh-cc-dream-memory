@@ -150,3 +150,43 @@ export function describeError(error) {
   if (!error) return String(error);
   return `${error.name || 'Error'}: ${error.message || String(error)}${error.code ? ` (code=${error.code})` : ''}`;
 }
+
+/**
+ * A fake agent context shaped like a Cordis context: services through `get`,
+ * `effect` runs the factory, `on` subscribes. Fields given in `services`
+ * (and any `on`/`effect` override) win.
+ */
+export function withCordis(services) {
+  return { get: (name) => services[name], effect: (factory) => factory(), on: () => () => {}, ...services };
+}
+
+/**
+ * A Cordis-style `inject(deps, callback)` whose services are already up: the
+ * callback runs at once, and disposing the fiber runs its effects' disposers.
+ */
+export function injectNow(ctx) {
+  return (deps, callback) => {
+    const stops = [];
+    callback({ ...ctx, effect: (factory) => { const stop = factory(); stops.push(stop); return stop; } });
+    return {
+      dispose() {
+        for (const stop of stops.splice(0)) if (typeof stop === 'function') stop();
+      },
+    };
+  };
+}
+
+/**
+ * The check reply a scripted Dream gives: each `verify` item
+ * (`{file, claim: <saved line>, result, quote}`) is cited by the claim in the
+ * check prompt whose quote it names.
+ */
+export function checkReplyFor(prompt, verify = []) {
+  const ids = new Map([...String(prompt).matchAll(/^- (c\d+): .*\(quote: "(.*?)"/gmu)].map((match) => [match[2], match[1]]));
+  return {
+    verdicts: verify.flatMap((item) => {
+      const id = ids.get(item.quote);
+      return id ? [{ file: item.file, line: item.claim, result: item.result, claim: id }] : [];
+    }),
+  };
+}

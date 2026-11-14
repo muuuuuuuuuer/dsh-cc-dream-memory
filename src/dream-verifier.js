@@ -2,12 +2,13 @@
  * Host-side verification for one analyzer result.
  *
  * The model proposes; the host checks every quote against the transcript it
- * actually read, annotates the true source tag and date, drops claims without
- * evidence, and refuses patches that target unsafe files. This is deliberately
- * mechanical: it proves a quote exists, not that an interpretation is correct.
+ * actually read, annotates the true source tag and date, and drops claims
+ * without evidence. Check verdicts are accepted only for lines that exist on the
+ * page and claims that passed this check. This is deliberately mechanical: it
+ * proves a quote and a line exist, not that an interpretation is correct.
  */
 import { locateQuote, normalizeForMatch, parseTranscriptBlocks } from './dream-evidence.js';
-import { supportsStatement, contradictsClaim } from './support.js';
+import { supportsStatement } from './support.js';
 
 const PAGE_RE = /^[\p{L}\p{N}._-]+\.md$/u;
 const RESERVED = new Set(['MEMORY.md', 'SKILL.md', '_index.md', '.dream-log.md']);
@@ -28,10 +29,9 @@ function safeFile(file) {
 }
 
 /**
- * Verify one analyzer result.
- * @param {{analysis:object, transcript:string, sessionId:string, memoryFiles?:Array<{file:string,body:string,type?:string}>,
- *   maxPatches?:number, maxPatchChars?:number}} input
- * @returns {{summary:string, claims:object[], patches:object[], verify:object[], dropped:string[], warnings:string[]}}
+ * Verify one map result.
+ * @param {{analysis:object, transcript:string, sessionId:string, memoryFiles?:Array<{file:string}>, evidenceBlocks?:object[]}} input
+ * @returns {{summary:string, claims:object[], retire:object[], dropped:string[], warnings:string[]}}
  */
 export function verifyAnalysis({
   analysis,
@@ -39,8 +39,6 @@ export function verifyAnalysis({
   sessionId = '',
   memoryFiles = [],
   evidenceBlocks = [],
-  maxPatches = 24,
-  maxPatchChars = 20_000,
 } = {}) {
   const parsed = analysis && typeof analysis === 'object' ? analysis : {};
   const blocks = parseTranscriptBlocks(transcript);
@@ -86,80 +84,58 @@ export function verifyAnalysis({
     });
   }
 
-  const patches = [];
-  for (const patch of Array.isArray(parsed.patches) ? parsed.patches : []) {
-    if (patches.length >= maxPatches) {
-      dropped.push(`patch limit ${maxPatches} reached`);
-      break;
-    }
-    const file = safeFile(patch?.file);
-    if (file === '') {
-      dropped.push(`patch has an unsafe file name: ${oneLine(patch?.file, 80) || '(empty)'}`);
-      continue;
-    }
-    const content = text(patch?.content);
-    if (content.trim() === '') {
-      dropped.push(`patch for ${file} has no content`);
-      continue;
-    }
-    if (content.length > maxPatchChars) {
-      dropped.push(`patch for ${file} is ${content.length} chars, limit is ${maxPatchChars}`);
-      continue;
-    }
-    const evidence = Array.isArray(patch?.evidence) ? patch.evidence : [];
-    const verifiedEvidence = evidence.map((quote) => oneLine(quote, 500)).filter((quote) => quote !== '' && locateQuote(quote, blocks));
-    if (evidence.length > 0 && verifiedEvidence.length === 0) {
-      dropped.push(`patch for ${file} has evidence quotes that are not in the transcript`);
-      continue;
-    }
-    patches.push({
-      file,
-      op: patch?.op === 'replace' ? 'replace' : 'append',
-      content: content.replace(/\r\n?/g, '\n').replace(/\n+$/, ''),
-      ...(verifiedEvidence.length > 0 ? { evidence: verifiedEvidence } : {}),
-      ...(sessionId !== '' ? { sessionId } : {}),
-    });
-  }
-
-  const verify = [];
-  for (const item of Array.isArray(parsed.verify) ? parsed.verify : []) {
-    const file = safeFile(item?.file);
-    const claim = oneLine(item?.claim, 1000);
-    const result = item?.result;
-    if (file === '' || claim === '' || !['holds', 'contradicts', 'unknown'].includes(result)) continue;
-    const quote = oneLine(item?.quote, 500);
-    const located = quote === '' ? null : locateQuote(quote, blocks);
-    // A verdict is evidence only when its quote was actually found AND that
-    // quote backs the verdict itself: `holds` needs the quote to state the current
-    // fact, `contradicts` needs it to state the same fact with a different value.
-    // A real quote about something else says nothing about this fact.
-    const backed = located !== null && (result === 'contradicts'
-      ? contradictsClaim(claim, quote)
-      : supportsStatement(claim, quote, { minRatio: 0.5, minMatched: 2 }));
-    const effective = result !== 'unknown' && !backed ? 'unknown' : result;
-    if (result === 'contradicts' && !located) warnings.push(`contradiction for ${file} has no transcript quote; downgraded to unknown`);
-    if (result === 'holds' && !located) warnings.push(`verification for ${file} has no transcript quote; downgraded to unknown`);
-    if (result !== 'unknown' && located && !backed) {
-      warnings.push(`verification for ${file} quotes something other than "${oneLine(claim, 80)}"; downgraded to unknown`);
-    }
-    const seq = locationSeq(located);
-    verify.push({
-      file,
-      claim,
-      result: effective,
-      ...(located ? { source: located.tag, date: located.date, quote } : {}),
-      ...(Number.isFinite(seq) ? { seq } : {}),
-    });
-  }
-
   return {
     summary: oneLine(parsed.summary, 2000),
     claims,
-    patches,
-    verify,
+    retire: Array.isArray(parsed.retire) ? parsed.retire : [],
     dropped,
     warnings,
   };
+}
+
+/**
+ * Turn check verdicts into verify items the merge understands. A verdict counts
+ * only when its claim is one the host verified in this run and its line is
+ * really on that page; the claim's quote and location become the evidence.
+ * `holds` additionally needs the quote to state the line's fact, because it
+ * vouches for the page. `contradicts` is a proposal the human reviews (the old
+ * value stays in the page history), so the line and claim existing is enough.
+ * @param {{verdicts:Array<{file:string,line:string,claim:string,result:string}>,
+ *   pages:Array<{file:string,body:string}>, claims:Map<string,object>}} input
+ * @returns {{verify:Array<object>, warnings:string[]}}
+ */
+export function verifyCheck({ verdicts = [], pages = [], claims = new Map() } = {}) {
+  const bodies = new Map(pages.map((page) => [page.file, normalizeForMatch(page.body)]));
+  const verify = [];
+  const warnings = [];
+  for (const verdict of verdicts) {
+    const claim = claims.get(verdict.claim);
+    const body = bodies.get(verdict.file);
+    if (!claim || body === undefined) {
+      warnings.push(`check verdict names an unknown claim or page: ${verdict.claim} / ${verdict.file}`);
+      continue;
+    }
+    const line = oneLine(verdict.line, 1000).replace(/^[-*]\s+/u, '').replace(/\s*\^\[[^\]]*\]\s*$/u, '');
+    if (normalizeForMatch(line).length < 4 || !body.includes(normalizeForMatch(line))) {
+      warnings.push(`check verdict quotes a line that is not on ${verdict.file}`);
+      continue;
+    }
+    if (verdict.result === 'holds' && !supportsStatement(line, claim.quote, { minRatio: 0.5, minMatched: 2 })) {
+      warnings.push(`${verdict.file}: "${oneLine(line, 80)}" is not stated by the quote; not counted as confirmed`);
+      continue;
+    }
+    verify.push({
+      file: verdict.file,
+      claim: line,
+      result: verdict.result,
+      quote: claim.quote,
+      source: claim.source,
+      date: claim.date,
+      sessionId: claim.sessionId,
+      ...(Number.isFinite(claim.seq) ? { seq: claim.seq } : {}),
+    });
+  }
+  return { verify, warnings };
 }
 
 /** Does a body contain a statement, ignoring formatting? */

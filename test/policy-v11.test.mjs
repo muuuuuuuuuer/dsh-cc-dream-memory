@@ -35,8 +35,7 @@ test('v11 policy: "vitest --run ..." short bodies are written directly', async (
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.notEqual(result.action, 'queued-review', 'short commands are durable notes, not low-confidence');
   assert.equal(typeof result.file, 'string');
-  const pending = await env.mods.pending.listPendingWrites(env.pctx.paths);
-  assert.equal(pending.length, 0, 'nothing lands in the review queue');
+  assert.equal((await env.pctx.store.listEntries()).length, 1, 'the note is written');
 });
 
 test('policy: conflicting writes stop and identify the owning memory', async (t) => {
@@ -49,21 +48,19 @@ test('policy: conflicting writes stop and identify the owning memory', async (t)
     exec,
   );
 
-  // Same topic, opposite polarity, but worded differently enough to avoid the
-  // duplicate gate: the tool refuses a second active contradictory fact.
+  // Same topic, opposite polarity, worded differently enough to avoid the
+  // duplicate gate: the tool refuses a second active contradictory fact and
+  // names the page that owns it.
   const conflicting = await save.execute(
     { name: 'reply preference', type: 'user', description: 'Chinese replies', content: '用户讨厌中文回复。', basis: 'user-explicit', evidence: '用户讨厌中文回复。' },
     exec,
   );
-  assert.equal(conflicting.ok, true, JSON.stringify(conflicting));
-  assert.equal(conflicting.written, false, 'a conflict must not become another active fact');
-  assert.equal(conflicting.action, 'queued-review', JSON.stringify(conflicting));
-  assert.ok((await env.mods.pending.listPendingWrites(env.pctx.paths)).some((item) => item.id === conflicting.pendingId));
+  assert.equal(conflicting.ok, false, JSON.stringify(conflicting));
+  assert.equal(conflicting.error, 'CONFLICT');
   assert.ok(Array.isArray(conflicting.conflicts) && conflicting.conflicts.length >= 1, JSON.stringify(conflicting));
   const conflict = conflicting.conflicts[0];
   assert.equal(conflict.file, 'user_language.md');
   assert.equal(typeof conflict.reason, 'string');
-  assert.equal(conflicting.error, undefined, 'conflicts no longer abort the save');
 
   const entries = await env.pctx.store.listEntries();
   assert.equal(entries.some((entry) => entry.name === 'language'), true);
@@ -85,9 +82,8 @@ test('v11 policy: a high-similarity duplicate is still blocked', async (t) => {
     { name: 'dup note', type: 'user', description: 'duplicate target', content: 'the same durable body', basis: 'user-explicit', evidence: 'the same durable body' },
     exec,
   );
-  assert.equal(duplicate.ok, true, JSON.stringify(duplicate));
-  assert.equal(duplicate.written, false);
-  assert.equal(duplicate.action, 'duplicate');
+  assert.equal(duplicate.ok, false, JSON.stringify(duplicate));
+  assert.equal(duplicate.error, 'DUPLICATE');
   assert.equal(typeof duplicate.existingFile, 'string');
 });
 
@@ -117,20 +113,19 @@ test('v11 policy: possible-duplicate is advisory (write + candidates, not blocke
   assert.equal(typeof similar.candidates[0].file, 'string');
 });
 
-test('v11 policy: explicit confidence:"low" still queues for review', async (t) => {
+test('v11 policy: explicit confidence:"low" is written with an advisory reason', async (t) => {
   const env = await toolsEnv(t);
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
-  const queued = await save.execute(
-    { name: 'low confidence', type: 'user', description: 'maybe', content: 'a normal-length body for the queue', confidence: 'low' },
+  const result = await save.execute(
+    { name: 'low confidence', type: 'user', description: 'maybe', content: 'a normal-length body for the write', confidence: 'low' },
     exec,
   );
-  assert.equal(queued.ok, true, JSON.stringify(queued));
-  assert.equal(queued.written, false);
-  assert.equal(queued.action, 'queued-review');
-  assert.equal(typeof queued.pendingId, 'string');
-  const pending = await env.mods.pending.listPendingWrites(env.pctx.paths);
-  assert.ok(pending.some((item) => item.id === queued.pendingId));
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.written, true);
+  assert.equal(result.advisory, true);
+  assert.deepEqual(result.reasons, ['confidence is low']);
+  assert.equal(typeof result.file, 'string');
 });
 
 test('v11 policy: evaluateWrite reports advisory payloads directly', async (t) => {

@@ -3,18 +3,18 @@
  *
  * The memory directory lives outside the workspace, so these tools are the
  * reliable cross-sandbox read/write path. The model gets exactly four tools:
- * `memory_save`, `memory_update`, `memory_read`, `memory_search` — their
+ * `memory_save`, `memory_update`, `memory_read`, `memory_search` 鈥?their
  * descriptions + parameter schemas stay inside the 3000-character budget so
  * they never crowd the context.
  *
  * Human surfaces keep the full feature set: the `/memory` slash commands, the
  * Web UI and the HTTP API still expose status, dream, list, refresh, delete,
- * recall, pending writes, import/export and so on. This module intentionally
+ * recall, import/export and so on. This module intentionally
  * does NOT register those as tools any more.
  *
  * Every tool validates its arguments, resolves the calling agent's project
  * through `MemoryRuntime`, returns a plain JSON value (never throws to the
- * host) and — after a write — invalidates the prompt cache so the next request
+ * host) and 鈥?after a write 鈥?invalidates the prompt cache so the next request
  * sees the new index.
  *
  * Tool definitions follow the Host `ToolDefinition` contract:
@@ -23,13 +23,13 @@
  *
  * @module dsh-cc-dream-memory/tools
  */
+import { currentBody, memoryStatusOf } from './memory-body.js';
 import { recordAdoption, recordRead, recordSearch, recordWrite } from './metrics.js';
-import { queuePendingWrite } from './pending-writes.js';
 import { evaluateWrite, normalizeBasis, textSimilarity } from './policy.js';
-import { subagentWriteBlocked } from './status.js';
+import { normalizeType } from './store.js';
 import { verifyUserEvidence, bindUserClaim } from './user-evidence.js';
 import { recordVerifiedEntry, verifiedPage } from './verification-ledger.js';
-import { composeCorrection, ensureCurrentStatus, memoryHash, reviewWrite } from './write-review.js';
+import { composeCorrection, ensureCurrentStatus, memoryHash } from './write-review.js';
 
 /**
  * Record that the host verified a page the user just stated.
@@ -38,16 +38,26 @@ import { composeCorrection, ensureCurrentStatus, memoryHash, reviewWrite } from 
  * without it stays findable by name but never shows a summary until Dream or
  * another explicit write verifies it. A failed ledger write must not undo a
  * successful memory write, so it degrades to a warning.
- * @param {{store:object, scope:'project'|'user', file:string}} input
- * @returns {Promise<object|null>}
+ * @param {{store:object, scope?:string, file:string,
+ *   entry:{name?:string, description?:string, bodyHash?:string}}} input
+ * @returns {Promise<'recorded'|'pending'>}
  */
-async function recordExplicitVerification({ store, scope, file }) {
-  if (typeof file !== 'string' || file === '') return null;
+async function recordExplicitVerification({ store, scope, file, entry }) {
+  if (typeof file !== 'string' || file === '') return 'pending';
+  if (!entry || typeof entry.bodyHash !== 'string' || entry.bodyHash === '') return 'pending';
   try {
-    return await recordVerifiedEntry({ store, scope, file });
+    const record = await recordVerifiedEntry({
+      store,
+      scope,
+      file,
+      name: entry.name ?? '',
+      description: entry.description ?? '',
+      bodyHash: entry.bodyHash,
+    });
+    return record ? 'recorded' : 'pending';
   } catch (error) {
     warn('record verification', error);
-    return null;
+    return 'pending';
   }
 }
 
@@ -75,29 +85,22 @@ const OUTPUT_SCHEMA = Object.freeze({
   additionalProperties: true,
 });
 
-/** Scope selector shared by the write/read/search tools. */
-const SCOPE_SCHEMA = Object.freeze({
-  type: 'string',
-  enum: ['project', 'user'],
-  description: 'project or user.',
-});
 /**
- * v21 attribution: only `user-explicit` is allowed to create/update an active
- * user/feedback/preference claim. An omitted basis keeps the legacy direct-write
- * behavior so older callers and `/remember`-style flows keep working. Since v22
- * the explicit basis must also carry the authorizing user message in `evidence`,
- * which the host verifies against the session transcript (`user-evidence.js`).
+ * Write attribution. Every write has one basis; an omitted basis is
+ * `inference` (the model's own judgment). Only `user-explicit` with the
+ * authorizing user message in `evidence`, which the host verifies against the
+ * session transcript (`user-evidence.js`), marks a note current and verified.
  */
 const BASIS_SCHEMA = Object.freeze({
   type: 'string',
   enum: ['user-explicit', 'forwarded', 'inference'],
-  description: 'user-explicit needs verified evidence; omitted = legacy write.',
+  description: 'Default inference; user-explicit needs evidence.',
 });
 
 /**
  * Verbatim user message that authorizes a `user-explicit` write (v22). The host
- * matches it against the session transcript; a quote it cannot find queues the
- * write instead of writing an active user claim.
+ * matches it against the session transcript; a quote it cannot find leaves the
+ * note written but unverified.
  */
 const EVIDENCE_SCHEMA = Object.freeze({
   type: 'string',
@@ -114,7 +117,7 @@ const POLICY_BODY_LIMIT = 4000;
 
 /** Short caution appended to every memory tool description (v11: the full
  * wording lives in the injected rules; tool descriptions stay inside budget). */
-const CONFIDENCE_SCHEMA = { type: 'string', enum: ['high', 'low'], description: 'low queues review.' };
+const CONFIDENCE_SCHEMA = { type: 'string', enum: ['high', 'low'], description: 'low is reported back.' };
 
 const MEMORY_CAUTION = ' Verify before relying: memory may be stale.';
 
@@ -164,32 +167,30 @@ function toolError(error) {
 
 /**
  * Provenance for one tool write: the calling session plus `tool:<name>`.
- * Falls back to the agent id when the execution carries no session id. When the
- * write states an explicit `basis` it is kept on the pending-review source too,
- * so a human can see why the proposal was queued.
+ * Falls back to the agent id when the execution carries no session id.
  * @param {object} exec tool execution context
  * @param {string} name tool name
- * @param {string} [basis] explicit `user-explicit` | `forwarded` | `inference`
- * @returns {{sessionId:string, via:string, basis?:string}}
+ * @param {string} basis `user-explicit` | `forwarded` | `inference`
+ * @returns {{sessionId:string, via:string, basis:string}}
  */
-function sourceOf(exec, name, basis = '') {
+function sourceOf(exec, name, basis) {
   const raw = typeof exec?.sessionId === 'string' && exec.sessionId !== '' ? exec.sessionId : exec?.agent?.id;
   return {
     sessionId: typeof raw === 'string' ? raw : '',
     via: `tool:${name}`,
-    ...(basis !== '' ? { basis } : {}),
+    basis,
   };
 }
 
 /**
- * Validate the optional attribution `basis` argument.
- * Absent/empty keeps the legacy behavior; an explicit unknown value is an error
- * rather than silently falling back (a typo must not gain write authority).
+ * Validate the attribution `basis` argument. Absent means `inference`; an
+ * explicit unknown value is an error rather than silently falling back (a typo
+ * must not gain write authority).
  * @param {object} input normalized tool arguments
  * @returns {{basis:string}|{error:object}}
  */
 function basisOf(input) {
-  if (input.basis === undefined || input.basis === null || input.basis === '') return { basis: '' };
+  if (input.basis === undefined || input.basis === null || input.basis === '') return { basis: 'inference' };
   const basis = normalizeBasis(input.basis);
   if (basis === '') {
     return {
@@ -229,7 +230,7 @@ function sessionIdOf(exec) {
  * name/description first and only the best {@link POLICY_BODY_CANDIDATES} get
  * their body read, so a save against a large memory directory stays cheap.
  * @param {object} store MemoryStore
- * @param {'project'|'user'} scope
+ * @param {string} scope memory scope ('project').
  * @param {string} [excludeFile] file to skip (memory_update's own target)
  * @param {object} [candidate] candidate text used to rank body reads
  * @returns {Promise<object[]>}
@@ -268,9 +269,8 @@ async function loadPolicyEntries(store, scope, excludeFile = '', candidate = nul
 }
 
 /** Candidate shape for one policy evaluation. */
-function policyCandidate({ scope, name, type, description, content, confidence }) {
+function policyCandidate({ name, type, description, content, confidence }) {
   return {
-    scope: scope === 'user' ? 'user' : 'project',
     name: typeof name === 'string' ? name : '',
     type: typeof type === 'string' ? type : '',
     description: typeof description === 'string' ? description : '',
@@ -291,6 +291,7 @@ function advisoryOf(decision) {
   const conflicts = Array.isArray(decision.conflicts) ? decision.conflicts : [];
   const candidates = Array.isArray(decision.candidates) ? decision.candidates : [];
   const result = { advisory: true };
+  if (Array.isArray(decision.reasons) && decision.reasons.length > 0) result.reasons = decision.reasons;
   if (conflicts.length > 0) {
     result.conflicts = conflicts;
     result.hint = `Written, but it may contradict ${conflicts[0].file}. Review that memory and use memory_update to fix or extend it instead of keeping both.`;
@@ -302,6 +303,39 @@ function advisoryOf(decision) {
     }
   }
   return result;
+}
+
+/**
+ * Stop reasons that are not a review queue (v24, Claude Code parity). A write
+ * that would add a second active copy of a fact stops and names the page that
+ * owns it; the model then edits that page. Everything else is written.
+ * @param {object|null} decision `evaluateWrite()` result
+ * @returns {object|null} tool result when the write must stop
+ */
+function writeStopped(decision) {
+  if (decision && decision.action === 'duplicate') {
+    return {
+      ok: false,
+      error: 'DUPLICATE',
+      existingFile: decision.existingFile,
+      similarity: decision.similarity,
+      message: `${decision.existingFile} already covers this memory; update it instead of adding a copy`,
+      hint: 'use memory_update on that file, or pass force:true for an intentional duplicate',
+    };
+  }
+  if (decision && decision.action === 'conflict') {
+    const conflicts = Array.isArray(decision.conflicts) ? decision.conflicts : [];
+    const first = conflicts[0];
+    return {
+      ok: false,
+      error: 'CONFLICT',
+      existingFile: first.file,
+      conflicts,
+      message: `opposite fact already active in ${first.file}: ${first.reason}`,
+      hint: `update ${first.file} instead of adding a second active fact`,
+    };
+  }
+  return null;
 }
 
 /** Render a JSON tool value as one text content block. */
@@ -351,15 +385,13 @@ function invalidate(runtime, agent) {
   }
 }
 
-/** v10: read-only subagent result when `subagentWriteMode:'off'`. */
-function subagentReadonly(config, exec) {
-  return subagentWriteBlocked(exec?.agent, config)
-    ? {
-        ok: false,
-        error: 'subagent-readonly',
-        message: 'this subagent session is read-only (subagentWriteMode: off)',
-      }
-    : null;
+function subagentReadonly(runtime, exec) {
+  if (runtime.canWriteMemory(exec?.agent)) return null;
+  return {
+    ok: false,
+    error: 'subagent-readonly',
+    message: 'this subagent session is read-only under the current subagentMemory policy',
+  };
 }
 
 /**
@@ -389,22 +421,20 @@ export function registerTools(ctx, runtime) {
       return { configurable: true, enumerable: true, value: current[key] };
     },
   });
-  let tools;
-  try {
-    tools = typeof ctx.get === 'function' ? ctx.get('tools') : ctx.tools;
-  } catch (error) {
-    warn('tools service', error);
-    tools = undefined;
-  }
-  if (!tools || typeof tools.register !== 'function') {
-    warn('tools service', new Error('ctx.tools is unavailable; memory tools are not registered'));
+  const tools = ctx.get('tools');
+  if (!tools) {
+    warn('tools service', new Error('the tools service is unavailable; memory tools are not registered'));
     return () => {};
   }
 
   /** @type {Array<() => void>} */
   const disposers = [];
+  /** Registered definitions, shared with auto-extract and Inbox accept. */
+  const definitions = new Map();
+  if (runtime && typeof runtime === 'object') runtime.memoryTools = definitions;
   const register = (definition) => {
     const full = { ...definition, description: `${definition.description}${MEMORY_CAUTION}` };
+    definitions.set(full.name, full);
     try {
       const dispose = tools.register(full);
       if (typeof dispose === 'function') disposers.push(dispose);
@@ -433,7 +463,6 @@ export function registerTools(ctx, runtime) {
         evidence: { type: 'string' },
         confidence: CONFIDENCE_SCHEMA,
         force: { type: 'boolean', description: 'Allow duplicate.' },
-        scope: SCOPE_SCHEMA,
       },
       required: ['name', 'content'],
       additionalProperties: false,
@@ -442,7 +471,7 @@ export function registerTools(ctx, runtime) {
     async execute(args, exec) {
       const input = argsOf(args);
       if (!autoMemoryOn(config)) return autoMemoryDisabled(config);
-      const blocked = subagentReadonly(config, exec);
+      const blocked = subagentReadonly(runtime, exec);
       if (blocked) return blocked;
       const basisInfo = basisOf(input);
       if (basisInfo.error) return basisInfo.error;
@@ -470,55 +499,79 @@ export function registerTools(ctx, runtime) {
       const resolved = await projectFor(runtime, exec);
       if (resolved.error) return resolved.error;
       const projectContext = resolved.projectContext;
-      const scope = input.scope === 'user' ? 'user' : 'project';
+      let scope = 'project';
+      let type;
+      try {
+        type = normalizeType(input.type);
+      } catch (error) {
+        return toolError(error);
+      }
       const source = sourceOf(exec, 'memory_save', basis);
-      // Whether this write targets a profile page decides if it needs an
-      // explicit, evidence-backed basis even when the model omits `basis`.
-      const profileTarget = scope === 'user'
-        || ['user', 'feedback'].includes(String(input.type ?? '').trim().toLowerCase());
       const candidate = policyCandidate({
-        scope,
         name: input.name,
-        type: input.type ?? 'user',
+        type,
         description: input.description,
         content: input.content,
         confidence: input.confidence,
       });
       try {
         const entries = await loadPolicyEntries(projectContext.store, scope, '', candidate);
-        const stopped = await reviewWrite({ paths: projectContext.paths, candidate, entries,
-          force: input.force === true, config, basis, source, verifiedEvidence, profileTarget });
+        // Nothing queues (Claude Code parity): a duplicate or an opposite fact
+        // stops the write so the model edits the page that owns the fact;
+        // every other outcome is written and reported as an advisory.
+        const decision = input.force === true
+          ? { action: 'allow' }
+          : evaluateWrite({ candidate, entries, config });
+        const stopped = writeStopped(decision);
         if (stopped) {
-          invalidate(runtime, resolved.agent);
           return {
             ...stopped,
-            basis: basis || 'legacy',
+            basis,
             scope,
             ...(evidenceReason === '' ? {} : { evidenceCheck: evidenceReason }),
           };
         }
-        const advisory = input.force === true ? {} : advisoryOf(evaluateWrite({ candidate, entries, config }));
+        const advisory = input.force === true ? {} : advisoryOf(decision);
         // A verified user statement is the current value: mark it active so the
         // next session can show its summary instead of only its name. The
         // marker is added after the evidence binding, so it never counts as a
         // model-invented claim.
         const writeContent = verifiedEvidence !== '' ? ensureCurrentStatus(input.content) : input.content;
+        // What the index may claim is decided by the ledger, not here: a summary
+        // that does not belong to the verified bytes renders as a bare name in
+        // the first-turn index (src/inject.js).
         const result = await projectContext.store.saveEntry({
           scope,
           name: input.name,
-          type: input.type,
+          type,
           description: input.description,
           content: writeContent,
           source,
         });
         invalidate(runtime, resolved.agent);
+        let verification = 'not-applicable';
         if (typeof result?.file === 'string' && result.file !== '') {
           await recordWrite(projectContext.paths, result.file);
           if (verifiedEvidence !== '') {
-            await recordExplicitVerification({ store: projectContext.store, scope, file: result.file });
+            verification = await recordExplicitVerification({
+              store: projectContext.store,
+              scope,
+              file: result.file,
+              entry: result,
+            });
           }
         }
-        return { ...result, written: true, basis: basis || 'legacy', scope, ...advisory };
+        if (typeof result?.file === 'string' && result.file !== '') {
+          runtime.noteMemoryWrite?.(sessionIdOf(exec), Date.now());
+        }
+        return {
+          ...result,
+          written: true,
+          basis,
+          scope,
+          verification,
+          ...advisory,
+        };
       } catch (error) {
         return toolError(error);
       }
@@ -542,7 +595,6 @@ export function registerTools(ctx, runtime) {
         evidence: { type: 'string' },
         confidence: CONFIDENCE_SCHEMA,
         force: { type: 'boolean', description: 'Allow duplicate.' },
-        scope: SCOPE_SCHEMA,
       },
       required: ['file'],
       additionalProperties: false,
@@ -551,7 +603,7 @@ export function registerTools(ctx, runtime) {
     async execute(args, exec) {
       const input = argsOf(args);
       if (!autoMemoryOn(config)) return autoMemoryDisabled(config);
-      const blocked = subagentReadonly(config, exec);
+      const blocked = subagentReadonly(runtime, exec);
       if (blocked) return blocked;
       const basisInfo = basisOf(input);
       if (basisInfo.error) return basisInfo.error;
@@ -565,7 +617,11 @@ export function registerTools(ctx, runtime) {
       const resolved = await projectFor(runtime, exec);
       if (resolved.error) return resolved.error;
       const projectContext = resolved.projectContext;
-      const scope = input.scope === 'user' ? 'user' : 'project';
+      let scope = 'project';
+      try {
+      } catch (error) {
+        return toolError(error);
+      }
       const source = sourceOf(exec, 'memory_update', basis);
       try {
         let existing = null;
@@ -576,39 +632,12 @@ export function registerTools(ctx, runtime) {
         }
         if (!existing) return { ok: false, error: 'NOT_FOUND', message: `memory file not found: ${input.file}` };
         if (input.delete === true) {
-          if (config.writeMode === 'confirm' || input.confidence === 'low') {
-            const queued = await queuePendingWrite(projectContext.paths, {
-              action: 'delete',
-              file: input.file,
-              expectedHash: memoryHash(existing.raw),
-              candidate: policyCandidate({
-                scope,
-                name: existing.frontmatter?.name,
-                type: existing.frontmatter?.type,
-                description: existing.frontmatter?.description,
-                content: existing.body,
-              }),
-              reasons: [config.writeMode === 'confirm' ? 'writeMode is confirm: every write needs review' : 'confidence is low'],
-              source,
-            });
-            invalidate(runtime, resolved.agent);
-            return {
-              ok: true,
-              written: false,
-              action: 'queued-review',
-              pendingId: queued.id,
-              scope,
-              file: input.file,
-              reasons: [config.writeMode === 'confirm' ? 'writeMode is confirm: every write needs review' : 'confidence is low'],
-              hint: 'Queued for human review. Review with /memory writes; approve with /memory approve <id>.',
-            };
-          }
           await projectContext.store.trashEntry(input.file, { scope, reason: 'memory_update delete', expectedHash: memoryHash(existing.raw) });
           invalidate(runtime, resolved.agent);
+          runtime.noteMemoryWrite?.(sessionIdOf(exec), Date.now());
           return { ok: true, deleted: true, file: input.file, scope };
         }
         const candidate = policyCandidate({
-          scope,
           name: typeof input.name === 'string' && input.name.trim() !== '' ? input.name : existing?.frontmatter?.name,
           type: existing?.frontmatter?.type,
           description:
@@ -630,14 +659,8 @@ export function registerTools(ctx, runtime) {
         const evidenceReason = evidenceCheck.reason !== ''
           ? evidenceCheck.reason
           : (binding.ok ? '' : `\`evidence\` does not contain the claim being written: ${binding.unbound.slice(0, 3).join(' | ')}`);
-        // A profile page needs an explicit basis even when the model omits it.
-        const profileTarget = scope === 'user'
-          || ['user', 'feedback'].includes(String(existing?.frontmatter?.type ?? '').trim().toLowerCase());
         // v21: an explicit user correction keeps the previous current value as
         // one `Superseded: ... (until ...)` history line in the owning topic.
-        // The policy checks still run on the semantic content, but a queued
-        // review (confirm/low-confidence/conflict) carries the composed body so
-        // approving it records the same trace.
         const correction =
           basis === 'user-explicit' && typeof input.content === 'string'
             ? composeCorrection({ existingBody: existing.body, content: input.content, source })
@@ -647,15 +670,14 @@ export function registerTools(ctx, runtime) {
           verifiedEvidence !== '' && typeof composed === 'string'
             ? ensureCurrentStatus(composed)
             : composed;
-        const stopped = await reviewWrite({ paths: projectContext.paths, action: 'update', file: input.file,
-          name: renameTo, content: typeof input.content === 'string' ? writeContent : null,
-          description: typeof input.description === 'string' ? input.description : null,
-          candidate, entries, existing, config, force: input.force === true, basis, source, verifiedEvidence, profileTarget });
+        const decision = input.force === true
+          ? { action: 'allow' }
+          : evaluateWrite({ candidate, entries, config });
+        const stopped = writeStopped(decision);
         if (stopped) {
-          invalidate(runtime, resolved.agent);
           return {
             ...stopped,
-            basis: basis || 'legacy',
+            basis,
             scope,
             ...(evidenceReason === '' ? {} : { evidenceCheck: evidenceReason }),
             ...(correction?.changed
@@ -663,7 +685,7 @@ export function registerTools(ctx, runtime) {
               : {}),
           };
         }
-        const advisory = input.force === true ? {} : advisoryOf(evaluateWrite({ candidate, entries, config }));
+        const advisory = input.force === true ? {} : advisoryOf(decision);
         // A confirmed new summary or name changes the page fingerprint without
         // restating the body: keep the page verified only if it already was and
         // the new summary is backed by the same quote.
@@ -676,8 +698,7 @@ export function registerTools(ctx, runtime) {
         const wantsRename =
           typeof input.name === 'string' &&
           input.name.trim() !== '' &&
-          input.name !== existing?.frontmatter?.name &&
-          typeof projectContext.store.renameEntry === 'function';
+          input.name !== existing?.frontmatter?.name;
         if (wantsRename) {
           // Rename + body/description are one store operation: validation runs
           // before any file is touched, so a rejected update cannot leave a
@@ -700,19 +721,29 @@ export function registerTools(ctx, runtime) {
           });
         }
         invalidate(runtime, resolved.agent);
+        let verification = 'not-applicable';
         if (typeof result?.file === 'string' && result.file !== '') {
           await recordWrite(projectContext.paths, result.file);
           if (verifiedEvidence !== '' && (typeof input.content === 'string' || keepsVerification)) {
-            await recordExplicitVerification({ store: projectContext.store, scope, file: result.file });
+            verification = await recordExplicitVerification({
+              store: projectContext.store,
+              scope,
+              file: result.file,
+              entry: result,
+            });
           }
+        }
+        if (typeof result?.file === 'string' && result.file !== '') {
+          runtime.noteMemoryWrite?.(sessionIdOf(exec), Date.now());
         }
         return {
           ...(renameResult ?? {}),
           ...result,
           ...advisory,
           written: true,
-          basis: basis || 'legacy',
+          basis,
           scope,
+          verification,
           ...(correction?.changed
             ? {
                 correction: {
@@ -789,12 +820,11 @@ export function registerTools(ctx, runtime) {
   register({
     name: 'memory_read',
     description:
-      'Read one memory file in full.',
+      'Read one memory file; superseded values are not included.',
     parameters: {
       type: 'object',
       properties: {
         file: { type: 'string', description: 'Memory file name, e.g. user_role.md.' },
-        scope: SCOPE_SCHEMA,
       },
       required: ['file'],
       additionalProperties: false,
@@ -808,16 +838,24 @@ export function registerTools(ctx, runtime) {
       const resolved = await projectFor(runtime, exec);
       if (resolved.error) return resolved.error;
       try {
-        const entry = await resolved.projectContext.store.readEntry(input.file, input.scope);
-        // v12: metrics are an effect, never a failure path for the read itself.
-        // Both counters share one best-effort block.
-        try {
-          await recordRead(resolved.projectContext.paths, entry.file);
-          await recordAdoption(resolved.projectContext.paths, entry.file, sessionIdOf(exec));
-        } catch (error) {
-          warn('read metrics', error);
-        }
-        return { ok: true, ...entry, ...ageOf(entry) };
+        const entry = await resolved.projectContext.store.readEntry(input.file);
+        // v23: one read is one read. The counters share a single best-effort
+        // block and never hold the reply: the model already has the body.
+        Promise.resolve()
+          .then(async () => {
+            await recordRead(resolved.projectContext.paths, entry.file);
+            await recordAdoption(resolved.projectContext.paths, entry.file, sessionIdOf(exec));
+          })
+          .catch((error) => warn('read metrics', error));
+        return {
+          ok: true,
+          ...entry,
+          // A read answers "what holds now". Old values stay in the file, the
+          // changelog and `/memory history` rather than coming back as current.
+          body: currentBody(entry.body),
+          status: memoryStatusOf(entry.body),
+          ...ageOf(entry),
+        };
       } catch (error) {
         return toolError(error);
       }
@@ -839,7 +877,6 @@ export function registerTools(ctx, runtime) {
           enum: ['user', 'feedback', 'project', 'reference'],
           description: 'Only this type.',
         },
-        scope: SCOPE_SCHEMA,
       },
       required: ['query'],
       additionalProperties: false,
@@ -854,9 +891,9 @@ export function registerTools(ctx, runtime) {
       if (resolved.error) return resolved.error;
       try {
         const hits = await resolved.projectContext.store.search(input.query, {
-          scope: input.scope,
           limit: input.limit,
           type: input.type,
+          currentOnly: true,
         });
         await recordSearch(resolved.projectContext.paths, hits.length);
         const items = hits.map((hit) => ({
@@ -866,7 +903,7 @@ export function registerTools(ctx, runtime) {
           type: hit.type,
           score: hit.score,
           via: hit.via ?? '',
-          snippets: Array.isArray(hit.snippets) ? hit.snippets : [hit.snippet].filter(Boolean),
+          snippets: hit.snippets,
         }));
         return {
           ok: true,
@@ -889,5 +926,7 @@ export function registerTools(ctx, runtime) {
         warn('dispose tool', error);
       }
     }
+    if (runtime && runtime.memoryTools === definitions) runtime.memoryTools = undefined;
+    definitions.clear();
   };
 }

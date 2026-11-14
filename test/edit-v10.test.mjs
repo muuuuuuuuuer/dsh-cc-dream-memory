@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { runtimeEnv, commandEnv, httpEnv, callHttp, exists } from './v10-helpers.mjs';
+import { loadModule } from './helpers.mjs';
 
 async function statusService(env) {
   return env.mods.status.createStatusService(env.runtime);
@@ -33,6 +34,12 @@ test('v10 edit: writeFile creates and updates memory files with api:edit provena
   assert.equal(readCreated.frontmatter.via, 'api:edit');
   assert.match(readCreated.frontmatter.created, /^\d{4}-\d{2}-\d{2}T/);
 
+  // A panel save is a user-confirmed save: the saved bytes go into the
+  // verification ledger, so a later session may show this note's summary.
+  const ledger = await loadModule('../src/verification-ledger.js', { requireExports: ['readLedger'] });
+  const recorded = await ledger.readLedger(env.pctx.store);
+  assert.equal(recorded.entries[created.file]?.source, 'user-explicit');
+
   // Update keeps created, rewrites content, provenance becomes api:edit.
   const seeded = await service.writeFile(env.pctx, {
     name: 'update me',
@@ -41,12 +48,16 @@ test('v10 edit: writeFile creates and updates memory files with api:edit provena
     content: 'original body long enough',
   });
   const readBefore = await env.pctx.store.readEntry(seeded.file);
+  const opened = await service.file(env.pctx, seeded.file, 'project');
+  assert.equal(typeof opened.version, 'string');
+  assert.equal(typeof opened.expectedHash, 'string');
   const updated = await service.writeFile(env.pctx, {
     file: seeded.file,
     name: 'update me',
     type: 'user',
     description: 'updated description',
     content: 'updated body through the editor',
+    expectedHash: opened.expectedHash,
   });
   assert.equal(updated.ok, true, JSON.stringify(updated));
   const readAfter = await env.pctx.store.readEntry(seeded.file);
@@ -69,6 +80,62 @@ test('v10 edit: writeFile creates and updates memory files with api:edit provena
       return true;
     },
   );
+});
+
+test('v10 edit: a stale baseline cannot overwrite a newer body', async (t) => {
+  const env = await runtimeEnv(t);
+  const service = await statusService(env);
+  const note = await seed(env, 'two windows', { content: 'first body' });
+
+  // Both windows open the page at the same version.
+  const windowA = await service.file(env.pctx, note.file, 'project');
+  const windowB = await service.file(env.pctx, note.file, 'project');
+  const savedA = await service.writeFile(env.pctx, {
+    file: note.file,
+    name: 'two windows',
+    type: 'user',
+    description: 'A description',
+    content: 'body written by window A',
+    expectedHash: windowA.expectedHash,
+  });
+  assert.equal(savedA.ok, true, JSON.stringify(savedA));
+
+  // B's baseline is older now: the store refuses the write and A's text stays.
+  await assert.rejects(
+    service.writeFile(env.pctx, {
+      file: note.file,
+      name: 'two windows',
+      type: 'user',
+      description: 'B description',
+      content: 'body written by window B',
+      expectedHash: windowB.expectedHash,
+    }),
+    (error) => {
+      assert.equal(error.code, 'STALE_WRITE');
+      return true;
+    },
+  );
+  const afterB = await env.pctx.store.readEntry(note.file);
+  assert.match(afterB.body, /body written by window A/);
+  assert.equal(afterB.frontmatter.description, 'A description');
+
+  // A page deleted meanwhile is not recreated by an editor holding its baseline.
+  await service.deleteFile(env.pctx, note.file, 'project');
+  await assert.rejects(
+    service.writeFile(env.pctx, {
+      file: note.file,
+      name: 'two windows',
+      type: 'user',
+      description: 'A description',
+      content: 'zombie body',
+      expectedHash: savedA.expectedHash,
+    }),
+    (error) => {
+      assert.equal(error.code, 'stale-write');
+      return true;
+    },
+  );
+  assert.equal(await exists(path.join(env.pctx.paths.memoryDir, note.file)), false);
 });
 
 test('v10 edit: mergeFiles writes a merged file, trashes the originals and reconciles the index', async (t) => {
@@ -120,7 +187,7 @@ test('v10 edit: fileHistory reports provenance, changelog lines and dream plan r
   await mkdir(batchDir, { recursive: true });
   await writeFile(
     path.join(batchDir, 'meta.json'),
-    JSON.stringify({ ts: '2026-11-07T09-00-00', kind: 'apply', appliedAt: Date.now(), ops: 1, files: [saved.file] }),
+    JSON.stringify({ kind: 'dream-switch', stamp: '2026-11-07T09-00-00', appliedAt: Date.now(), files: [saved.file] }),
     'utf8',
   );
 

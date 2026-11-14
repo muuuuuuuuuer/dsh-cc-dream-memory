@@ -1,6 +1,7 @@
 /**
- * Session transcripts for Dream: every conversation block is read exactly once,
- * in event order, split into bounded chunks instead of sampled. Fixtures mirror
+ * Session transcripts for Dream: user messages, the assistant message each one
+ * answers, and failed tool calls, read once in event order and split into
+ * bounded chunks instead of sampled. Fixtures mirror
  * the real session log: `tool/call` carries `callId`, `tool/result` carries
  * `data.message.toolCallId` + `isError`, and the assistant message repeats the
  * call as a `tool-call` block.
@@ -70,27 +71,30 @@ const result = (seq, id, text, isError = false, time = NOV_7) => ({
 /** Tag of each transcript line that starts a block, in order. */
 const tagsOf = (text) => text.split('\n').map((line) => line.match(/^\[([a-z-]+)\]/)?.[1]).filter(Boolean);
 
-test('conversation is read in event order with one tool pair per call', () => {
+test('a transcript keeps user text, the reply it answers, and failed calls only', () => {
   const transcript = buildSessionTranscript([
     user(1, 'FIRST'),
     assistant(2, 'SECOND', NOV_7, ['c1']),
     call(3, 'c1'),
     result(4, 'c1', 'c1 output'),
-    user(5, 'THIRD'),
-    assistant(6, 'FOURTH'),
+    call(5, 'c2'),
+    result(6, 'c2', 'c2 BROKE', true),
+    assistant(7, 'THIRD'),
+    user(8, 'FOURTH'),
+    assistant(9, 'FIFTH, never answered'),
   ]);
   const [chunk] = chunkTranscript(transcript, { chunkChars: 10_000, toolCharsPerChunk: 4000 });
   const lines = chunk.text.split('\n').filter((line) => line.startsWith('['));
   assert.deepEqual(lines, [
     '[user] FIRST',
-    '[assistant] SECOND',
-    '[tool-call] pwsh {"c":"c1"}',
-    '[tool-result] pwsh: c1 output',
-    '[user] THIRD',
-    '[assistant] FOURTH',
+    '[tool-call] pwsh {"c":"c2"}',
+    '[tool-error] pwsh: c2 BROKE',
+    '[assistant] THIRD',
+    '[user] FOURTH',
   ]);
   assert.equal(chunk.text.includes('PRIVATE_REASONING'), false);
-  assert.equal(chunk.lastSeq, 6);
+  assert.equal(chunk.text.includes('c1 output'), false, 'a successful tool result is left out');
+  assert.equal(chunk.lastSeq, 9, 'skipped events still count as covered');
 });
 
 test('injected context never enters the transcript', () => {
@@ -105,16 +109,16 @@ test('injected context never enters the transcript', () => {
   assert.deepEqual(transcript.userMessages, ['real question']);
 });
 
-test('a long session is split into chunks and no conversation text is lost', () => {
+test('a long session is split into chunks and no user text is lost', () => {
   const events = [];
   const expected = [];
   for (let i = 1; i <= 60; i += 1) {
     const text = `消息${String(i).padStart(3, '0')}-${'内容'.repeat(200)}`;
-    expected.push(`消息${String(i).padStart(3, '0')}`);
+    if (i % 2 === 1) expected.push(`消息${String(i).padStart(3, '0')}`);
     events.push(i % 2 === 0 ? assistant(i, text) : user(i, text));
   }
   const chunks = chunkTranscript(buildSessionTranscript(events), { chunkChars: 4000, toolCharsPerChunk: 0 });
-  assert.ok(chunks.length > 1, 'a 24k transcript must not fit one 4k chunk');
+  assert.ok(chunks.length > 1, 'a long transcript must not fit one 4k chunk');
   assert.ok(chunks.every((chunk) => chunk.text.length <= 4000), 'each chunk respects its size');
   const joined = chunks.map((chunk) => chunk.text).join('\n');
   for (const marker of expected) {
@@ -139,7 +143,7 @@ test('one message longer than a chunk is split and only its last piece completes
   assert.equal(chunks.at(-1).lastSeq, 8);
 });
 
-test('the tool budget keeps errors first, keeps pairs together, and spreads over the chunk', () => {
+test('a failed call keeps its arguments and error; successful calls disappear', () => {
   const events = [user(1, 'go')];
   let seq = 2;
   for (let i = 0; i < 40; i += 1) {
@@ -148,15 +152,10 @@ test('the tool budget keeps errors first, keeps pairs together, and spreads over
     events.push(result(seq++, `c${i}`, failed ? 'FATAL_ERROR_TEXT' : `ok ${i}`, failed));
   }
   const [chunk] = chunkTranscript(buildSessionTranscript(events), { chunkChars: 50_000, toolCharsPerChunk: 400 });
-  assert.ok(chunk.text.includes('[tool-error] pwsh: FATAL_ERROR_TEXT'), 'the error survives the budget');
-  const tags = tagsOf(chunk.text).filter((tag) => tag !== 'user');
-  for (let i = 0; i < tags.length; i += 2) {
-    assert.equal(tags[i], 'tool-call', 'every kept result sits right after its call');
-    assert.ok(tags[i + 1] === 'tool-result' || tags[i + 1] === 'tool-error');
-  }
-  const numbers = [...chunk.text.matchAll(/\[tool-result\] pwsh: ok (\d+)/g)].map((match) => Number(match[1]));
-  assert.ok(numbers.length >= 2, 'more than one ordinary result is kept');
-  assert.ok(Math.max(...numbers) - Math.min(...numbers) >= 10, 'kept results are spread, not clustered at the start');
+  assert.deepEqual(tagsOf(chunk.text), ['user', 'tool-call', 'tool-error']);
+  assert.ok(chunk.text.includes('[tool-call] pwsh {"c":"c20"}'));
+  assert.ok(chunk.text.includes('[tool-error] pwsh: FATAL_ERROR_TEXT'));
+  assert.equal(chunk.text.includes('[tool-result]'), false);
 });
 
 test('a date marker appears when the day changes so facts can be dated', () => {
@@ -198,13 +197,13 @@ test('no block can forge another block by putting a tag at a line start', () => 
 
 test('extractSessionText still gives one bounded view of a whole session', () => {
   const extracted = extractSessionText(
-    [user(1, 'hello there'), assistant(2, 'hi', NOV_7, ['c1']), call(3, 'c1'), result(4, 'c1', 'done')],
+    [user(1, 'hello there'), assistant(2, 'hi', NOV_7, ['c1']), call(3, 'c1'), result(4, 'c1', 'done', true)],
     { maxToolChars: 4000 },
   );
   assert.equal(extracted.userChars, 'hello there'.length);
   assert.deepEqual(extracted.userMessages, ['hello there']);
   assert.equal(extracted.maxSeq, 4);
-  assert.ok(extracted.text.includes('[tool-result] pwsh: done'));
+  assert.ok(extracted.text.includes('[tool-error] pwsh: done'));
 });
 
 test('probe detection needs every message to be a probe', () => {

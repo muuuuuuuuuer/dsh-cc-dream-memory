@@ -69,9 +69,6 @@ async function sourceLayout(sourceDir) {
  * @returns {Promise<{ok:boolean, imported:Array, skipped:Array, errors:Array}>}
  */
 export async function importClaudeMemory({ paths, sourceDir, store } = {}) {
-  if (!store || typeof store.writeRawEntry !== 'function') {
-    return { ok: false, error: 'no-store', imported: [], skipped: [], errors: [] };
-  }
   const dir = typeof sourceDir === 'string' ? expandHome(sourceDir.trim()) : '';
   if (dir === '') return { ok: false, error: 'invalid-source', imported: [], skipped: [], errors: [] };
   let layout;
@@ -89,7 +86,7 @@ export async function importClaudeMemory({ paths, sourceDir, store } = {}) {
   }
   const existing = new Set();
   try {
-    const entries = typeof store.listEntries === 'function' ? await store.listEntries('project') : [];
+    const entries = await store.listEntries('project');
     for (const entry of entries) existing.add(entry.file);
   } catch {
     /* listing is best-effort */
@@ -134,9 +131,6 @@ export async function importClaudeMemory({ paths, sourceDir, store } = {}) {
  * @returns {Promise<{ok:boolean, exported:Array, targetDir:string, rules:boolean}>}
  */
 export async function exportClaudeMemory({ paths, targetDir, store } = {}) {
-  if (!store || typeof store.listEntries !== 'function') {
-    return { ok: false, error: 'no-store', exported: [], targetDir: String(targetDir ?? ''), rules: false };
-  }
   const dir = typeof targetDir === 'string' ? expandHome(targetDir.trim()) : '';
   if (dir === '') return { ok: false, error: 'invalid-target', exported: [], targetDir: '', rules: false };
   const memoryDir = path.join(dir, 'memory');

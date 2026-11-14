@@ -3,24 +3,24 @@
  *
  * This module is the single source of truth for "why is the dream not running?"
  * (`dreamReadiness`), "how healthy is this memory space?" (`memoryHealth`) and
- * "is a review proposal too old to keep?" (`expireStaleProposal`). The status
+ * "is a dream result waiting for the human?" (`pendingSwitch`). The status
  * service and the Web UI call these directly, so they must never throw and the
  * shapes must stay stable.
  *
  * `dreamReadiness` and `memoryHealth` are synchronous (cheap local file reads)
  * so they are safe to call on every status render and work with or without
- * `await`. `expireStaleProposal` is async because it moves files and clears the
+ * `await`. Dream results wait for the human: nothing expires them.
  * durable state.
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { isProcessAlive } from './lock.js';
 import { resolveIdentity } from './identity.js';
 
 const DEFAULT_MIN_HOURS = 24;
 const DEFAULT_MIN_SESSIONS = 5;
 const DEFAULT_THROTTLE_MS = 600_000;
 const DEFAULT_LOCK_TTL_MS = 3_600_000;
-const DEFAULT_PROPOSAL_TTL_HOURS = 72;
 const BACKOFF_CAP_MS = 6 * 60 * 60 * 1000;
 /** A dream older than this (and older than 3 * minHours) is "overdue". */
 const DREAM_OVERDUE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -54,21 +54,10 @@ function toTimestamp(value) {
 
 function safeSnapshot(state) {
   try {
-    const snapshot = typeof state?.snapshot === 'function' ? state.snapshot() : undefined;
+    const snapshot = state?.snapshot();
     return snapshot && typeof snapshot === 'object' ? snapshot : {};
   } catch {
     return {};
-  }
-}
-
-async function callState(state, method, ...args) {
-  const fn = state?.[method];
-  if (typeof fn !== 'function') return undefined;
-  try {
-    return await fn.apply(state, args);
-  } catch (error) {
-    warn(`state.${method}`, error);
-    return undefined;
   }
 }
 
@@ -88,34 +77,6 @@ function failureBackoffMs(config, failures) {
   return Math.min(base * 2 ** Math.min(failures, 6), BACKOFF_CAP_MS);
 }
 
-/** Current lock file owner, if any (sync stat; never throws). */
-function lockInfo(paths, config, now) {
-  const ttlMs = positiveNumber(config?.lockTtlMs, DEFAULT_LOCK_TTL_MS);
-  const file = typeof paths?.lockFile === 'string' ? paths.lockFile : '';
-  if (file === '') return { held: false, ageMs: 0, stale: false, mtimeMs: 0, ttlMs };
-  try {
-    const stat = fs.statSync(file);
-    const ageMs = Math.max(0, now - stat.mtimeMs);
-    return { held: ageMs < ttlMs, ageMs, stale: ageMs >= ttlMs, mtimeMs: stat.mtimeMs, ttlMs };
-  } catch (error) {
-    if (error && error.code !== 'ENOENT') warn('lock stat', error);
-    return { held: false, ageMs: 0, stale: false, mtimeMs: 0, ttlMs };
-  }
-}
-
-function proposalInfo(pendingPath) {
-  if (typeof pendingPath !== 'string' || pendingPath === '') {
-    return { present: false, path: '', ageMs: 0, missing: false, mtimeMs: 0 };
-  }
-  try {
-    const stat = fs.statSync(pendingPath);
-    return { present: true, path: pendingPath, ageMs: Math.max(0, Date.now() - stat.mtimeMs), missing: false, mtimeMs: stat.mtimeMs };
-  } catch (error) {
-    if (error && error.code !== 'ENOENT') warn('proposal stat', error);
-    return { present: true, path: pendingPath, ageMs: 0, missing: true, mtimeMs: 0 };
-  }
-}
-
 function distinctSessionCount(snapshot) {
   const sessions = Array.isArray(snapshot.sessionsSince) ? snapshot.sessionsSince : [];
   const ids = new Set();
@@ -126,11 +87,33 @@ function distinctSessionCount(snapshot) {
   return ids.size;
 }
 
+/** One lock file's age, without throwing when it is missing. */
+function lockInfo(paths, config, now) {
+  const ttlMs = positiveNumber(config?.lockTtlMs, DEFAULT_LOCK_TTL_MS);
+  const file = typeof paths?.lockFile === 'string' ? paths.lockFile : '';
+  if (file === '') return { held: false, ageMs: 0, stale: false, mtimeMs: 0, ttlMs };
+  try {
+    const stat = fs.statSync(file);
+    const ageMs = Math.max(0, now - stat.mtimeMs);
+    let pid;
+    try {
+      pid = JSON.parse(fs.readFileSync(file, 'utf8'))?.pid;
+    } catch {
+      // A just-created lock can be empty until its owner writes metadata.
+    }
+    const stale = ageMs >= ttlMs && !isProcessAlive(pid);
+    return { held: !stale, ageMs, stale, mtimeMs: stat.mtimeMs, ttlMs };
+  } catch (error) {
+    if (error && error.code !== 'ENOENT') warn('lock stat', error);
+    return { held: false, ageMs: 0, stale: false, mtimeMs: 0, ttlMs };
+  }
+}
+
 /**
  * Why is (or isn't) an automatic dream eligible right now?
  *
  * @param {object} pctx project context (`{workspaceDir, paths, store, state, identity?}`).
- * @param {{config?:object, now?:number}} [options]
+ * @param {{config?:object, now?:number, checkLock?:boolean}} [options]
  * @returns {{
  *   eligible:boolean,
  *   nextEligibleAt:number|null,
@@ -140,7 +123,7 @@ function distinctSessionCount(snapshot) {
  *     minHours:{ok:boolean, remainingMs:number},
  *     minSessions:{ok:boolean, current:number, required:number},
  *     throttleMs:number,
- *     pendingProposal:string|false,
+ *     pendingSwitch:object|false,
  *     lock:false|{held:true, ageMs:number, stale:boolean},
  *   },
  * }}
@@ -154,17 +137,18 @@ export function dreamReadiness(pctx, options = {}) {
   const minHours = positiveNumber(config.minHours, DEFAULT_MIN_HOURS);
   const minSessions = Math.max(1, Math.trunc(positiveNumber(config.minSessions, DEFAULT_MIN_SESSIONS)));
   const throttleWindowMs = positiveNumber(config.scanThrottleMs, DEFAULT_THROTTLE_MS);
-  const pendingTtlMs = positiveNumber(config.pendingProposalTtlHours, DEFAULT_PROPOSAL_TTL_HOURS) * 60 * 60 * 1000;
 
   const lastDreamAt = toTimestamp(snapshot.lastDreamAt);
   const lastScanAt = toTimestamp(snapshot.lastScanAt);
   const lastAttemptAt = toTimestamp(snapshot.lastDreamAttemptAt);
   const failures = Math.max(0, Math.trunc(positiveNumber(snapshot.consecutiveFailures, 0)));
-  const pendingProposal = typeof snapshot.pendingProposal === 'string' && snapshot.pendingProposal !== ''
-    ? snapshot.pendingProposal
+  // One pending copy at a time: the human switches to it or discards it. It
+  // never expires on its own, because discarding it is their decision.
+  const pendingSwitch = snapshot.shadowPending && typeof snapshot.shadowPending === 'object'
+    && typeof snapshot.shadowPending.dir === 'string' && snapshot.shadowPending.dir !== ''
+    ? snapshot.shadowPending
     : false;
-  const proposal = proposalInfo(pendingProposal);
-  const lock = lockInfo(paths, config, now);
+  const lock = options.checkLock === false ? { held: false } : lockInfo(paths, config, now);
 
   const minHoursRemaining = lastDreamAt > 0
     ? Math.max(0, lastDreamAt + minHours * 60 * 60 * 1000 - now)
@@ -189,7 +173,7 @@ export function dreamReadiness(pctx, options = {}) {
       required: minSessions,
     },
     throttleMs: throttleRemaining,
-    pendingProposal,
+    pendingSwitch,
     lock: lock.held
       ? { held: true, ageMs: Math.round(lock.ageMs), stale: lock.stale }
       : false,
@@ -229,17 +213,11 @@ export function dreamReadiness(pctx, options = {}) {
         message: `backing off after ${failures} consecutive failure(s) (${Math.ceil(backoffMs / 1000)}s left)`,
       });
     }
-    if (pendingProposal !== false) {
-      if (proposal.missing) {
-        reasons.push({ code: 'pending-proposal', message: 'a review proposal is recorded but its file is missing' });
-      } else {
-        if (proposal.mtimeMs > 0) timeTargets.push(proposal.mtimeMs + pendingTtlMs);
-        const ageHours = (proposal.ageMs / 3_600_000).toFixed(1);
-        reasons.push({
-          code: 'pending-proposal',
-          message: `a review proposal is waiting for a human decision (${ageHours}h old); the scheduler expires it after ${Math.round(pendingTtlMs / 3_600_000)}h`,
-        });
-      }
+    if (pendingSwitch !== false) {
+      reasons.push({
+        code: 'pending-switch',
+        message: 'a dream result is waiting for the human to switch to it or discard it',
+      });
     }
     if (lock.held) {
       timeTargets.push(lock.mtimeMs + lock.ttlMs);
@@ -349,12 +327,12 @@ function identityOf(pctx, config, paths) {
  * and only local files are inspected.
  *
  * @param {object} pctx project context.
- * @param {{config?:object, now?:number}} [options]
+ * @param {{config?:object, now?:number, checkLock?:boolean}} [options]
  * @returns {{
  *   score:number,
  *   dimensions:{
  *     indexBudget:object, neverReadRatio:number, dreamStaleness:object,
- *     pendingProposal:object, truncatedFiles:object, rules:object, identity:object,
+ *     pendingSwitch:object, truncatedFiles:object, rules:object, identity:object,
  *   },
  *   suggestions:Array<{code:string, message:string}>,
  * }}
@@ -411,35 +389,25 @@ export function memoryHealth(pctx, options = {}) {
     overdue: dreamOverdue,
     thresholdHours: Math.round(overdueThresholdMs / 3_600_000),
   };
-  if (dreamOverdue) {
-    score -= 20;
-    suggestions.push({
-      code: 'dream-overdue',
-      message: lastDreamAt === 0
-        ? 'memory has never been consolidated by a dream'
-        : `the last dream was ${Math.round((hoursSince ?? 0) * 10) / 10}h ago (threshold ${dreamStaleness.thresholdHours}h)`,
-    });
-  }
+  // v23: how long the dream has been idle is readiness, not health. It stays
+  // as a reported number, but it no longer lowers the daily score or adds a
+  // suggestion — `dreamReadiness` answers "why is the dream not running?".
 
-  // --- pending proposal ----------------------------------------------------
-  const pendingPath = typeof snapshot.pendingProposal === 'string' ? snapshot.pendingProposal : '';
-  const pendingTtlHours = positiveNumber(config.pendingProposalTtlHours, DEFAULT_PROPOSAL_TTL_HOURS);
-  const proposal = proposalInfo(pendingPath);
-  const pendingAgeHours = proposal.present ? Math.round((proposal.ageMs / 3_600_000) * 10) / 10 : 0;
-  const pendingStale = proposal.present && !proposal.missing && pendingAgeHours > pendingTtlHours;
-  const pendingProposal = {
-    present: proposal.present,
-    ageHours: pendingAgeHours,
-    stale: pendingStale,
-    ttlHours: pendingTtlHours,
+  // --- pending copy --------------------------------------------------------
+  // A finished dream leaves a copy of memory next to the live one; the human
+  // switches to it or discards it. Nothing expires it for them.
+  const waiting = snapshot.shadowPending && typeof snapshot.shadowPending === 'object'
+    && typeof snapshot.shadowPending.dir === 'string' && snapshot.shadowPending.dir !== ''
+    ? snapshot.shadowPending
+    : null;
+  const pendingAgeHours = waiting && Number(waiting.createdAt) > 0
+    ? Math.round(((now - Number(waiting.createdAt)) / 3_600_000) * 10) / 10
+    : 0;
+  const pendingSwitch = {
+    present: waiting !== null,
+    ageHours: Math.max(0, pendingAgeHours),
+    files: waiting && Array.isArray(waiting.files) ? waiting.files.length : 0,
   };
-  if (pendingStale) {
-    score -= 10;
-    suggestions.push({
-      code: 'pending-stale',
-      message: `a review proposal has been pending for ${pendingAgeHours}h (ttl ${pendingTtlHours}h); it will be expired by the scheduler`,
-    });
-  }
 
   // --- files that will be truncated in the next dream input ----------------
   const maxFileChars = Math.max(1, Math.trunc(positiveNumber(config.dreamMaxFileChars, 20_000)));
@@ -507,137 +475,11 @@ export function memoryHealth(pctx, options = {}) {
       indexBudget,
       neverReadRatio,
       dreamStaleness,
-      pendingProposal,
+      pendingSwitch,
       truncatedFiles,
       rules,
       identity: identityDimension,
     },
     suggestions,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Stale proposal expiry
-// ---------------------------------------------------------------------------
-
-function uniqueTarget(dir, baseName) {
-  const direct = path.join(dir, baseName);
-  if (!fs.existsSync(direct)) return direct;
-  const stamp = new Date().toISOString().slice(0, 19).replace(/:/g, '-');
-  return path.join(dir, `${stamp}-${baseName}`);
-}
-
-function expiryChangelog({ at, proposalPath, movedTo, ageMs, ttlHours }) {
-  const lines = [
-    `## ${new Date(at).toISOString()}`,
-    `- pending-proposal expired: ${path.basename(proposalPath)} (age ${(ageMs / 3_600_000).toFixed(1)}h > ttl ${ttlHours}h)`,
-    `- moved to: ${path.join('.pending', 'expired', path.basename(movedTo))}`,
-  ];
-  return `${lines.join('\n')}\n`;
-}
-
-/** Clear the pending-pointer synchronously (expiry path; never counts as rejected). */
-function clearStatePendingSync(state, silent) {
-  try {
-    if (state && typeof state.clearPendingProposalSync === 'function') {
-      state.clearPendingProposalSync({ silent });
-      return;
-    }
-  } catch (error) {
-    warn('state.clearPendingProposalSync', error);
-  }
-  try {
-    if (state && state.state && typeof state.state === 'object') state.state.pendingProposal = '';
-  } catch {
-    /* best effort: the archived proposal is what matters */
-  }
-}
-
-/**
- * Move an over-age review proposal out of the way (`.pending/expired/`), clear
- * the durable pointer and append a `pending-proposal expired` changelog entry.
- *
- * Deliberately synchronous: the scheduler calls it on the turn-end path and the
- * status/UI layers want the result immediately. Expiry is not a rejection and
- * never counts towards the rejected metric.
- *
- * @param {object} pctx project context.
- * @param {{config?:object, now?:number}} [options]
- * @returns {{expired:boolean, path?:string, movedTo?:string, ageMs?:number, ttlHours?:number, reason?:string}}
- */
-export function expireStaleProposal(pctx, options = {}) {
-  const config = configOf(pctx, options);
-  const now = Number.isFinite(options?.now) ? Number(options.now) : Date.now();
-  const state = pctx && typeof pctx === 'object' ? pctx.state : undefined;
-  const paths = pathsOf(pctx);
-  const snapshot = safeSnapshot(state);
-  const pendingPath = typeof snapshot.pendingProposal === 'string' ? snapshot.pendingProposal : '';
-  const ttlHours = positiveNumber(config.pendingProposalTtlHours, DEFAULT_PROPOSAL_TTL_HOURS);
-  const ttlMs = ttlHours * 60 * 60 * 1000;
-
-  if (pendingPath === '') return { expired: false, reason: 'no-pending-proposal' };
-
-  let stat;
-  try {
-    stat = fs.statSync(pendingPath);
-  } catch (error) {
-    if (error && error.code === 'ENOENT') {
-      // Dangling pointer (file already deleted elsewhere): just clear it.
-      clearStatePendingSync(state, true);
-      return { expired: false, path: pendingPath, reason: 'proposal-file-missing' };
-    }
-    warn('proposal stat', error);
-    return { expired: false, path: pendingPath, reason: 'proposal-unreadable' };
-  }
-
-  const ageMs = Math.max(0, now - stat.mtimeMs);
-  if (ageMs <= ttlMs) {
-    return { expired: false, path: pendingPath, ageMs, ttlHours };
-  }
-
-  const expiredDir = typeof paths.pendingExpiredDir === 'string' && paths.pendingExpiredDir !== ''
-    ? paths.pendingExpiredDir
-    : path.join(paths.pendingDir || path.dirname(pendingPath), 'expired');
-  let movedTo = '';
-  try {
-    fs.mkdirSync(expiredDir, { recursive: true });
-    movedTo = uniqueTarget(expiredDir, path.basename(pendingPath));
-    try {
-      fs.renameSync(pendingPath, movedTo);
-    } catch (renameError) {
-      if (renameError && renameError.code === 'ENOENT') {
-        clearStatePendingSync(state, true);
-        return { expired: false, path: pendingPath, reason: 'proposal-file-missing' };
-      }
-      // Cross-device move or locked file: copy + unlink.
-      fs.copyFileSync(pendingPath, movedTo);
-      fs.unlinkSync(pendingPath);
-    }
-  } catch (error) {
-    warn('expire pending proposal', error);
-    return { expired: false, path: pendingPath, reason: 'move-failed' };
-  }
-
-  clearStatePendingSync(state, true);
-
-  const entry = expiryChangelog({ at: now, proposalPath: pendingPath, movedTo, ageMs, ttlHours });
-  try {
-    if (typeof paths.changelogFile === 'string' && paths.changelogFile !== '') {
-      fs.mkdirSync(path.dirname(paths.changelogFile), { recursive: true });
-      fs.appendFileSync(paths.changelogFile, entry, 'utf8');
-    } else if (pctx?.store && typeof pctx.store.writeChangelog === 'function') {
-      const pending = pctx.store.writeChangelog(entry);
-      if (pending && typeof pending.catch === 'function') pending.catch((error) => warn('expiry changelog', error));
-    }
-  } catch (error) {
-    warn('expiry changelog', error);
-  }
-
-  return {
-    expired: true,
-    path: pendingPath,
-    movedTo,
-    ageMs,
-    ttlHours,
   };
 }

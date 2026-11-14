@@ -38,20 +38,19 @@ test('deleting a note that does not exist is a clear error', async (t) => {
   assert.equal(result.error, 'NOT_FOUND');
 });
 
-test('in confirm mode a delete waits for the human, and approval carries it out', async (t) => {
-  const env = await toolsEnv(t, { writeMode: 'confirm' });
+test('a delete is carried out directly, recoverably', async (t) => {
+  const env = await toolsEnv(t);
   const saved = await env.pctx.store.saveEntry({ name: 'review_me', type: 'project', description: 'd', content: 'body' });
-  const queued = await env.definitions.get('memory_update').execute({ file: saved.file, delete: true }, exec);
-  assert.equal(queued.written, false);
-  assert.ok(queued.pendingId);
-  assert.deepEqual((await env.pctx.store.listEntries()).map((entry) => entry.file), [saved.file], 'nothing happens before approval');
-  const approved = await env.mods.pending.approvePendingWrite(env.pctx.paths, queued.pendingId, { store: env.pctx.store, source: { sessionId: 's', via: 'tool:memory_update' } });
-  assert.equal(approved.written, true);
+  const deleted = await env.definitions.get('memory_update').execute({ file: saved.file, delete: true }, exec);
+  assert.equal(deleted.ok, true, JSON.stringify(deleted));
+  assert.equal(deleted.deleted, true);
   assert.deepEqual(await env.pctx.store.listEntries(), []);
+  const trashed = await readdir(env.paths.trashRoot, { recursive: true });
+  assert.ok(trashed.some((item) => item.endsWith(saved.file)), 'the deleted note is in the recycle bin');
 });
 
 test('a read-only subagent cannot delete', async (t) => {
-  const env = await toolsEnv(t, { subagentWriteMode: 'off' });
+  const env = await toolsEnv(t, { subagentMemory: 'off' });
   const saved = await env.pctx.store.saveEntry({ name: 'keep', type: 'project', description: 'd', content: 'body' });
   const child = { agent: { id: 'child', session: { header: { parentSession: 'parent' } } }, sessionId: 'child' };
   const result = await env.definitions.get('memory_update').execute({ file: saved.file, delete: true }, child);
@@ -81,14 +80,14 @@ test('the over-budget warning points at something the model can actually do', as
   for (let i = 0; i < 3; i += 1) {
     last = await env.pctx.store.saveEntry({ name: `n${i}`, type: 'project', description: `note ${i}`, content: `body ${i}` });
   }
-  assert.match(last.warning ?? last.index?.warning ?? '', /delete/i);
+  assert.match(last.index?.error ?? last.warning ?? '', /merge or drop stale entries/i);
 });
 
-test('injected guidance covers dates, reasons, verification and past sessions', async () => {
+test('injected guidance names the tools and carries one instruction block', async () => {
   const { buildInjectionText } = await import('../src/inject.js');
-  const text = buildInjectionText({ memoryDir: 'x', index: { text: '' }, config: {}, rules: '' });
-  assert.match(text, /absolute date/i);
-  assert.match(text, /\*\*Why:\*\*/);
-  assert.match(text, /still exists/i);
-  assert.match(text, /session_search/);
+  const text = buildInjectionText({ index: { text: '' }, rules: '' });
+  assert.match(text, /memory_save/);
+  assert.match(text, /memory_read/);
+  assert.equal(text.split('<instructions>').length - 1, 1, 'exactly one instruction block');
+  assert.doesNotMatch(text, /<rules>/, 'no rules block without a rules file');
 });

@@ -62,14 +62,12 @@ test('v16 budget: 8 long sessions share the total dream input budget instead of 
     store,
     config: {
       dreamInputMaxChars: 96_000,
-      dreamMaxSessionChars: 12_000,
       dreamMaxFileChars: 20_000,
-      sessionLookback: 8,
     },
     workspaceDir: 'C:/workspace',
     state,
   });
   assert.equal(input.sessions.length, 8, 'all candidates must be read, not only the first four');
   assert.ok(input.chars <= 96_000);
-  assert.ok(input.sessions.every((session) => session.excerpt.length > 0));
+  assert.ok(input.sessions.every((session) => session.chunks.length > 0));
 });

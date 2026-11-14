@@ -21,7 +21,8 @@ import os from 'node:os';
 import { buildPaths } from '../src/paths.js';
 import { resolveConfig } from '../src/config.js';
 import { MemoryStore } from '../src/store.js';
-import { buildHotIndex, buildInjectionText, memoryStatusIsCurrent } from '../src/inject.js';
+import { buildInjectionText } from '../src/inject.js';
+import { isCurrentPage } from '../src/memory-body.js';
 
 function fail(message) {
   console.error(`[baseline-capture] ${message}`);
@@ -113,14 +114,13 @@ async function main() {
   fs.cpSync(source, projectDir, { recursive: true });
   fs.mkdirSync(path.join(outDir, 'workspace'), { recursive: true });
 
-  // The bundle defaults: index navigation with a 3-note hot set.
-  const config = resolveConfig({ memoryRoot, injectHotOnly: true, injectHotEntries: 3 });
+  const config = resolveConfig({ memoryRoot });
   const paths = buildPaths({
     memoryRoot,
     workspaceDir: path.join(outDir, 'workspace'),
     projectId: 'baseline',
   });
-  const store = new MemoryStore({ paths, config, getConfig: () => config });
+  const store = new MemoryStore({ paths, getConfig: () => config });
   await store.ensure();
 
   const entries = await store.listEntries('project');
@@ -136,20 +136,16 @@ async function main() {
       file: entry.file,
       name: entry.name ?? '',
       description: entry.description ?? '',
-      statusCurrent: memoryStatusIsCurrent(body),
+      statusCurrent: isCurrentPage(body),
     });
   }
 
-  const hot = entries.length > 0 ? await buildHotIndex({ store, paths, config, limit: config.injectHotEntries }) : null;
-  const index = hot ?? { text: '', lines: 0, bytes: 0, totalLines: 0, totalBytes: 0 };
+  const index = await store.injectedIndex('project');
   const rulesPath = path.join(projectDir, 'RULES.md');
   const injectionText = buildInjectionText({
-    memoryDir: paths.memoryDir,
-    config,
     index,
     rulesSource: fs.existsSync(rulesPath) ? 'project' : 'default',
     rules: fs.existsSync(rulesPath) ? fs.readFileSync(rulesPath, 'utf8') : '',
-    wikiAvailable: false,
   });
 
   const state = readJson(path.join(projectDir, '.state.json')) || {};
@@ -161,12 +157,8 @@ async function main() {
   const record = {
     capturedAt: new Date().toISOString(),
     source,
-    config: { injectHotOnly: config.injectHotOnly, injectHotEntries: config.injectHotEntries },
     noteCount: notes.length,
     statusCurrentCount: notes.filter((note) => note.statusCurrent).length,
-    hotEligibleCount: hot ? hot.lines : 0,
-    hotFiles: hot?.hotFiles ?? [],
-    omittedTopics: hot?.omitted ?? 0,
     index: { text: index.text, lines: index.lines, bytes: index.bytes },
     injectionText,
     lastError: typeof state.lastError === 'string' ? state.lastError : '',
@@ -191,7 +183,7 @@ function renderReport(record) {
   lines.push('## Measured state');
   lines.push('');
   lines.push(`- topic notes: **${record.noteCount}** (\`STATUS: current\`: ${record.statusCurrentCount})`);
-  lines.push(`- hot-set notes injected on turn one: **${record.hotEligibleCount}** of ${record.noteCount} (omitted: ${record.omittedTopics})`);
+  lines.push(`- index lines injected on turn one: **${record.index.lines}**`);
   lines.push(`- last Dream error: ${record.lastError === '' ? '(none)' : `\`${record.lastError}\``}`);
   lines.push(`- pending proposal: ${record.pendingProposal === '' ? '(none)' : `\`${record.pendingProposal}\``}`);
   lines.push(`- Dream runs: ${record.dreamRuns.total}, failed: ${record.dreamRuns.failed}, truncated: ${record.dreamRuns.truncated}`);

@@ -16,9 +16,11 @@ async function dreamOnto(env, file) {
     sessions: { s1: ['Use pnpm, not npm.', 'Releases go out on Fridays.'] },
     claims: [claimOf('Use pnpm, not npm.', { target: file, kind: 'preference' }), claimOf('Releases go out on Fridays.')],
   });
-  const applied = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual' });
-  assert.equal(applied.applied, true, JSON.stringify(applied).slice(0, 400));
-  return applied;
+  const ready = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual' });
+  assert.equal(ready.ready, true, JSON.stringify(ready).slice(0, 400));
+  const switched = await env.runtime.switchDream({ pctx: env.pctx, agent: env.pctx.agent });
+  assert.equal(switched.ok, true, JSON.stringify(switched).slice(0, 400));
+  return switched;
 }
 
 async function seedUndoEnv(t) {
@@ -52,10 +54,9 @@ test('v10 undo: an applied dream writes a meta.json batch record', async (t) => 
   const metaPath = path.join(batchDir, 'meta.json');
   assert.equal(await exists(metaPath), true, '.dreams/<ts>/meta.json must be written');
   const meta = JSON.parse(await readFile(metaPath, 'utf8'));
-  assert.equal(typeof meta.ts, 'string');
+  assert.equal(typeof meta.stamp, 'string');
   assert.equal(typeof meta.appliedAt, 'number');
-  assert.equal(meta.kind === 'apply' || meta.kind === 'apply-ops', true, `kind: ${meta.kind}`);
-  assert.equal(typeof meta.ops, 'number');
+  assert.equal(meta.kind, 'dream-switch', `kind: ${meta.kind}`);
   assert.ok(Array.isArray(meta.files), 'meta lists the touched files');
   assert.equal(meta.files.includes('user_undo_target.md'), true);
 });
@@ -105,22 +106,18 @@ test('v10 undo: no applied batch returns no-undoable-batch', async (t) => {
   assert.equal(result.error, 'no-undoable-batch');
 });
 
-test('v10 undo: GET /dream-history lists batches with undoable/hasMeta flags', async (t) => {
+test('v10 undo: GET /dream-history lists only Dream switches', async (t) => {
   const env = await httpEnv(t);
-  // Legacy batch without meta.json: listed but not undoable.
-  const legacyDir = path.join(env.pctx.paths.dreamsDir, '2026-01-01T00-00-00');
-  await mkdir(legacyDir, { recursive: true });
-  await writeFile(path.join(legacyDir, 'MEMORY.md'), '', 'utf8');
+  // A folder without switch metadata (a run artifact) is not a switch.
+  const otherDir = path.join(env.pctx.paths.dreamsDir, '2026-01-01T00-00-00');
+  await mkdir(otherDir, { recursive: true });
+  await writeFile(path.join(otherDir, 'MEMORY.md'), '', 'utf8');
 
   const res = await callHttp(env, { path: '/dream-history' });
   assert.equal(res.statusCode, 200, res.bodyText());
   const body = res.json();
   assert.equal(body.ok, true);
-  assert.ok(Array.isArray(body.items));
-  const legacy = body.items.find((item) => item.ts === '2026-01-01T00-00-00');
-  assert.ok(legacy, 'legacy batches are listed');
-  assert.equal(legacy.hasMeta, false);
-  assert.equal(legacy.undoable, false);
+  assert.deepEqual(body.items, [], 'only switches are history');
 
   assert.equal((await callHttp(env, { path: '/dream-history', token: 'bad-token' })).statusCode, 401);
 });

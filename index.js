@@ -40,7 +40,7 @@ export function createMemoryPlugin(ctx, rawConfig) {
   const cleanups = [];
   let runtime = null;
   try {
-    const config = resolveConfig(rawConfig);
+    const config = resolveConfig(rawConfig, { env: typeof process !== 'undefined' ? process.env : {} });
     runtime = new MemoryRuntime(ctx, config);
 
     const mount = (name, register) => {

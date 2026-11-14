@@ -10,7 +10,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import path from 'node:path';
-import { loadModule, makeTempDir } from './helpers.mjs';
+import { checkReplyFor, loadModule, makeTempDir } from './helpers.mjs';
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -52,9 +52,6 @@ export function modules() {
       inject: await loadModule('../src/inject.js', { requireExports: ['registerInjection'] }),
       policy: await loadModule('../src/policy.js', {
         requireExports: ['POLICY_DEFAULTS', 'textSimilarity', 'entrySimilarity', 'detectConflict', 'evaluateWrite'],
-      }),
-      pending: await loadModule('../src/pending-writes.js', {
-        requireExports: ['listPendingWrites', 'queuePendingWrite', 'approvePendingWrite', 'rejectPendingWrite'],
       }),
     }))();
   }
@@ -136,10 +133,11 @@ export function seedUserMessages(env, ...texts) {
 
 /**
  * Script one Dream for a runtime env: the transcripts the host returns and what
- * the analyzer answers. `sessions` maps a session id to the user's messages.
- * `claims`/`verify` are the analyzer reply for every unit, or pass
- * `analyzer(prompt)` to answer per unit. Only analyzer calls are expected: Dream
- * has no other model stage. Returns the list of analyzer prompts sent.
+ * the model answers. `sessions` maps a session id to the user's messages.
+ * `claims` is the map reply for every unit, or pass `analyzer(prompt)` to
+ * answer per unit. `verify` items (`{file, claim: <saved line>, result, quote}`)
+ * become the check reply: each is cited by the claim whose quote it names.
+ * Returns the list of map prompts sent; check prompts land in `checkPrompts`.
  */
 export async function scriptDream(env, {
   sessions = { s1: ['Deploy with make release.'] },
@@ -148,8 +146,9 @@ export async function scriptDream(env, {
   summary = 'scripted dream',
   usage = null,
   analyzer = null,
+  checkPrompts = [],
 } = {}) {
-  const { ANALYZER_SYSTEM_PROMPT } = await import('../src/dream-analyzer.js');
+  const { ANALYZER_SYSTEM_PROMPT, CHECK_SYSTEM_PROMPT } = await import('../src/dream-analyzer.js');
   const prompts = [];
   const eventsById = new Map(Object.entries(sessions).map(([id, texts]) => [id, texts.map((message, index) => ({
     type: 'user/message',
@@ -164,10 +163,17 @@ export async function scriptDream(env, {
   env.host.services.llm = {
     stream(options) {
       env.host.llmCalls.push(options);
-      if (options?.system !== ANALYZER_SYSTEM_PROMPT) throw new Error('Dream should only call the analyzer');
       const prompt = (options.messages ?? []).flatMap((message) => message.content ?? []).map((part) => part.text ?? '').join('');
-      prompts.push(prompt);
-      const reply = typeof analyzer === 'function' ? analyzer(prompt) : { summary, claims, patches: [], verify };
+      let reply;
+      if (options?.system === CHECK_SYSTEM_PROMPT) {
+        checkPrompts.push(prompt);
+        reply = checkReplyFor(prompt, verify);
+      } else if (options?.system === ANALYZER_SYSTEM_PROMPT) {
+        prompts.push(prompt);
+        reply = typeof analyzer === 'function' ? analyzer(prompt) : { summary, claims };
+      } else {
+        throw new Error('Dream calls only the map and check prompts');
+      }
       const chunks = [{ type: 'text-delta', text: typeof reply === 'string' ? reply : JSON.stringify(reply) }];
       if (usage) chunks.push({ type: 'usage', usage });
       chunks.push({ type: 'finish', reason: { kind: 'stop' } });
@@ -202,7 +208,7 @@ export async function makeEnv(t, configOverrides = {}) {
   await mkdir(workspaceDir, { recursive: true });
   const config = mods.config.resolveConfig({ memoryRoot, ...configOverrides });
   const paths = mods.paths.buildPaths({ memoryRoot: config.memoryRoot, homeDir: path.join(tmp, 'home'), workspaceDir });
-  const store = new mods.store.MemoryStore({ paths, config });
+  const store = new mods.store.MemoryStore({ paths, getConfig: () => config });
   await store.ensure();
   const state = new mods.state.ProjectState(paths);
   await state.load();
@@ -247,7 +253,7 @@ export async function commandEnv(t, configOverrides = {}, llmOptions = {}) {
         return () => commandDefinitions.delete(definition.name);
       },
     },
-    get: () => undefined,
+    get: (name) => (name === 'commands' ? commandCtx.commands : undefined),
     on: () => () => {},
     effect: (factory) => (typeof factory === 'function' ? factory() : undefined),
   };

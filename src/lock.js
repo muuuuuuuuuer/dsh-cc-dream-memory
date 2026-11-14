@@ -24,7 +24,7 @@ const CONTENTION_CODES = new Set(['EEXIST', 'EPERM', 'EACCES', 'EBUSY']);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Is the process that wrote the lock still alive? EPERM means "alive, other owner". */
-async function isProcessAlive(pid) {
+export function isProcessAlive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -84,7 +84,7 @@ export async function withFileLock(file, fn, options = {}) {
             } catch {
               ownerPid = 0;
             }
-            if (await isProcessAlive(ownerPid)) {
+            if (isProcessAlive(ownerPid)) {
               await sleep(RETRY_BASE_MS + Math.floor(Math.random() * 20));
               continue;
             }

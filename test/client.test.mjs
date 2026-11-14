@@ -5,12 +5,11 @@
  *
  *   - the factory contract (`id`, `inject`, `apply`) and locale registration;
  *   - locale/en.json + locale/zh.json key parity with the inline dictionaries;
- *   - `createBackend` via the slot injection: bridge-missing fallback to slash
- *     commands, no-backend, and the silent-API path with a fake `fetch`
- *     (status/file normalization, 401 token-expired classification);
+ *   - the slot backend with and without a reachable HTTP bridge, including
+ *     status/file normalization and 401 token-expired classification;
  *   - the pure helpers exposed on `window.__CC_MEMORY_INTERNALS__`
  *     (normalizeStatus/normalizeFile/renderMarkdown/renderInline/
- *     resolveApiConfig/createBackend/apiRequest).
+ *     createBackend/apiRequest).
  *
  * The internals hook is a v7 contract item owned by ui-commands; until it lands
  * the dependent assertions are reported as skipped with a "[waiting]" reason so
@@ -77,8 +76,8 @@ function createReactShim() {
 
 /**
  * Create a vm sandbox that emulates the browser surface client.js touches:
- * `window.__ModuleLoader__`, `window.location`, an optional `__CC_MEMORY_API__`
- * bridge, `fetch`, timers and a quiet console.
+ * `window.__ModuleLoader__`, `window.location`, `fetch` with an optional bridge
+ * response, timers and a quiet console.
  */
 function createSandbox({ apiBridge, fetchImpl } = {}) {
   const loaderCalls = [];
@@ -93,7 +92,6 @@ function createSandbox({ apiBridge, fetchImpl } = {}) {
       reload() {},
     },
   };
-  if (apiBridge !== undefined) windowObject.__CC_MEMORY_API__ = apiBridge;
   const sandbox = {
     window: windowObject,
     console: {
@@ -109,6 +107,11 @@ function createSandbox({ apiBridge, fetchImpl } = {}) {
     clearInterval,
     fetch: async (...args) => {
       fetchCalls.push(args);
+      // The page learns {base, token} only from GET /api/cc-memory/bridge.
+      if (String(args[0]) === '/api/cc-memory/bridge') {
+        if (apiBridge === undefined) return { ok: false, status: 404, json: async () => ({ ok: false }) };
+        return { ok: true, status: 200, json: async () => ({ ok: true, ...apiBridge }) };
+      }
       if (typeof fetchImpl === 'function') return fetchImpl(...args);
       return { ok: true, status: 200, json: async () => ({ ok: true }) };
     },
@@ -225,6 +228,15 @@ function collectText(nodes) {
   return text;
 }
 
+function findAll(nodes, predicate, found = []) {
+  for (const node of toNodeArray(nodes)) {
+    if (!node || typeof node !== 'object') continue;
+    if (predicate(node)) found.push(node);
+    findAll(node.children, predicate, found);
+  }
+  return found;
+}
+
 function findNode(nodes, predicate) {
   for (const node of toNodeArray(nodes)) {
     if (!node || typeof node !== 'object') continue;
@@ -271,34 +283,39 @@ function componentRenderer(react, component, props, initialStates = []) {
 }
 
 /** Reach the real Dream tab through its registered view and injected backend. */
-async function dreamTabHarness({ estimate, localeActive = 'en', estimateError = false, waiting = false, previewPlan, dreamRuns } = {}) {
+async function dreamTabHarness({ estimate, localeActive = 'en', estimateError = false, pending = null, dreamRuns } = {}) {
   const actions = [];
+  const bodies = [];
   const payload = makeStatusPayload({
     config: { enabled: true, autoMemoryEnabled: true },
-    state: { lastPlanPath: waiting ? '/tmp/plan.json' : '', lastDreamMode: 'dry-run' },
+    state: { shadowPending: pending, lastDreamMode: 'shadow' },
     dreamRuns: dreamRuns ?? [],
   });
   const client = await loadClient({
     apiBridge: { base: '/api/cc-memory', token: 'cost-preview-token' },
     fetchImpl: async (url, options) => {
       if (String(url).includes('/status')) return { ok: true, status: 200, json: async () => payload };
+      if (String(url).includes('/dream-diff?')) {
+        actions.push('diff');
+        assert.match(url, /runId=run-9&file=release\.md/);
+        return { ok: true, status: 200, json: async () => ({ ok: true, before: '', after: 'New release fact', addedLines: [{ line: 1, text: 'New release fact' }], removedLines: [] }) };
+      }
       const body = JSON.parse(options.body);
       actions.push(body.action);
-      if (body.action === 'preview') return { ok: true, status: 200, json: async () => ({ ok: true, result: previewPlan }) };
+      bodies.push(body);
       if (body.action === 'estimate') {
         if (estimateError) return { ok: false, status: 503, json: async () => ({ ok: false, error: 'estimate-unavailable' }) };
         const result = await estimate;
         return { ok: true, status: 200, json: async () => ({ ok: true, result }) };
       }
-      return { ok: true, status: 200, json: async () => ({ ok: true, result: { ops: 1 } }) };
+      if (body.action === 'start') return { ok: true, status: 200, json: async () => ({ ok: true, result: { started: true, runId: 'run-1', status: 'running' } }) };
+      if (body.action === 'switch') return { ok: true, status: 200, json: async () => ({ ok: true, result: { ok: true, backupDir: '/tmp/backup', counts: { added: 0, changed: 1, removed: 0 } } }) };
+      return { ok: true, status: 200, json: async () => ({ ok: true, result: { ok: true } }) };
     },
   });
   const { slotDefinitions } = await mountClient(client, { localeActive });
   const view = findDefinition(slotDefinitions, 'conversation.view');
   const props = view.inject({ sessionId: 'cost-preview-session' });
-  const tabInitialStates = previewPlan === undefined ? [] : [
-    { phase: 'ready', plan: await props.memBackend.previewDream(), error: '' }, [], -1,
-  ];
   const ready = view.component(props);
   const memoryView = findNode(ready, (node) => node.type?.name === 'MemoryView');
   const status = client.windowObject.__CC_MEMORY_INTERNALS__.normalizeStatus(payload);
@@ -308,14 +325,12 @@ async function dreamTabHarness({ estimate, localeActive = 'en', estimateError = 
   let tabRenderer;
   return {
     actions,
+    bodies,
     render() {
       const viewTree = viewRenderer.render();
       const tab = findNode(viewTree, (node) => node.type?.name === 'DreamTab');
-      tabRenderer ??= componentRenderer(client.react, tab.type, tab.props, tabInitialStates);
+      tabRenderer ??= componentRenderer(client.react, tab.type, tab.props);
       return { tree: tabRenderer.render(tab.props), viewTree };
-    },
-    confirmRenderer(node) {
-      return componentRenderer(client.react, node.type, node.props);
     },
   };
 }
@@ -332,181 +347,76 @@ function internalsOrSkip(t, client) {
 
 const REQUIRED_INTERNALS = ['normalizeStatus', 'normalizeFile', 'createBackend', 'renderMarkdown', 'renderInline'];
 
-test('client: Dream click shows an input estimate before confirmation can start dry-run', async () => {
+test('client: Dream estimates first, then starts the range the user saw', async () => {
   let resolveEstimate;
   const estimate = new Promise((resolve) => { resolveEstimate = resolve; });
   const ui = await dreamTabHarness({ estimate });
-  const start = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node) === 'Start a dream');
+  const start = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node) === 'Estimate the run');
+  assert.ok(start, 'the dream tab offers a read-only estimate');
   const pending = start.props.onClick();
+  await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(ui.actions, ['estimate'], 'the first action must be read-only estimation');
-  resolveEstimate({ estimatedTokens: 12345, inputChars: 48000, limit: 20000, costMode: 'warn', rough: true });
+  resolveEstimate({
+    estimatedTokens: 12345, inputChars: 48000, limit: 20000, costMode: 'warn', rough: true,
+    inputId: 'in-1', ranges: [{ id: 's1', lastSeq: 3 }],
+  });
   await pending;
+  await new Promise((resolve) => setImmediate(resolve));
   const { tree } = ui.render();
   const text = collectText(tree);
   assert.match(text, /12[,.]?345/);
   assert.match(text, /20[,.]?000/);
   assert.match(text, /input/i);
-  assert.match(text, /actual total.*higher/i);
-  assert.match(text, /not a spending cap/i);
-  assert.deepEqual(ui.actions, ['estimate'], 'showing the estimate must not run Dream');
-  const confirmation = findNode(tree, (node) => node.type?.name === 'ConfirmButton');
-  assert.ok(confirmation, 'the existing confirmation component guards the paid action');
-  const confirm = ui.confirmRenderer(confirmation);
-  confirm.render().props.onClick();
-  assert.deepEqual(ui.actions, ['estimate']);
-  confirm.render().props.onClick();
+  const confirmation = findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Start the dream run');
+  assert.ok(confirmation, 'the estimate unlocks the paid action');
+  await confirmation.props.onClick();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(ui.actions, ['estimate', 'start']);
-});
-
-test('client: cancelling the Dream cost preview prevents the model run', async () => {
-  const ui = await dreamTabHarness({
-    estimate: { estimatedTokens: 1200, inputChars: 4000, limit: 8000, costMode: 'warn', rough: true },
-  });
-  const start = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node) === 'Start a dream');
-  await start.props.onClick();
-  const cancel = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node) === 'Cancel');
-  assert.ok(cancel, 'the preview has an explicit cancellation action');
-  cancel.props.onClick();
-  assert.deepEqual(ui.actions, ['estimate']);
-  const { tree } = ui.render();
-  assert.equal(findNode(tree, (node) => node.type?.name === 'ConfirmButton'), undefined);
-  assert.ok(findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Start a dream'));
+  assert.deepEqual(ui.actions, ['estimate', 'start'], 'showing the estimate must not run Dream on its own');
+  assert.equal(ui.bodies[1].inputId, 'in-1', 'the confirmed range travels with the start');
+  assert.deepEqual(ui.bodies[1].inputRanges, [{ id: 's1', lastSeq: 3 }]);
+  assert.equal(ui.actions.includes('preview'), false, 'a dream no longer produces a per-operation plan');
 });
 
 test('client: a failed or malformed estimate leaves Dream unstarted with a visible retry path', async (t) => {
   for (const options of [{ estimateError: true }, { estimate: {} }]) {
     await t.test(JSON.stringify(options), async () => {
       const ui = await dreamTabHarness(options);
-      const start = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node) === 'Start a dream');
+      const start = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node) === 'Estimate the run');
       await start.props.onClick();
       const { tree, viewTree } = ui.render();
       assert.deepEqual(ui.actions, ['estimate']);
       assert.ok(findNode(viewTree, (node) => node.props?.role === 'status'), 'a failure is shown in the existing toast');
-      assert.equal(findNode(tree, (node) => node.type?.name === 'ConfirmButton'), undefined);
-      assert.ok(findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Start a dream'));
+      assert.equal(findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Start the dream run'), undefined);
+      assert.ok(findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Estimate the run'));
     });
   }
 });
 
-test('client: Dream cost preview localizes unlimited usage and also guards regeneration', async (t) => {
-  for (const [localeActive, startLabel, unlimited] of [
-    ['en', 'Dream again', /no token limit|unlimited/i],
-    ['zh', '重新 Dream', /不设.*上限|未设置.*上限|无限制/],
-  ]) {
-    await t.test(localeActive, async () => {
-      const ui = await dreamTabHarness({
-        localeActive, waiting: true,
-        estimate: { estimatedTokens: 4321, inputChars: 16000, limit: 0, costMode: 'warn', rough: true },
-      });
-      const start = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node) === startLabel);
-      assert.ok(start);
-      await start.props.onClick();
-      assert.deepEqual(ui.actions, ['estimate']);
-      assert.match(collectText(ui.render().tree), unlimited);
-      assert.match(collectText(ui.render().tree), /4[,.]?321/);
-    });
-  }
-});
 
 test('client: a running dream shows its progress and can be stopped or continued', async () => {
   const running = await dreamTabHarness({
-    waiting: true,
-    dreamRuns: [{ runId: '2026-11-12T09-00-00-abcdef', status: 'running', counts: { done: 1, failed: 0, pending: 1 }, input: { expectedUnits: 2 } }],
+    dreamRuns: [{ runId: '2026-11-12T09-00-00-abcdef', status: 'running', stage: 'analyzing' }],
   });
   const runningText = collectText(running.render().tree);
-  assert.match(runningText, /1 of 2 parts analyzed/u);
-  assert.match(runningText, /Running/u);
+  assert.match(runningText, /This run/u);
+  assert.match(runningText, /running/u);
   const stop = findNode(running.render().tree, (node) => node.type === 'button' && collectText(node) === 'Stop');
   assert.ok(stop, 'a running dream offers a stop button');
   await stop.props.onClick();
   assert.deepEqual(running.actions, ['cancel']);
 
   const failed = await dreamTabHarness({
-    waiting: true,
-    dreamRuns: [{
-      runId: '2026-11-12T09-00-00-abcdef',
-      status: 'failed',
-      counts: { done: 1, failed: 1, pending: 0 },
-      input: { expectedUnits: 2 },
-      error: '1 unit(s) failed',
-    }],
+    dreamRuns: [{ runId: '2026-11-12T09-00-00-abcdef', status: 'failed' }],
   });
   const failedText = collectText(failed.render().tree);
-  assert.match(failedText, /1 parts failed and can be retried/u);
-  assert.match(failedText, /1 unit\(s\) failed/u);
+  assert.match(failedText, /failed/u);
   const resume = findNode(failed.render().tree, (node) => node.type === 'button' && collectText(node) === 'Continue');
   assert.ok(resume, 'a failed dream offers a continue button');
   await resume.props.onClick();
   assert.deepEqual(failed.actions, ['resume']);
 });
 
-test('client: a claim the host left for review is shown with its reason', async () => {
-  const ui = await dreamTabHarness({
-    waiting: true,
-    previewPlan: {
-      kind: 'dream-v2',
-      coverageComplete: true,
-      ops: [{
-        index: 0, op: 'write', file: 'release.md', before: '', after: '- Release takes 9 seconds. ^[a#p1, 2026-01-01]',
-        changed: true, removedLines: [], addedLines: [],
-      }],
-      review: [{ file: 'release.md', claim: 'Release takes 12 seconds', reason: 'more than one line could be meant' }],
-    },
-  });
-  const text = collectText(ui.render().tree);
-  assert.match(text, /1 claim\(s\) need a person to decide/u);
-  assert.match(text, /Release takes 12 seconds/u);
-  assert.match(text, /more than one line could be meant/u);
-});
 
-test('client: expanding a Dream operation lists removed body lines as literal numbered text', async (t) => {
-  for (const [localeActive, label] of [['en', 'Removed body lines'], ['zh', '将删除的正文行']]) {
-    await t.test(localeActive, async () => {
-      const before = '---\nname: old\n---\n\nkept\n  <img src=x onerror=alert(1)>\n**preference**\n\n**preference**';
-      const after = 'kept';
-      const ui = await dreamTabHarness({
-        localeActive, waiting: true,
-        previewPlan: { ops: [{
-          index: 0, op: 'write', file: 'preference.md', before, after, changed: true,
-          removedLines: [
-            { line: 2, text: '  <img src=x onerror=alert(1)>' },
-            { line: 3, text: '**preference**' },
-            { line: 4, text: '' },
-            { line: 5, text: '**preference**' },
-          ],
-          addedLines: [],
-        }] },
-      });
-      const collapsed = ui.render().tree;
-      assert.equal(collectText(collapsed).includes(label), false);
-      const expand = findNode(collapsed, (node) => node.type === 'button' && node.props['aria-expanded'] === 'false');
-      assert.ok(expand);
-      expand.props.onClick();
-      const expanded = ui.render().tree;
-      assert.ok(collectText(expanded).includes(label));
-      const removed = findNode(expanded, (node) => node.type === 'pre' && collectText(node).startsWith('2: '));
-      assert.ok(removed, 'removed lines have their own visible inventory');
-      assert.equal(collectText(removed), '2:   <img src=x onerror=alert(1)>\n3: **preference**\n4: \n5: **preference**');
-      assert.ok(removed.children.every((child) => typeof child === 'string'), 'inventory is plain text, never interpreted HTML or Markdown');
-      assert.ok(findNode(expanded, (node) => node.type === 'pre' && collectText(node) === before), 'the original before pane remains');
-      assert.ok(findNode(expanded, (node) => node.type === 'pre' && collectText(node) === after), 'the original after pane remains');
-    });
-  }
-});
-
-test('client: older Dream previews without line inventories retain their before and after panes', async () => {
-  const ui = await dreamTabHarness({
-    waiting: true,
-    previewPlan: { ops: [{ index: 0, op: 'write', file: 'old.md', before: 'old body', after: 'new body', changed: true }] },
-  });
-  const expand = findNode(ui.render().tree, (node) => node.type === 'button' && node.props['aria-expanded'] === 'false');
-  expand.props.onClick();
-  const expanded = ui.render().tree;
-  assert.ok(findNode(expanded, (node) => node.type === 'pre' && collectText(node) === 'old body'));
-  assert.ok(findNode(expanded, (node) => node.type === 'pre' && collectText(node) === 'new body'));
-  assert.equal(collectText(expanded).includes('Removed body lines'), false);
-});
 
 // ---------------------------------------------------------------------------
 // Harness / factory contract
@@ -515,7 +425,7 @@ test('client: older Dream previews without line inventories retain their before 
 test('client: real client.js loads through ModuleLoader and returns the plugin contract', async () => {
   const client = await loadClient();
   assert.equal(client.config.id, 'dsh-cc-dream-memory');
-  assert.deepEqual([...client.plugin.inject], ['slots', 'locale', 'remote', 'remote.commands']);
+  assert.deepEqual([...client.plugin.inject], ['slots', 'locale']);
   assert.equal(typeof client.plugin.apply, 'function');
   assert.equal(typeof client.windowObject.__CC_MEMORY_API__, 'undefined');
 });
@@ -597,70 +507,39 @@ function makeStatusPayload(overrides = {}) {
   };
 }
 
-test('client: createBackend falls back to commands (bridge-missing) or none (no backend)', async () => {
+test('client: an unavailable bridge leaves the Memory slots mounted without executing commands', async () => {
   const client = await loadClient();
-  const executeCalls = [];
-  const statusPayload = makeStatusPayload();
   const { slotDefinitions } = await mountClient(client, {
-    localeActive: 'en',
-    commandExecute: async (sessionId, line) => {
-      executeCalls.push({ sessionId, line });
-      if (line.includes('/memory json')) {
-        return { ok: true, value: { result: { kind: 'success', text: JSON.stringify(statusPayload) } } };
-      }
-      return { ok: true, value: { result: { kind: 'success', text: 'file body from command' } } };
-    },
+    commandExecute: () => assert.fail('the Memory page must not execute slash commands'),
   });
 
   const view = findDefinition(slotDefinitions, 'conversation.view');
   assert.ok(view, 'conversation.view must be registered');
   assert.equal(view.id, 'cc-memory');
   assert.equal(view.order, 40);
-  const viewProps = view.inject({ sessionId: 'session-1' });
-  assert.ok(viewProps.memBackend, 'view inject must provide a backend');
-  assert.equal(viewProps.memBackend.mode, 'commands', 'without the API bridge the backend degrades to commands');
-  assert.equal(viewProps.memBackend.reason, 'bridge-missing');
+  const backend = view.inject({ sessionId: 'session-1' }).memBackend;
+  assert.equal(backend.mode, 'none');
+  await assert.rejects(backend.status(), /memory service is unavailable/);
 
-  const normalized = await viewProps.memBackend.status();
-  assert.equal(normalized.degraded, true, 'command fallback payload is marked degraded');
-  assert.equal(normalized.config.autoDreamEnabled, true);
-  assert.equal(normalized.config.dreamMode, 'review');
-  assert.equal(normalized.entries.length, 1, 'invalid entries are filtered from the fallback payload');
-  assert.equal(normalized.state.sessionsSince, 2, 'session arrays are normalized to a count');
-  assert.equal(normalized.trashCount, 2);
-  assert.equal(normalized.rules.source, 'project');
-  assert.equal(executeCalls[0].line, '/memory json');
-  assert.equal(executeCalls[0].sessionId, 'session-1');
-
-  const file = await viewProps.memBackend.file('a.md', 'project');
-  assert.equal(file.file, 'a.md');
-  assert.match(file.body, /file body from command/);
-  assert.equal(file.frontmatter, null);
-
-  // A chip without a session id has neither API nor commands => no backend.
   const chip = findDefinition(slotDefinitions, 'conversation.composer.dock');
   assert.ok(chip, 'conversation.composer.dock must be registered');
   assert.equal(chip.id, 'cc-memory-status');
   assert.equal(chip.order, 50);
-  const chipProps = chip.inject({});
-  assert.equal(chipProps.memBackend.mode, 'none');
-  assert.equal(chipProps.memBackend.reason, 'no-backend');
+  assert.equal(chip.inject({}).memBackend.mode, 'none');
+  assert.deepEqual(client.fetchCalls.map(([url]) => url), ['/api/cc-memory/bridge']);
 });
 
-test('client v4: recovers the API bridge from /api/cc-memory/bridge when the global is missing', async () => {
-  const bridgeCalls = [];
+test('client: discovers the API bridge via a credentialed same-origin request', async () => {
   const client = await loadClient({
-    fetchImpl: async (url, options) => {
-      bridgeCalls.push({ url, options });
-      return { ok: true, status: 200, json: async () => ({ ok: true, base: '/api/cc-memory', token: 'tok-bridge' }) };
-    },
+    apiBridge: { base: '/api/cc-memory', token: 'tok-bridge' },
   });
   const { slotDefinitions } = await mountClient(client);
-  assert.equal(bridgeCalls[0].url, '/api/cc-memory/bridge', 'the bridge endpoint is fetched relative to the page origin');
+  assert.equal(client.fetchCalls.length, 1);
+  const [[url, options]] = client.fetchCalls;
+  assert.equal(url, '/api/cc-memory/bridge');
+  assert.equal(options.credentials, 'include');
   const view = findDefinition(slotDefinitions, 'conversation.view');
-  const props = view.inject({ sessionId: 'session-bridge' });
-  assert.equal(props.memBackend.mode, 'api', 'the discovered bridge restores API mode (no read-only banner)');
-  assert.equal(props.memBackend.reason, null);
+  assert.equal(view.inject({ sessionId: 'session-bridge' }).memBackend.mode, 'api');
 });
 
 test('client: silent API backend normalizes /status + /file and classifies 401 as token-expired', async () => {
@@ -690,10 +569,8 @@ test('client: silent API backend normalizes /status + /file and classifies 401 a
   const view = findDefinition(slotDefinitions, 'conversation.view');
   const props = view.inject({ sessionId: 'session-9' });
   assert.equal(props.memBackend.mode, 'api');
-  assert.equal(props.memBackend.reason, null);
 
   const status = await props.memBackend.status();
-  assert.equal(status.degraded, false);
   assert.equal(status.config.autoMemoryEnabled, false, 'API booleans are preserved');
   assert.equal(status.index.lines, 1);
   assert.equal(status.entries.length, 1, 'invalid entries are filtered');
@@ -702,7 +579,7 @@ test('client: silent API backend normalizes /status + /file and classifies 401 a
 
   const [url, options] = client.fetchCalls.at(-1);
   assert.match(String(url), /^http:\/\/127\.0\.0\.1:61145\/api\/cc-memory\/status\?sessionId=session-9$/);
-  assert.equal(options.headers['x-cc-memory-token'], 'tok-123', 'requests must carry the injected token');
+  assert.equal(options.headers['x-cc-memory-token'], 'tok-123', 'requests must carry the bridge token');
 
   const file = await props.memBackend.file('a.md', 'project');
   assert.equal(file.raw, filePayload.raw);
@@ -730,8 +607,6 @@ test('client: exposes window.__CC_MEMORY_INTERNALS__ with the documented pure he
   for (const name of REQUIRED_INTERNALS) {
     assert.equal(typeof internals[name], 'function', `__CC_MEMORY_INTERNALS__.${name} must be a function`);
   }
-  const apiConfigFn = internals.resolveApiConfig ?? internals.readApiConfig;
-  assert.equal(typeof apiConfigFn, 'function', 'resolveApiConfig (or readApiConfig) must be exported');
   assert.equal(typeof internals.apiRequest, 'function', 'apiRequest must be exported');
 });
 
@@ -750,25 +625,20 @@ test('client: normalizeStatus fills safe defaults and filters malformed entries'
   assert.equal(empty.state.lastDreamAt, 0);
   assert.equal(empty.state.sessionsSince, 0);
   assert.equal(empty.rules.source, 'default');
-  assert.equal(empty.degraded, false);
-  assert.equal(empty.userScope.enabled, false);
-  assert.equal(empty.userScope.entries.length, 0);
 
   const filled = internals.normalizeStatus(makeStatusPayload());
   assert.equal(filled.entries.length, 1);
   assert.equal(filled.entries[0].file, 'a.md');
   assert.equal(filled.state.sessionsSince, 2);
   assert.equal(filled.rules.source, 'project');
-  assert.equal(filled.userScope.enabled, false);
 });
 
-test('client: normalizeFile defaults the body to raw, scope to project and provenance to empty', async (t) => {
+test('client: normalizeFile defaults the body to raw and provenance to empty', async (t) => {
   const client = await loadClient();
   const internals = internalsOrSkip(t, client);
   if (!internals) return;
   const empty = internals.normalizeFile(null);
   assert.equal(empty.file, '');
-  assert.equal(empty.scope, 'project');
   assert.equal(empty.frontmatter, null);
   assert.equal(empty.body, '');
   assert.equal(empty.raw, '');
@@ -779,11 +649,9 @@ test('client: normalizeFile defaults the body to raw, scope to project and prove
 
   const fromRaw = internals.normalizeFile({ file: 'a.md', raw: 'raw body' });
   assert.equal(fromRaw.body, 'raw body', 'body falls back to raw when absent');
-  assert.equal(fromRaw.scope, 'project');
 
-  const userScope = internals.normalizeFile({ file: 'u.md', scope: 'user', frontmatter: { name: 'u' }, body: 'body' });
-  assert.equal(userScope.scope, 'user');
-  assert.equal(userScope.frontmatter.name, 'u');
+  const withFrontmatter = internals.normalizeFile({ file: 'u.md', frontmatter: { name: 'u' }, body: 'body' });
+  assert.equal(withFrontmatter.frontmatter.name, 'u');
 });
 
 test('client: renderInline renders bold/em/code/links as React nodes', async (t) => {
@@ -846,42 +714,11 @@ test('client: renderMarkdown renders headings, lists, bold, links and fenced cod
   assert.equal(types.includes('hr'), true, 'horizontal rules must render');
 });
 
-test('client: resolveApiConfig trims the base and rejects incomplete bridges', async (t) => {
-  const withBridge = await loadClient({ apiBridge: { base: '/api/cc-memory/', token: 'tok' } });
-  const internals = internalsOrSkip(t, withBridge);
-  if (!internals) return;
-  const resolve = internals.resolveApiConfig ?? internals.readApiConfig;
-  const resolved = resolve();
-  assert.ok(resolved, 'a complete bridge must resolve');
-  assert.equal(resolved.base, '/api/cc-memory');
-  assert.equal(resolved.token, 'tok');
-
-  withBridge.windowObject.__CC_MEMORY_API__ = { base: '', token: 'tok' };
-  assert.equal(resolve(), null, 'an empty base must not resolve');
-
-  const withoutBridge = await loadClient();
-  const noBridgeInternals = internalsOrSkip(t, withoutBridge);
-  if (!noBridgeInternals) return;
-  const resolveEmpty = noBridgeInternals.resolveApiConfig ?? noBridgeInternals.readApiConfig;
-  assert.equal(resolveEmpty(), null, 'no bridge resolves to null');
-});
-
-test('client: createBackend exposes mode/reason without a DOM', async (t) => {
-  const client = await loadClient();
-  const internals = internalsOrSkip(t, client);
-  if (!internals) return;
-  const apiBackend = internals.createBackend({ api: { base: '/x', token: '' }, commandRunner: null, sessionId: 's1' });
-  assert.equal(apiBackend.mode, 'api');
-  assert.equal(apiBackend.reason, null);
-
-  const commandRunner = async () => '';
-  const commandsBackend = internals.createBackend({ api: null, commandRunner, sessionId: 's1' });
-  assert.equal(commandsBackend.mode, 'commands');
-  assert.equal(commandsBackend.reason, 'bridge-missing');
-
-  const noneBackend = internals.createBackend({ api: null, commandRunner: null, sessionId: undefined });
-  assert.equal(noneBackend.mode, 'none');
-  assert.equal(noneBackend.reason, 'no-backend');
+test('client: a bridge with an empty API base leaves the backend unavailable', async () => {
+  const client = await loadClient({ apiBridge: { base: '', token: 'tok' } });
+  const { slotDefinitions } = await mountClient(client);
+  const view = findDefinition(slotDefinitions, 'conversation.view');
+  assert.equal(view.inject({ sessionId: 's1' }).memBackend.mode, 'none');
 });
 
 // ---------------------------------------------------------------------------
@@ -1018,7 +855,7 @@ test('client: normalizeStatus carries the v10 status blocks when present', async
     state: {},
     metrics: {},
     dreamHistory: { items: [{ ts: '2026-11-07T00-00-00', kind: 'apply', undoable: true, hasMeta: true }] },
-    subagentPolicy: { injectSubagents: true, mode: 'shared' },
+    subagentPolicy: { mode: 'shared' },
     search: { query: '', items: [] },
   });
   if (!('dreamHistory' in normalized)) {
@@ -1084,10 +921,9 @@ test('client v4: counts, op kinds, project label and attention count', async () 
   assert.equal(internals.projectLabel({ projectId: 'rent-calculator' }), 'rent-calculator');
 
   const status = internals.normalizeStatus({
-    pendingWrites: { count: 2, items: [] },
-    state: { lastPlanPath: '/x/plan.json' },
+    state: { shadowPending: { dir: '/tmp/shadow/B', createdAt: '2026-11-13T00:00:00.000Z', counts: { added: 1, changed: 0, removed: 0 }, files: [{ file: 'release.md', action: 'added' }] } },
   });
-  assert.equal(internals.attentionCount(status), 3, 'two queued writes plus one plan waiting for review');
+  assert.equal(internals.attentionCount(status), 1, 'one dream result waiting to be switched');
   assert.equal(internals.attentionCount(internals.normalizeStatus({})), 0);
 });
 
@@ -1121,16 +957,12 @@ test('client v4: every literal t() key used by client.js exists in both dictiona
   // Keys built at runtime from a fixed set of values.
   for (const type of ['all', 'user', 'feedback', 'project', 'reference']) keys.add('type.' + type);
   for (const type of ['user', 'feedback', 'project', 'reference']) keys.add('edit.typeHint.' + type);
-  for (const kind of ['create', 'update', 'delete', 'index']) keys.add('tidy.op.' + kind);
+
   for (const source of ['default', 'project', 'global']) keys.add('rules.source.' + source);
-  for (const scope of ['project', 'user']) keys.add('scope.' + scope);
-  for (const trust of ['all', 'hot', 'verified', 'changed', 'unverified', 'stale']) keys.add('trust.' + trust);
+  for (const trust of ['all', 'verified', 'changed', 'unverified', 'stale']) keys.add('trust.' + trust);
   for (const status of ['stale', 'superseded', 'disputed', 'review-needed', 'retired']) keys.add('status.' + status);
   for (const note of ['appliesWhen', 'verify', 'exception', 'observed']) keys.add('notes.' + note);
-  for (const action of ['save', 'update', 'delete']) {
-    for (const prefix of ['inbox.action.', 'inbox.approve.', 'inbox.reject.']) keys.add(prefix + action);
-  }
-  for (const pipeline of ['classic', 'v2']) keys.add('tidy.pipeline.' + pipeline);
+
   for (const key of keys) {
     assert.equal(typeof dicts.en[key], 'string', `en dictionary is missing ${key}`);
     assert.equal(typeof dicts.zh[key], 'string', `zh dictionary is missing ${key}`);
@@ -1143,24 +975,22 @@ test('client v4: every literal t() key used by client.js exists in both dictiona
 
 test('client v5: trust levels come from host facts, never from typed body lines', async () => {
   const internals = (await loadClient()).windowObject.__CC_MEMORY_INTERNALS__;
-  assert.equal(internals.trustOf({ current: false, hot: true }), 'stale', 'an outdated note is never shown as loaded');
-  assert.equal(internals.trustOf({ hot: true, verified: { date: '2026-11-10' } }), 'hot');
+  assert.equal(internals.trustOf({ current: false, verified: { date: '2026-11-10' } }), 'stale');
   assert.equal(internals.trustOf({ verified: { date: '2026-11-10' } }), 'verified');
   assert.equal(internals.trustOf({ verified: null, verifiedOutdated: true }), 'changed');
   assert.equal(internals.trustOf({}), 'unverified', 'old entries without trust facts are unverified');
   const entries = [
-    { file: 'a.md', name: 'a', description: '', hot: true, verified: { date: 'x' } },
+    { file: 'a.md', name: 'a', description: '', verified: { date: 'x' } },
     { file: 'b.md', name: 'b', description: '', verified: { date: 'x' } },
     { file: 'c.md', name: 'c', description: '', verifiedOutdated: true },
     { file: 'd.md', name: 'd', description: '' },
     { file: 'e.md', name: 'e', description: '', current: false },
   ];
-  assert.deepEqual({ ...internals.countByTrust(entries) }, { all: 5, hot: 1, verified: 2, unverified: 2, stale: 1 });
+  assert.deepEqual({ ...internals.countByTrust(entries) }, { all: 5, hot: 0, verified: 2, unverified: 2, stale: 1 });
   const files = (list) => Array.from(list, (entry) => entry.file).sort();
   assert.deepEqual(files(internals.filterEntries(entries, { trust: 'verified' })), ['a.md', 'b.md']);
   assert.deepEqual(files(internals.filterEntries(entries, { trust: 'unverified' })), ['c.md', 'd.md']);
-  const status = internals.normalizeStatus({ entries: [{ file: 'a.md', hot: true, verified: { date: '2026-11-10', source: 'dream' } }] });
-  assert.equal(status.entries[0].hot, true);
+  const status = internals.normalizeStatus({ entries: [{ file: 'a.md', verified: { date: '2026-11-10', source: 'dream' } }] });
   assert.equal(status.entries[0].verified.date, '2026-11-10');
   assert.equal(status.entries[0].current, true);
 });
@@ -1194,40 +1024,12 @@ test('client v5: splitBody separates conditions, conflicts and earlier values an
 test('client v5: the header says what a new conversation loads', async () => {
   const internals = (await loadClient()).windowObject.__CC_MEMORY_INTERNALS__;
   const t = (key, params) => (params ? key + JSON.stringify(params) : key);
-  const hot = internals.normalizeStatus({
-    config: { injectHotOnly: true },
-    injection: { hotOnly: true, hotLimit: 3, hotFiles: ['a.md'] },
-    entries: [{ file: 'a.md', hot: true }, { file: 'b.md' }],
-  });
-  assert.equal(internals.loadSummary(hot, t).text, 'load.hot{"n":1,"total":2}');
-  const none = internals.normalizeStatus({ injection: { hotOnly: true, hotFiles: [] }, entries: [{ file: 'b.md' }] });
-  assert.equal(internals.loadSummary(none, t).tone, 'warn');
   const index = internals.normalizeStatus({ config: { indexMaxLines: 200 }, index: { lines: 12, bytes: 900 }, entries: [] });
   assert.equal(internals.loadSummary(index, t).text, 'load.index{"lines":12,"maxLines":200}');
   const off = internals.normalizeStatus({ config: { autoMemoryEnabled: false } });
   assert.equal(internals.loadSummary(off, t).text, 'load.off');
 });
 
-test('client v5: preview keeps Dream v2 coverage and per-op evidence', async () => {
-  const internals = (await loadClient()).windowObject.__CC_MEMORY_INTERNALS__;
-  const plan = internals.normalizePreviewPlan({
-    kind: 'dream-v2',
-    coverageComplete: false,
-    expectedSessions: 3,
-    processedSessions: 2,
-    failedSessions: ['s3'],
-    partialSessions: [],
-    verifiedFiles: ['user_lang.md'],
-    ops: [{ index: 0, op: 'write', file: 'user_lang.md', before: '', after: 'x', evidence: ['quote one', { statement: 's', quote: 'q' }, 7] }],
-  });
-  assert.equal(plan.v2, true);
-  assert.equal(plan.coverageComplete, false);
-  assert.equal(plan.failedSessions, 1);
-  assert.equal(plan.verifiedFiles.length, 1);
-  assert.equal(plan.ops[0].evidence.length, 2, 'malformed evidence is dropped');
-  assert.equal(plan.ops[0].evidence[0].quote, 'quote one');
-  assert.equal(internals.normalizePreviewPlan({ ops: [] }).v2, false, 'classic plans carry no coverage');
-});
 
 test('client v5: citations render as chips and wiki links as buttons that know broken targets', async () => {
   const internals = (await loadClient()).windowObject.__CC_MEMORY_INTERNALS__;
@@ -1248,44 +1050,7 @@ test('client v5: citations render as chips and wiki links as buttons that know b
   assert.equal(findNode(plain, (node) => node.type === 'button'), undefined, 'without a handler links are plain text');
 });
 
-test('client v5: review marks refused changes, keeps them out of the selection and explains why', async () => {
-  const ui = await dreamTabHarness({
-    waiting: true,
-    previewPlan: {
-      kind: 'dream-v2',
-      coverageComplete: true,
-      ops: [
-        { index: 0, op: 'write', file: 'a.md', before: 'old', after: 'new', changed: true,
-          rejected: 'a.md: new line has no source citation: "相关：[[b]]（插件）"' },
-        { index: 1, op: 'write', file: 'b.md', before: 'x', after: 'y', changed: true },
-        { index: 2, op: 'write', file: 'c.md', before: 'p', after: 'q', changed: true },
-      ],
-    },
-  });
-  let tree = ui.render().tree;
-  const box = (file) => findNode(tree, (node) => node.props?.role === 'checkbox' && node.props['aria-label'] === file);
-  assert.equal(box('a.md').props.disabled, true, 'a refused change cannot be selected');
-  assert.equal(box('b.md').props.disabled, false);
-  assert.match(collectText(tree), /Can’t apply/);
-  assert.match(collectText(tree), /1 changes fail the checks apply runs/);
-  findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Select all').props.onClick();
-  tree = ui.render().tree;
-  const apply = findNode(tree, (node) => node.type?.name === 'ConfirmButton');
-  assert.equal(apply.props.label, 'Apply 2 selected', 'select all skips the refused change');
-  findNode(tree, (node) => node.type === 'button' && node.props['aria-expanded'] === 'false').props.onClick();
-  assert.match(collectText(ui.render().tree), /A new line has no source citation: “相关：\[\[b\]\]（插件）”/);
-});
 
-test('client v5: a plan-level evidence refusal blocks apply', async () => {
-  const ui = await dreamTabHarness({
-    waiting: true,
-    previewPlan: { kind: 'dream-v2', coverageComplete: true, evidenceError: 'plan has no evidence bundle; regenerate a v2 dry-run',
-      ops: [{ index: 0, op: 'write', file: 'a.md', before: 'old', after: 'new', changed: true }] },
-  });
-  const tree = ui.render().tree;
-  assert.match(collectText(tree), /cannot be applied as a whole: plan has no evidence bundle/);
-  assert.equal(findNode(tree, (node) => node.type?.name === 'ConfirmButton').props.disabled, true);
-});
 
 test('client v5: long host refusals become a headline and a list; a stale backend is named', async () => {
   const client = await loadClient();
@@ -1307,4 +1072,72 @@ test('client v5: long host refusals become a headline and a list; a stale backen
     en['err.backendStale'],
   );
   assert.equal(internals.errorInfo(new Error('short failure'), t).items.length, 0);
+});
+
+test('client: two windows share the edit baseline and a stale save keeps its draft', async (t) => {
+  const sent = [];
+  const client = await loadClient({
+    fetchImpl: async (url, options) => {
+      sent.push({ url, body: JSON.parse(options.body) });
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: false, error: 'stale-write', message: 'memory file not found: a.md' }),
+      };
+    },
+  });
+  const internals = internalsOrSkip(t, client);
+  if (!internals) return;
+  const doc = internals.normalizeFile({ file: 'a.md', version: 'v1', expectedHash: 'h1' });
+  assert.equal(doc.version, 'v1', 'the content version is kept for the receipt');
+  assert.equal(doc.expectedHash, 'h1', 'the edit baseline is kept for the save');
+  const backend = internals.createBackend({ api: { base: '/x', token: '' }, commandRunner: null, sessionId: 's1' });
+  await assert.rejects(
+    () => backend.saveFile({ file: 'a.md', content: 'x', expectedHash: 'h1' }),
+    (error) => error.code === 'stale-write',
+    'a stale baseline surfaces as a coded error so the editor can keep the draft',
+  );
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].body.expectedHash, 'h1', 'the save must send the baseline it was opened at');
+  assert.equal(sent[0].body.content, 'x', 'the draft body is what gets submitted');
+});
+
+test('client: each change of a dream result is passed or rejected', async () => {
+  const pending = {
+    dir: '/tmp/shadow/B',
+    createdAt: '2026-11-13T00:00:00.000Z',
+    summary: 'merged the deployment notes',
+    runId: 'run-9',
+    counts: { added: 1, changed: 1, removed: 0 },
+    files: [{ file: 'release.md', action: 'added' }, { file: 'style.md', action: 'changed' }],
+  };
+  const ui = await dreamTabHarness({ pending });
+  const text = collectText(ui.render().tree);
+  assert.match(text, /A dream result is waiting for your review/u);
+  assert.match(text, /1 added, 1 changed, 0 removed/u);
+  assert.match(text, /release\.md/u);
+  assert.match(text, /MEMORY\.md/u);
+  assert.match(text, /no later dream proposes them again/u);
+  assert.deepEqual(ui.actions, []);
+  const preview = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node).includes('release.md'));
+  assert.ok(preview, 'each pending file can be opened');
+  await preview.props.onClick();
+  assert.match(collectText(ui.render().tree), /New release fact/);
+  assert.deepEqual(ui.actions, ['diff']);
+
+  // Reject one file: the apply button counts what is still passed and sends the rest as rejected.
+  const rejectButtons = () => findAll(ui.render().tree, (node) => node.type === 'button' && collectText(node) === 'Reject');
+  assert.equal(rejectButtons().length, 2, 'every page has its own decision; the index does not');
+  await rejectButtons()[1].props.onClick();
+  const apply = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node) === 'Apply 1 passed');
+  assert.ok(apply, 'the apply button counts the passed changes');
+  await apply.props.onClick();
+  assert.deepEqual(ui.actions, ['diff', 'switch']);
+  assert.deepEqual(ui.bodies.at(-1).reject, ['style.md']);
+
+  const second = await dreamTabHarness({ pending });
+  const rejectAll = findNode(second.render().tree, (node) => typeof node.type === 'function' && node.props.label === 'Reject all');
+  assert.ok(rejectAll, 'the panel offers rejecting everything');
+  await rejectAll.props.onConfirm();
+  assert.deepEqual(second.actions, ['discard']);
 });

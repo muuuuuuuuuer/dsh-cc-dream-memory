@@ -71,6 +71,8 @@ function isStructural(line) {
   const value = String(line ?? '').trim();
   if (value === '') return true;
   if (/^[-*]\s*Superseded:/iu.test(value)) return true;
+  // A conflict line is derived: it quotes the page value and the new claim.
+  if (/^[-*]\s*CONFLICT:/iu.test(value)) return true;
   const status = /^STATUS:\s*([a-z-]+)\s*$/iu.exec(value);
   if (status !== null) return STATUS_VALUES.has(status[1].toLowerCase());
   return STRUCTURAL_RE.some((pattern) => pattern.test(value));

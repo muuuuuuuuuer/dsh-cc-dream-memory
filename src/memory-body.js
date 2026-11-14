@@ -96,9 +96,26 @@ export function verifiedAgainstCurrent(body) {
 
 /** Inline history bullet written by a correction. */
 export const SUPERSEDED_LINE_RE = /^\s*[-*]\s+Superseded:/iu;
+/** A derived line that keeps two values the host could not reconcile. */
+export const CONFLICT_LINE_RE = /^\s*[-*]\s+CONFLICT:/iu;
 
 /** Heading that starts a history section; everything after it is history. */
 export const HISTORY_HEADING_RE = /^##\s+history\s*$/iu;
+
+/** The one status line that marks a page as the active value. */
+export const CURRENT_STATUS_LINE = 'STATUS: current';
+
+/**
+ * Stamp a body the user just put into force. Idempotent: a body that already
+ * declares `STATUS: current` is returned unchanged.
+ * @param {unknown} content
+ * @returns {string}
+ */
+export function ensureCurrentStatus(content) {
+  const text = String(content ?? '').replace(/\r\n?/g, '\n');
+  if (/^\s*status:\s*current\s*$/imu.test(text)) return text;
+  return `${CURRENT_STATUS_LINE}\n${text.replace(/^\n+/, '')}`;
+}
 
 /** Metadata labels the host owns; they describe the page, not the world. */
 const FACT_METADATA_RE = /^\s*(?:STATUS|VERIFIED(?:\s+AGAINST)?|USER\s+CONFIRMED|CONFIRMED|Superseded|Created|Updated|Source|Scope|Type|Date)\s*:/iu;
@@ -118,4 +135,27 @@ export function currentBody(body) {
     kept.push(line);
   }
   return kept.join('\n');
+}
+
+/** Statuses whose pages are history, not a value the user relies on now. */
+export const CURRENTNESS_EXCLUDED = ['stale', 'superseded', 'disputed', 'review-needed', 'retired'];
+
+/**
+ * The page-level status marker Dream v2 writes; a page without one is current.
+ * @param {unknown} body
+ * @returns {string}
+ */
+export function memoryStatusOf(body) {
+  const match = /^\s*STATUS:\s*([a-z-]+)/imu.exec(String(body ?? ''));
+  return match ? match[1].toLowerCase() : 'current';
+}
+
+/**
+ * True when a page may enter default retrieval (search, recall, model reads).
+ * Excluded pages stay reachable through an explicit history read.
+ * @param {unknown} body
+ * @returns {boolean}
+ */
+export function isCurrentPage(body) {
+  return !CURRENTNESS_EXCLUDED.includes(memoryStatusOf(body));
 }

@@ -90,9 +90,10 @@ test('every documented /memory command exists in the code', () => {
   for (const sub of subcommands) assert.ok(commandsSource.includes(sub), sub);
 });
 
-test('the dry-run message points at preview and apply, not at another run', () => {
+test('a finished run points at switching, not at a second run', () => {
   assert.doesNotMatch(commandsSource, /apply with \/memory dream run/);
-  assert.match(commandsSource, /dry-run: no memory file was changed; review with \/memory dream preview, then \/memory dream apply\./);
+  assert.match(commandsSource, /memory switched to the dream result/);
+  assert.match(commandsSource, /undo with \/memory dream undo/);
 });
 
 test('screenshots.json lists files that exist', async () => {

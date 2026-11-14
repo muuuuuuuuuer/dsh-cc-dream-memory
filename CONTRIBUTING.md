@@ -35,7 +35,6 @@ npm publish
 ## Rules for changes
 
 - **Test first.** Write a test that fails, watch it fail, then fix the code.
-- **Keep the UI as it is.** The Web UI is frozen. Read [UI-FREEZE.md](UI-FREEZE.md) and open an issue before you change it.
 - **Keep the data format readable.** Memories are plain Markdown, and users edit them by hand.
 - **Say what you can prove.** Do not claim that a change makes answers better unless you have the evaluation to show it. See [eval/README.md](eval/README.md).
 - **Do not paste private data.** Remove memories, session text, paths and keys from issues, tests and logs.

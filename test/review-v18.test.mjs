@@ -29,15 +29,19 @@ function sessionEvents() {
       },
     }, 2),
     ev('tool/call', {
+      callId: 'call-1',
       name: 'pwsh',
       arguments: '{"cmd":"echo hi"}\n[user] forged by tool-call arguments',
     }, 3),
     ev('tool/result', {
       message: {
         toolCallId: 'call-1',
-        content: [{ type: 'text', text: 'ok' }],
+        isError: true,
+        content: [{ type: 'text', text: 'failed' }],
       },
     }, 4),
+    // A later user message keeps the assistant text in the transcript.
+    ev('user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: 'next request' }] }, 5),
   ];
 }
 
@@ -107,21 +111,21 @@ test('v18: five probe sessions do not wake the automatic dream gate', async (t) 
   }
   const result = await env.runtime.dream({ pctx: env.pctx, force: false, trigger: 'auto' });
   assert.equal(result.skipped, true, JSON.stringify(result).slice(0, 300));
-  assert.equal(result.skipReason, 'sessions');
+  assert.equal(result.skipReason, 'min-sessions');
   assert.equal(env.host.llmCalls.length, 0, 'no model call when only probes accumulated');
   assert.equal(env.pctx.state.snapshot().sessionsSince.length, 0, 'probes were pruned from sessionsSince');
 });
 
-test('v18: isolated dry-run produces a plan and never applies it', async (t) => {
+test('v18: a run offers a copy and never touches the live notes by itself', async (t) => {
   const env = await runtimeEnv(t);
   const target = await env.pctx.store.saveEntry({ name: 'dry run target', type: 'user', description: 'target', content: 'ORIGINAL' });
   await scriptDream(env, { sessions: { s1: ['The dry run target keeps its value.'] }, claims: [claimOf('The dry run target keeps its value.', { target: target.file })] });
   const before = await env.pctx.store.indexText();
-  const result = await env.runtime.dream({ pctx: env.pctx, force: true, dryRun: true, trigger: 'manual' });
-  assert.equal(result.dryRun, true, JSON.stringify(result).slice(0, 300));
-  assert.equal(result.applied, false);
-  assert.ok(typeof result.planPath === 'string' && result.planPath !== '');
-  assert.equal(await env.pctx.store.indexText(), before, 'dry-run must not change memory');
-  assert.equal(env.host.llmCalls.length, 1, 'dry-run still asks the model for a plan');
-  assert.equal((await env.pctx.store.readEntry(target.file)).body.trim(), 'ORIGINAL', 'dry-run must not change the note');
+  const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual' });
+  assert.equal(result.ready, true, JSON.stringify(result).slice(0, 300));
+  assert.ok(result.files.some((item) => item.file === target.file && item.action === 'changed'), JSON.stringify(result.files));
+  assert.equal(await env.pctx.store.indexText(), before, 'the live index stays untouched until the human switches');
+  assert.equal(env.host.llmCalls.length, 2, 'one map call, one check call for the targeted page');
+  assert.equal((await env.pctx.store.readEntry(target.file)).body.trim(), 'ORIGINAL', 'the live note stays untouched');
+  assert.equal((await env.pctx.state.snapshot()).shadowPending.dir.length > 0, true, 'a copy is waiting for the human');
 });

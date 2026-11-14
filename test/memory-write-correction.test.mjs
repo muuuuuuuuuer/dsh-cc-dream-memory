@@ -164,25 +164,22 @@ test('v21 correction: new engineering notes replace the old note with the same l
   assert.ok(body.includes(ENGINEERING_NOTES[0]), 'notes without a replacement label are carried forward');
 });
 
-test('v21 correction: a confirm-mode correction queues the composed trace and approval applies it', async (t) => {
-  const env = await toolsEnv(t, { writeMode: 'confirm' });
+test('v21 correction: an explicit correction writes the composed trace directly', async (t) => {
+  const env = await toolsEnv(t);
+  seedUserMessages(env, '用户喜欢中文回复。');
   const seed = await env.pctx.store.saveEntry({
     name: 'language',
     type: 'user',
     description: 'reply language',
     content: '用户喜欢中文回复。',
   });
-  const queued = await update(env).execute(
-    { file: seed.file, content: '用户喜欢英文回复。', basis: 'user-explicit' },
+  const result = await update(env).execute(
+    { file: seed.file, content: '用户喜欢英文回复。', basis: 'user-explicit', evidence: '用户喜欢中文回复。' },
     exec,
   );
-  assert.equal(queued.ok, true, JSON.stringify(queued));
-  assert.equal(queued.action, 'queued-review');
-  assert.equal(queued.written, false);
-  assert.equal(queued.correction.superseded, '用户喜欢中文回复。');
-  assert.equal((await env.pctx.store.readEntry(seed.file)).body, '用户喜欢中文回复。', 'nothing happens before approval');
-  const approved = await env.mods.pending.approvePendingWrite(env.pctx.paths, queued.pendingId, { store: env.pctx.store });
-  assert.equal(approved.written, true, JSON.stringify(approved));
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal(result.written, true);
+  assert.equal(result.correction.superseded, '用户喜欢中文回复。');
   const { body } = await env.pctx.store.readEntry(seed.file);
   assert.match(body, /^STATUS: current/m);
   assert.match(body, /用户喜欢英文回复。/);
@@ -199,19 +196,19 @@ test('v21 correction: a legacy engineering-note update without basis writes the 
   });
   const result = await update(env).execute({ file: seed.file, content: 'New note body.' }, exec);
   assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(result.basis, 'legacy');
+  assert.equal(result.basis, 'inference', 'an omitted basis is the model inference');
   assert.equal(result.correction, undefined);
   const entry = await env.pctx.store.readEntry(seed.file);
   assert.equal(entry.body, 'New note body.', 'backward-compatible: no active/history markers are invented');
 });
 
-test('v21 correction: forwarded or inferred updates of a user claim queue and leave the file untouched', async (t) => {
+test('v21 correction: forwarded or inferred updates write directly without the correction trace', async (t) => {
   const env = await toolsEnv(t);
   const seed = await env.pctx.store.saveEntry({
     name: 'language',
     type: 'user',
     description: 'reply language',
-    content: '用户喜欢中文回复。',
+    content: 'STATUS: current\n用户喜欢中文回复。',
   });
   for (const basis of ['forwarded', 'inference']) {
     const result = await update(env).execute(
@@ -219,15 +216,13 @@ test('v21 correction: forwarded or inferred updates of a user claim queue and le
       exec,
     );
     assert.equal(result.ok, true, JSON.stringify(result));
-    assert.equal(result.written, false, JSON.stringify(result));
-    assert.equal(result.action, 'queued-review');
+    assert.equal(result.written, true, JSON.stringify(result));
     assert.equal(result.basis, basis);
-    assert.match(JSON.stringify(result.reasons), new RegExp(basis));
-    assert.equal((await env.pctx.store.readEntry(seed.file)).body, '用户喜欢中文回复。');
-    const pending = (await env.mods.pending.listPendingWrites(env.pctx.paths)).find((item) => item.id === result.pendingId);
-    assert.ok(pending, 'the update proposal is in the review queue');
-    assert.equal(pending.action, 'update');
-    assert.equal(pending.source.basis, basis, 'the queue records the claimed authority');
+    assert.equal(result.correction, undefined, 'only explicit user corrections compose the trace');
+    const { body } = await env.pctx.store.readEntry(seed.file);
+    assert.equal(body, '用户讨厌中文回复。', 'the model-reported value replaces the body verbatim');
+    assert.doesNotMatch(body, /STATUS: current|Superseded:/, 'no markers are invented for a forwarded claim');
+    await env.pctx.store.updateEntry(seed.file, { content: 'STATUS: current\n用户喜欢中文回复。' });
   }
 });
 
@@ -248,7 +243,6 @@ test('v21 correction: forwarded engineering-note update writes directly without 
   const { body } = await env.pctx.store.readEntry(seed.file);
   assert.equal(body, 'Deploy previews with make release-staging.');
   assert.doesNotMatch(body, /STATUS: current|Superseded:/, 'only explicit user corrections compose the trace');
-  assert.equal((await env.mods.pending.listPendingWrites(env.pctx.paths)).length, 0);
 });
 
 test('v21 correction: earlier Dream-style inline Superseded lines are carried, not nested', async (t) => {

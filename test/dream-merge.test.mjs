@@ -7,7 +7,7 @@ import { MemoryStore } from '../src/store.js';
 import { ProjectState } from '../src/state.js';
 import { DreamPipeline } from '../src/dream-pipeline.js';
 import { DreamEngine } from '../src/dream.js';
-import { mergeClaims } from '../src/dream-merge.js';
+import { claimKey, mergeClaims } from '../src/dream-merge.js';
 import { makeTempDir } from './helpers.mjs';
 
 const DATE = '2026-11-12';
@@ -97,7 +97,7 @@ test('a verified contradiction replaces one line and moves the old value into hi
   assert.match(write.body, /^- Superseded: Release runs make check only\. \(until 2026-11-12\)/m);
 });
 
-test('an ambiguous contradiction becomes a review item instead of a write', () => {
+test('an ambiguous contradiction is proposed next to the old lines, with the reason', () => {
   const body = '- Release runs make check only. ^[s0#1, 2026-11-01]\n- Release runs make check only on CI. ^[s0#2, 2026-11-01]\n';
   const result = mergeClaims({
     analyses: [{
@@ -107,9 +107,21 @@ test('an ambiguous contradiction becomes a review item instead of a write', () =
     }],
     memoryPages: [page({ body })],
   });
-  assert.deepEqual(result.operations.filter((op) => op.op === 'write'), []);
+  const [write] = result.operations.filter((op) => op.op === 'write');
+  assert.match(write.body, /Release runs make check only\./, 'no old line is replaced');
+  assert.match(write.body, /Release runs make release\./, 'the new value is proposed for the human to judge');
+  assert.deepEqual(write.proposals, [claimKey('Release runs make release.')]);
   assert.equal(result.review.length, 1);
   assert.match(result.review[0].reason, /more than one line/);
+});
+
+test('a fact the human rejected is never proposed again', () => {
+  const analyses = [{ sessionId: 's1', claims: [claim({ text: 'Deploy with make release.' })], verify: [] }];
+  const first = mergeClaims({ analyses, memoryPages: [page()] });
+  const [write] = first.operations.filter((op) => op.op === 'write');
+  assert.deepEqual(write.proposals, [claimKey('Deploy with make release.')]);
+  const again = mergeClaims({ analyses, memoryPages: [page()], rejected: write.proposals });
+  assert.deepEqual(again.operations, [], 'nothing left to propose');
 });
 
 test('a low-confidence claim waits for review and an uncitable claim is skipped', () => {
@@ -147,18 +159,21 @@ test('two pages that share vocabulary get one host-written Related line', () => 
   assert.match(deploy.body, /^Related: \[\[project_images\]\]$/m);
 });
 
-test('a page edited after the plan was built is refused instead of overwritten', async (t) => {
+test('a note edited while the dream ran is refused instead of overwritten', async (t) => {
   const tmp = await makeTempDir(t);
   const memoryRoot = path.join(tmp, 'data');
   const workspaceDir = path.join(tmp, 'workspace');
   const paths = buildPaths({ memoryRoot, workspaceDir });
-  const config = resolveConfig({ memoryRoot, dreamPipeline: 'v2', dreamMode: 'apply' });
-  const store = new MemoryStore({ paths, config });
+  const config = resolveConfig({ memoryRoot });
+  const store = new MemoryStore({ paths, getConfig: () => config });
   await store.ensure();
   const saved = await store.saveEntry({ scope: 'project', name: 'Deploy', type: 'project', description: 'Release steps', content: '- Run make check first.' });
-  const engine = new DreamEngine({ ctx: { get: () => undefined }, config });
-  const plan = {
-    summary: 'add a fact',
+  const state = new ProjectState(paths);
+  await state.load();
+  const { prepareShadow, applyShadowOperations, shadowPathsOf, shadowDirOf } = (await import('../src/dream-shadow.js'));
+  const { shadowStore, base } = await prepareShadow({ store, paths, config });
+  await applyShadowOperations({
+    shadowStore,
     operations: [{
       op: 'write',
       scope: 'project',
@@ -167,17 +182,32 @@ test('a page edited after the plan was built is refused instead of overwritten',
       name: 'Deploy',
       description: 'Release steps',
       body: '- Run make check first.\n- Deploy with make release. ^[s1#1, 2026-11-12]\n',
-      baseHash: 'deadbeef',
     }],
-  };
-  const result = await engine.executePlan({ store, paths, plan, config, changelog: { at: 0, trigger: 'manual' } });
-  assert.equal(result.ok, false);
+  });
+  await state.setShadowPending({
+    dir: shadowDirOf(paths),
+    createdAt: Date.now(),
+    runId: 'run-conflict',
+    summary: 'one page',
+    base,
+    files: [{ file: saved.file, action: 'changed' }],
+    counts: { added: 0, changed: 1, removed: 0 },
+    sessions: [],
+    verifiedFiles: [],
+  });
+  // The human edits the live note while the copy waits.
+  await store.updateEntry(saved.file, { content: '- Run make check first.\n- HUMAN EDIT' });
+  const pctx = { paths, store, state, config };
+  const engine = new DreamEngine({ runtime: { config, invalidateAllInjections: () => {}, invalidateInjection: () => {} } });
+  const result = await engine.switchShadow({ pctx });
+  assert.equal(result.ok, false, JSON.stringify(result));
   assert.equal(result.error, 'conflict');
   assert.equal(result.conflicts[0].file, saved.file);
   const after = await store.readEntry(saved.file, 'project');
   assert.doesNotMatch(after.body, /Deploy with make release/);
+  assert.match(after.body, /HUMAN EDIT/);
+  assert.ok(shadowPathsOf(paths).memoryDir);
 });
-
 function scriptedCtx(payload, counters) {
   return {
     get(name) {
@@ -185,9 +215,9 @@ function scriptedCtx(payload, counters) {
         return {
           stream() {
             counters.calls += 1;
-            const text = JSON.stringify(payload);
+            const body = JSON.stringify(payload);
             return (async function* generate() {
-              yield { type: 'text-delta', text };
+              yield { type: 'text-delta', text: body };
               yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } };
               yield { type: 'finish', reason: { kind: 'stop' } };
             })();
@@ -214,13 +244,13 @@ function scriptedCtx(payload, counters) {
   };
 }
 
-test('the default pipeline path never calls the organizer', async (t) => {
+test('the default pipeline only merges in the host, with no organizer model', async (t) => {
   const tmp = await makeTempDir(t);
   const memoryRoot = path.join(tmp, 'data');
   const workspaceDir = path.join(tmp, 'workspace');
   const paths = buildPaths({ memoryRoot, workspaceDir });
-  const config = resolveConfig({ memoryRoot, dreamPipeline: 'v2', dreamMode: 'apply' });
-  const store = new MemoryStore({ paths, config });
+  const config = resolveConfig({ memoryRoot });
+  const store = new MemoryStore({ paths, getConfig: () => config });
   await store.ensure();
   const saved = await store.saveEntry({
     scope: 'project',
@@ -248,18 +278,16 @@ test('the default pipeline path never calls the organizer', async (t) => {
     verify: [],
   }, counters);
   const pctx = { workspaceDir, paths, store, state };
-  const pipeline = new DreamPipeline({ ctx, runtime: { config }, config, getConfig: () => config, engine: async () => ({}) });
-  const run = await pipeline.run({ pctx, force: true, trigger: 'manual', dryRun: true });
-  assert.equal(run.skipped, undefined);
-  const plan = JSON.parse(await (await import('node:fs/promises')).readFile(run.planPath, 'utf8'));
-  assert.equal(counters.calls, 1);
-  assert.equal(plan.manifest.organizer.merge, 'host');
-  assert.equal(plan.manifest.models.organizer, '');
-  const write = plan.operations.find((op) => op.op === 'write');
-  assert.equal(write.file, saved.file);
-  assert.match(write.body, /Deploy with make release\./);
+  const pipeline = new DreamPipeline({ ctx, runtime: { config, track: (promise) => promise } });
+  const { done } = await pipeline.start({ pctx, force: true, trigger: 'manual' });
+  const run = await done;
+  assert.equal(run.ready, true, JSON.stringify(run).slice(0, 300));
+  assert.equal(counters.calls, 2, 'one map call for the unit and one check call for the targeted page');
+  assert.equal(run.manifest.organizer.merge, 'host');
+  const change = run.files.find((item) => item.file === saved.file);
+  assert.equal(change.action, 'changed');
+  assert.equal((await store.readEntry(saved.file)).body.trim(), '- Run make check first.', 'nothing is applied by the run itself');
 });
-
 test('a better one-line summary is proposed on its own, even for a known fact', () => {
   const result = mergeClaims({
     analyses: [{
@@ -327,4 +355,23 @@ test('two Chinese pages about the same topic get a Related line', () => {
   const deploy = result.operations.find((op) => op.op === 'write' && op.file === 'project_deploy.md');
   assert.ok(deploy);
   assert.match(deploy.body, /^Related: \[\[project_images\]\]$/m);
+});
+
+test('retiring a page moves its missing facts into the page that keeps the topic', () => {
+  const kept = page({ file: 'project_deploy.md', body: '- Run make check first. ^[s0#1, 2026-11-01]\n' });
+  const retired = page({
+    file: 'project_release.md',
+    name: 'Release',
+    body: '- Run make check first. ^[s0#2, 2026-11-02]\n- Tag the release before publishing. ^[s0#3, 2026-11-02]\n',
+  });
+  const result = mergeClaims({
+    analyses: [{ sessionId: '', claims: [], verify: [], retire: [{ file: retired.file, target: kept.file }] }],
+    memoryPages: [kept, retired],
+  });
+  const write = result.operations.find((op) => op.op === 'write' && op.file === kept.file);
+  assert.match(write.body, /Tag the release before publishing/, 'the fact only the retired page had moves over');
+  assert.equal(write.body.match(/Run make check first/g).length, 1, 'a fact both pages had is not duplicated');
+  const remove = result.operations.find((op) => op.op === 'delete');
+  assert.deepEqual(remove, { op: 'delete', scope: 'project', file: retired.file, proposals: [`retire:${retired.file}`], into: kept.file });
+  assert.deepEqual(write.proposals, [`retire:${retired.file}`]);
 });
