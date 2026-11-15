@@ -69,6 +69,9 @@ function emptyState() {
     lastExtractReason: '',
     lastExtractError: '',
     lastExtractTrigger: '',
+    // Per-session extraction cursors survive a Host restart. The in-memory
+    // runtime map is only the fast path.
+    extractSeqs: {},
   };
 }
 
@@ -142,6 +145,14 @@ function normalize(raw) {
   state.dreamRejected = Array.isArray(raw.dreamRejected)
     ? raw.dreamRejected.filter((key) => typeof key === 'string' && key !== '').slice(-MAX_REJECTED)
     : [];
+  state.extractSeqs = raw.extractSeqs && typeof raw.extractSeqs === 'object' && !Array.isArray(raw.extractSeqs)
+    ? Object.fromEntries(
+      Object.entries(raw.extractSeqs)
+        .filter(([id, seq]) => id !== '' && Number.isFinite(Number(seq)) && Number(seq) >= 0)
+        .slice(-MAX_SESSIONS)
+        .map(([id, seq]) => [id, Math.max(0, Math.trunc(Number(seq)))]),
+    )
+    : {};
   state.shadowPending = raw.shadowPending && typeof raw.shadowPending === 'object'
     && typeof raw.shadowPending.dir === 'string' && raw.shadowPending.dir !== ''
     ? { ...raw.shadowPending }
@@ -412,6 +423,20 @@ export class ProjectState {
       state.lastExtractReason = String(reason ?? '').slice(0, 200);
       state.lastExtractError = ok ? '' : String(error?.message ?? error ?? '').slice(0, 2000);
       if (ok) state.lastExtractAt = finishedAt;
+    });
+  }
+
+  /** Persist one session's extraction cursor (max event seq already processed). */
+  async noteExtractSeq(sessionId, seq) {
+    if (typeof sessionId !== 'string' || sessionId === '') return;
+    const value = Math.max(0, Math.trunc(Number(seq) || 0));
+    await this._mutate((state) => {
+      state.extractSeqs = state.extractSeqs && typeof state.extractSeqs === 'object' ? state.extractSeqs : {};
+      state.extractSeqs[sessionId] = value;
+      const keys = Object.keys(state.extractSeqs);
+      if (keys.length > MAX_SESSIONS) {
+        for (const key of keys.slice(0, keys.length - MAX_SESSIONS)) delete state.extractSeqs[key];
+      }
     });
   }
 

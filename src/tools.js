@@ -561,7 +561,7 @@ export function registerTools(ctx, runtime) {
             });
           }
         }
-        if (typeof result?.file === 'string' && result.file !== '') {
+        if (typeof result?.file === 'string' && result.file !== '' && exec?.internal !== true) {
           runtime.noteMemoryWrite?.(sessionIdOf(exec), Date.now());
         }
         return {
@@ -634,7 +634,7 @@ export function registerTools(ctx, runtime) {
         if (input.delete === true) {
           await projectContext.store.trashEntry(input.file, { scope, reason: 'memory_update delete', expectedHash: memoryHash(existing.raw) });
           invalidate(runtime, resolved.agent);
-          runtime.noteMemoryWrite?.(sessionIdOf(exec), Date.now());
+          if (exec?.internal !== true) runtime.noteMemoryWrite?.(sessionIdOf(exec), Date.now());
           return { ok: true, deleted: true, file: input.file, scope };
         }
         const candidate = policyCandidate({
@@ -733,7 +733,7 @@ export function registerTools(ctx, runtime) {
             });
           }
         }
-        if (typeof result?.file === 'string' && result.file !== '') {
+        if (typeof result?.file === 'string' && result.file !== '' && exec?.internal !== true) {
           runtime.noteMemoryWrite?.(sessionIdOf(exec), Date.now());
         }
         return {

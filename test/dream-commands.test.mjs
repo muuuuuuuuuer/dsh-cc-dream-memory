@@ -20,7 +20,8 @@ test('dream status <runId> shows that run, not the newest', async (t) => {
   const result = await e.invokeMemory('dream status 2026-11-11T08-00-00-aaaaaa');
   assert.deepEqual(asked, ['2026-11-11T08-00-00-aaaaaa']);
   assert.match(messageOf(result), /dream run 2026-11-11T08-00-00-aaaaaa — failed/);
-  assert.match(messageOf(result), /continue: \/memory dream resume 2026-11-11T08-00-00-aaaaaa/);
+  assert.match(messageOf(result), /run again: \/memory dream run/);
+  assert.doesNotMatch(messageOf(result), /resume/);
 
   const overview = await e.invokeMemory('dream status');
   assert.match(messageOf(overview), /^dream status/m, 'without a run id the overview stays');

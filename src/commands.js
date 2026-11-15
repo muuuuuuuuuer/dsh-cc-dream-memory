@@ -575,7 +575,7 @@ export function registerCommands(ctx, runtime) {
       `recall: ${recallMode} (select ≤${Number(config.recallMaxCandidates) || 0} candidates; attach ≤${Number(config.autoRecallMaxFiles) || 0})`,
     );
     lines.push(
-      `auto extract: ${config.autoExtract ? `inbox, every ${Number(config.autoExtractEveryTurns) || 1} turn(s)` : 'OFF'}   subagent memory: ${config.subagentMemory === 'off' ? 'OFF' : config.subagentMemory}${config.subagentMemory === 'own' && Array.isArray(config.agentMemoryPresets) && config.agentMemoryPresets.length > 0 ? ` (${config.agentMemoryPresets.join(', ')})` : ''}`,
+      `auto extract: ${config.autoExtract ? `direct, every ${Number(config.autoExtractEveryTurns) || 1} turn(s)` : 'OFF'}   subagent memory: ${config.subagentMemory === 'off' ? 'OFF' : config.subagentMemory}${config.subagentMemory === 'own' && Array.isArray(config.agentMemoryPresets) && config.agentMemoryPresets.length > 0 ? ` (${config.agentMemoryPresets.join(', ')})` : ''}`,
     );
     if (overrides && Object.keys(overrides).length > 0) {
       lines.push(`runtime overrides: ${JSON.stringify(overrides)}  (GLOBAL · applies to every project; use /memory plugin on|off to change)`);
@@ -978,7 +978,7 @@ export function registerCommands(ctx, runtime) {
         `gates: last dream >= ${config.minHours}h ago, >= ${config.minSessions} sessions since, scan throttle ${Math.round((Number(config.scanThrottleMs) || 0) / 60000)}m`,
       );
       lines.push(
-        `cost cap: ${Number(config.dreamMaxTotalTokens) > 0 ? `${Number(config.dreamMaxTotalTokens)} total tokens (exceeding it warns but still applies)` : 'off (dreamMaxTotalTokens: 0)'}`,
+        `cost cap: ${Number(config.dreamMaxTotalTokens) > 0 ? `${Number(config.dreamMaxTotalTokens)} total tokens (the run stops there; ${config.dreamCostMode === 'block' ? 'block: the copy is thrown away' : 'warn: the copy is kept and flagged'})` : 'off (dreamMaxTotalTokens: 0)'}`,
       );
       lines.push(
         `last dream: ${formatTime(snapshot.lastDreamAt)}${Number(snapshot.lastDreamAt) > 0 ? ` (${formatAge(snapshot.lastDreamAt)})` : ''}`,
@@ -1012,7 +1012,7 @@ export function registerCommands(ctx, runtime) {
       }
       lines.push('');
       lines.push('Run /memory dream run [--focus <text>] [--memory-only] to consolidate now; a finished run waits until you pass or reject its changes.');
-      lines.push('Long runs can be checked with /memory dream status <runId>, stopped with /memory dream cancel, and continued with /memory dream resume <runId>.');
+      lines.push('Long runs can be checked with /memory dream status <runId> and stopped with /memory dream cancel; a stopped or failed run is started again with /memory dream run.');
       return ok(lines.join('\n'));
     }
     if (sub === 'run') {
@@ -1047,16 +1047,15 @@ export function registerCommands(ctx, runtime) {
           `dream run ${started.reused === true ? 'already running' : 'started'}: ${runId}`,
           `progress:  /memory dream status ${runId}`,
           `stop:      /memory dream cancel ${runId}`,
-          `continue:  /memory dream resume ${runId}`,
-          'the run continues in the background; each finished unit is saved, so stopping loses no completed work.',
+          'the run continues in the background; stopping it throws its copy away, and live memory is never touched before you switch.',
         ].join('\n'),
       );
     }
-    if (sub === 'cancel' || sub === 'resume' || sub === 'status') {
+    if (sub === 'cancel' || sub === 'status') {
       const status = await collectStatus(invocation);
       if (!status.ok) return fail(`cc-memory: ${status.error}`);
       const runId = positional[1] ?? (typeof flags.run === 'string' ? flags.run : '');
-      const action = sub === 'cancel' ? 'cancel' : sub === 'resume' ? 'resume' : 'status';
+      const action = sub === 'cancel' ? 'cancel' : 'status';
       let response;
       try {
         response = await service.dream(status.pctx, { agent: invocation.agent, action, runId });
@@ -1066,18 +1065,10 @@ export function registerCommands(ctx, runtime) {
       if (!response.ok) return fail(`dream ${action}: ${response.message || response.error}`);
       if (action === 'cancel') {
         const result = response.result ?? {};
-        return result.cancelled === true
-          ? ok(`dream run ${result.runId} is stopping; finished units stay saved, so it can be resumed.`)
+        // DreamAgent.cancel answers {ok:true, status:'cancelling'}.
+        return result.ok === true
+          ? ok(`dream run ${result.runId} is stopping; its copy is thrown away. Run /memory dream run to start again.`)
           : fail(`no running dream run${runId ? ` ${runId}` : ''} to cancel`);
-      }
-      if (action === 'resume') {
-        const result = response.result ?? {};
-        if (result.started !== true) return fail(`dream resume: ${result.message || result.error || 'could not resume'}`);
-        invalidate(invocation);
-        return ok([
-          `dream run ${result.runId} resumed${result.reused === true ? ' (was already running)' : ''}`,
-          `progress:  /memory dream status ${result.runId}`,
-        ].join('\n'));
       }
       return ok(formatDreamRunStatus(response.result));
     }
@@ -1449,7 +1440,7 @@ export function registerCommands(ctx, runtime) {
   }
 
   /**
-   * `/memory inbox` — review proposals staged by the optional auto-extractor.
+   * `/memory inbox` — review manually staged proposals.
    * Accepting replays the proposal through the regular `memory_save` gates so
    * evidence, duplicate checks, secret scanning and index budgets still apply.
    */
@@ -1516,7 +1507,7 @@ export function registerCommands(ctx, runtime) {
               '       /memory metrics   (injections, reads, writes, searches, dream acceptance, 7-day trend, quality, last cost)',
               '       /memory search <query> | show <file> | history <file> | edit <file> | merge <file1> <file2> [...]',
               '       /memory import <path> | export <path>   (Claude Code memory interoperability)',
-              '       /memory inbox list | show <id> | accept <id> | discard <id>   (review auto-extracted proposals)',
+              '       /memory inbox list | show <id> | accept <id> | discard <id>   (review manually staged proposals)',
               '       /memory refresh',
               '       /memory rules [reset]',
               `       /remember ${REMEMBER_HINT}`,
@@ -1612,7 +1603,7 @@ export function registerCommands(ctx, runtime) {
   register({
     name: 'dream',
     // Short human entry point for the same feature the Memory page calls Dream.
-    description: 'Dream: consolidate memory now (/dream status [runId] | run [--wait] | cancel [runId] | resume [runId] | switch | discard | history | undo).',
+    description: 'Dream: consolidate memory now (/dream status [runId] | run [--wait] | cancel [runId] | switch | discard | history | undo).',
     input: { hint: 'run|status|switch|discard|history|undo' },
     handler: (invocation) =>
       handleMemory({ ...invocation, rawInput: `dream ${String(invocation?.rawInput ?? '')}`.trimEnd() }),
@@ -1663,8 +1654,8 @@ function formatDreamRunStatus(run) {
   }
   if (run.status === 'running') {
     lines.push(`stop: /memory dream cancel ${run.runId}`);
-  } else if (['failed', 'cancelled', 'blocked', 'ready'].includes(run.status)) {
-    lines.push(`continue: /memory dream resume ${run.runId}`);
+  } else if (['failed', 'cancelled', 'blocked'].includes(run.status)) {
+    lines.push('run again: /memory dream run');
   }
   return lines.join('\n');
 }

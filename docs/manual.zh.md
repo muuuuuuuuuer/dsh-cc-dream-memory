@@ -40,7 +40,7 @@ $DSH_HOME/cc-memory/
 
 ## 与 Claude Code auto memory 的对齐
 
-本项目把「日常记忆」按 Claude Code 的 auto memory 语义实现：存储布局、索引预算、项目/worktree 共享与类型体系对齐；v20 起**默认用模型 selector 召回**，并可选开启自动抽取与子代理独立目录，但写入自动化、团队与 Dream 形态仍有差距。完整对照（2026-11-13 基线）见 [ARCHITECTURE §5.6](ARCHITECTURE.md#56-与-claude-code-auto-memory-的对照)。
+本项目把「日常记忆」按 Claude Code 的 auto memory 语义实现：存储布局、索引预算、项目/worktree 共享与类型体系对齐；v23 起**默认用模型 selector 召回**，**默认开启 5-turn 自动抽取**，子代理独立目录可选，但团队与 Dream 形态仍有差距。完整对照（2026-11-13 基线）见 [ARCHITECTURE §5.6](ARCHITECTURE.md#56-与-claude-code-auto-memory-的对照)。
 
 **一致的默认行为**
 
@@ -58,7 +58,7 @@ $DSH_HOME/cc-memory/
 
 | 维度 | 官方（2026-11） | 本插件（v23） |
 |---|---|---|
-| 写入时机 | 每轮 query loop 后 forked agent 自动抽取，主 agent 已写则跳过，5-turn 预算 | 模型主动 `memory_save`/`memory_update`；可选 `autoExtract`（默认关）：每 N 轮一次单次 JSON 抽取，本 turn 写过则跳过，只进 Inbox 待审 |
+| 写入时机 | 每轮 query loop 后 forked agent 自动抽取，主 agent 已写则跳过，5-turn 预算 | `autoExtract` 默认开：主线 `turn/end`、本 turn 主 agent 写过则跳过、默认每 3 个 turn 一次、进程内 5-turn 工具循环，只读游标之后的转写；写入直接过 `memory_save` 门 |
 | 召回 | 每轮一次 Sonnet selector，最多自动附 5 个主题文件 | `recallMode:'model'`（唯一）：廉价 selector + 元数据 manifest + recentTools，候选 ≤5、附加受 `autoRecallMaxFiles`（默认 3）限制；超时/失败静默空，无词面回退 |
 | 系统提示 | 完整 auto-memory 段：类型+scope、保存/不保存清单、Why/How、漂移核验 | 19 行紧凑手册：四类型、保存/不保存、Why/How、绝对日期、推荐前核验；无 team |
 | 子代理记忆 | 子代理可用 frontmatter `memory` 拥有 user/project/local 目录，快照合并 | 单一 `subagentMemory`：`off` 不注入/不可写，`shared` 项目库读写，`own` 用 `agents/<preset>/memory`（`agentMemoryPresets` 可限制）；无快照合并 |
@@ -67,17 +67,17 @@ $DSH_HOME/cc-memory/
 | 配置 | `autoMemoryDirectory`、`CLAUDE_CODE_PROJECT_DIR_NAME`、每项目开关 | 全局 `memoryRoot`/`projectId`；子代理目录按 preset；无 per-project 开关/目录 |
 | 文件工具 | 标准 Read/Write/Edit | `memory_*` 专用工具 |
 
-**插件独有、默认关闭的能力**
+**插件独有、可调的能力**
 
 | 配置 | 默认 | 作用 |
 |---|---|---|
-| `autoExtract` | `false` | turn/end 后自动抽取提案；只暂存到 Inbox，`/memory inbox accept` 才写入 |
+| `autoExtract` | `true` | turn/end 后自动抽取；进程内 5-turn 工具循环，写入直接过 `memory_save` |
 | `subagentMemory:'own'` | `off` | 子代理使用自己的 `agents/<preset>/memory`，与主库隔离 |
 | `autoDreamEnabled` | `false` | Dream 自动整理 |
 
 **安全取舍**：索引原文注入意味着手工改 `MEMORY.md` 会直接进上下文（官方同样如此）。插件只保证「正常写入时按笔记元数据生成索引行」，不再过滤手改行；需要审查就关闭 `autoMemoryEnabled` 或删掉行。
 
-**写入与提示词**：`memory_save`/`memory_update` 直接落盘、无待审队列，与官方一致；自动抽取是额外的 opt-in 兜底，默认只进 Inbox，不直接污染主库。提示词是 19 行紧凑手册，覆盖了官方的写入质量规则，但不是完整 auto-memory 段的等价实现。
+**写入与提示词**：`memory_save`/`memory_update` 直接落盘、无待审队列，与官方一致；默认开启的自动抽取也只走这条写入门，不另建暂存路径。提示词是 19 行紧凑手册，覆盖了官方的写入质量规则，但不是完整 auto-memory 段的等价实现。
 
 ## 斜杠命令
 
@@ -138,10 +138,10 @@ $DSH_HOME/cc-memory/
 
 会话标题栏的视图切换里出现 **Memory / 记忆** 标签（`conversation.view`，id `cc-memory`，order 40）——不在左侧栏。页面顶部固定标题与四个标签，下面是可滚动内容：
 
-- **记忆**（默认）：搜索框（名称/描述本地即时过滤，≥2 字时再用 `/search` 补正文命中并显示片段）+ 类型筛选（全部/用户/反馈/项目/参考，带数量）+ 按更新时间排序的列表。点一条在右侧打开详情（Markdown 渲染、来源、更新时间），可**编辑**（名称/类型/摘要/正文，Ctrl+Enter 保存）或**删除**（两段确认，进回收站）；「新建」直接写一条。智能体拿不准的写入出现在顶部「等你确认」，一键保留/丢弃。
-- **待确认 / Inbox**：集中展示需要你决定的东西。自动抽取的提案会列出条数与名称，展开可读每条正文，然后「全部接受」或「放弃」；接受仍走 `memory_save` 的门禁，失败会显示已保存/总数。Dream 副本也在这里给入口。自动抽取关闭时，空状态会说明原因并给「去设置」按钮。
-- **Dream**：一条流程——「Estimate the run」估算输入 → 「Start the dream run」跑一轮，结果写进**记忆副本**（原记忆不动）→ 卡片显示「新增 N / 修改 N / 删除 N」与前 20 个文件，点「Switch to it」切换、「Discard」丢弃。下方是上次Dream时间、**自动Dream**开关与就绪说明、索引大小进度条，以及「最近Dream」列表（最新一次切换可撤销，已撤销的有标记）。
-- **设置**：五个全局开关（记忆功能 / 自动记忆 / 自动Dream / 自动抽取 / 子代理独立记忆，注明对所有项目生效）、常量只读说明（召回模式、自动抽取模式、子代理策略）、记忆规则编辑（保存到本项目 / 保存为全局 / 恢复默认）、回收站与Dream前备份（整批或单文件恢复）、记忆目录（可复制）与一行使用情况。
+- **记忆**（默认）：搜索框（名称/描述本地即时过滤，≥2 字时再用 `/search` 补正文命中并显示片段）+ 类型筛选（全部/用户/反馈/项目/参考，带数量）+ 按更新时间排序的列表。点一条在右侧打开详情（Markdown 渲染、来源、更新时间），可**编辑**（名称/类型/摘要/正文，Ctrl+Enter 保存）或**删除**（两段确认，进回收站）；「新建」直接写一条。
+- **待确认 / Inbox**：只展示一个决定——待审阅的 Dream 副本。有副本时给「Review」入口；没有时显示「都处理完了」。自动抽取直接写记忆，不再产生提案，也不显示旧提案的接受/放弃或上次抽取状态。
+- **Dream**：一条流程——「Estimate the run」估算输入 → 「Start the dream run」跑一轮，结果写进**记忆副本**（原记忆不动）→ 卡片显示「新增 N / 修改 N / 删除 N」与前 20 个文件，每处 diff 可展开，并列出该改动用到的 `session #seq — quote` 证据；点「Switch to it」切换、「Discard」丢弃。下方是上次Dream时间、**自动Dream**开关与就绪说明、索引大小进度条，以及「最近Dream」列表（最新一次切换可撤销，已撤销的有标记）。
+- **设置**：四个全局开关（记忆功能 / 自动记忆 / 自动Dream / 自动抽取，注明对所有项目生效）、常量只读说明（召回模式、子代理策略）、记忆规则编辑（保存到本项目 / 保存为全局 / 恢复默认）、回收站与Dream前备份（整批或单文件恢复）、记忆目录（可复制）与一行使用情况。
 - 成功/失败用底部 toast 提示；破坏性操作都是两段确认；跟随宿主亮/暗主题变量；容器宽度 ≤720px 时变单列，详情页带「返回」。
 - 输入框下方 dock 的状态 chip（`conversation.composer.dock`）：`记忆 N`，有待确认项或等待切换的 Dream 副本时追加「N 项待处理」，60 秒轮询。
 
@@ -149,7 +149,7 @@ $DSH_HOME/cc-memory/
 
 **数据通道是静默 HTTP API**：`GET/POST /api/cc-memory/*`；loopback + `x-cc-memory-token`（token 持久化在 `~/.dsh/cc-memory/.api-token`，插件重载不再失效）+ 只接受 loopback 来源 + POST 校验 Origin；写 rules 会追加审计到 `<projectDir>/.memory-rules.log`（scope/source/bytes/sha256）。页面拿不到 API（加载早于插件安装/重载）时显示明确 banner 和「刷新页面」按钮，不再静默降级为命令模式；`enabled:false` 时除 `/status`、`/toggle` 外一律返回 `plugin-disabled`。
 
-API 端点：`GET /status`、`GET /file`、`GET /rules`、`GET /log`、`GET /backups`、`GET /trash`、`GET /inbox`、`POST /rules`、`POST /toggle`、`POST /inbox`、`POST /dream`（`run|start|status|cancel|resume|switch|discard|estimate|undo`）、`POST /delete`、`POST /restore`。
+API 端点：`GET /status`、`GET /file`、`GET /rules`、`GET /log`、`GET /backups`、`GET /trash`、`GET /inbox`、`POST /rules`、`POST /toggle`、`POST /inbox`、`POST /dream`（`run|start|status|cancel|switch|discard|estimate|undo`）、`POST /delete`、`POST /restore`。
 
 ## Dream（后台整理）
 
@@ -225,7 +225,7 @@ API 端点：`GET /status`、`GET /file`、`GET /rules`、`GET /log`、`GET /bac
 - **就绪度**：`/memory dream status` 与 UI Dream 卡显示 `eligible`、`nextEligibleAt`、阻塞原因（auto 关闭/未到 24h/会话数不足/节流/退避/有等待切换的副本/锁）；`/status.readiness` 可机读。
 - **健康度**：0–100 分 + 维度（索引预算、neverRead 比例、dream 是否过久、截断文件、规则、身份共享）+ suggestions（over-budget / many-never-read / non-git-sharing / rules-truncated）；UI 徽标 + 折叠建议。
 - **副本不过期**：Dream 写出的副本一直等你处理，不会自动消失，也不阻塞自动 Dream 以外的任何东西。
-- **成本三模式** `dreamCostMode`：`warn`（默认，超限仍出副本+告警）/ `review`（同 warn，告警语气更重，保留给旧配置读入）/ `block`（预检超限直接不调 LLM；事后超限不写副本、记失败）；超限都写 `costExceeded` 到 state/changelog，UI 显示徽标。
+- **成本两模式** `dreamCostMode`：agent 循环用量到 `dreamMaxTotalTokens` 就停；`warn`（默认，仍出已写的副本+告警）/ `block`（首个 prompt 估算超限直接不调 LLM；跑超则不写副本、记失败）；超限都写 `costExceeded` 到 state，UI 显示徽标。
 
 ## P1 新增：恢复/编辑/检索/指标/互通/一致性（v10）
 
@@ -290,9 +290,10 @@ node eval/run.mjs --runs 1
 | `recallProvider` / `recallModel` | `''` | selector 模型对；空 = 默认模型 |
 | `recallTimeoutMs` / `recallMaxCandidates` | `4000` / `200` | selector 超时 / manifest 候选上限 |
 | `autoRecallMaxFiles` / `autoRecallMaxChars` | `3` / `3000` | 每条消息最多附加的记忆数 / 总字符数 |
-| `autoExtract` | `false` | turn/end 后自动抽取；只进 Inbox，人工 accept |
+| `autoExtract` | `true` | turn/end 后自动抽取；进程内工具循环，直接过 `memory_save` |
 | `autoExtractEveryTurns` | `3` | 每 N 个主线 turn 最多抽一次 |
-| `autoExtractMaxItems` / `autoExtractMaxChars` | `3` / `12000` | 提案条数 / 转写预算 |
+| `autoExtractMaxItems` / `autoExtractMaxChars` | `5` / `12000` | 单次最多写入条数 / 转写预算 |
+| `autoExtractTimeoutMs` | `60000` | 单次抽取总超时 |
 | `subagentMemory` | `off` | 子代理记忆唯一策略：`off` / `shared` / `own` |
 | `agentMemoryPresets` | `[]` | `own` 的 preset 白名单 |
 | `indexMaxLines` / `indexMaxBytes` | `200` / `25600` | 每次注入的索引预算（官方 200 行/25KB；token 成本更高） |
@@ -300,16 +301,13 @@ node eval/run.mjs --runs 1
 | `minHours` / `minSessions` | `24` / `5` | 自动 dream 闸门 |
 | `scanThrottleMs` | `600000` | 扫描节流 |
 | `lockTtlMs` | `3600000` | 锁过期回收 |
+| `dreamTimeoutMs` | `600000` | 单次 Dream 工具循环的总超时；超时清掉副本，不计失败退避 |
 | `dreamAllowDelete` | `true` | 允许 Dream 在副本里删掉笔记（切换时进 `.trash/`，可恢复） |
-| `dreamInputMaxChars` | `96000` | 整理调用的会话字符预算（旧输入路径用它决定哪些会话推迟） |
-| `dreamMaxFileChars` | `20000` | 单次写入的正文上限；模型想写的正文超了就拒绝这条写入 |
-| `dreamMapChunkChars` | `24000` | 收集会话时的默认分块大小 |
-| `dreamMaxToolChars` | `4000` | 每块保留的工具证据上限（错误优先、其余均匀取样；不超过块大小的 1/3；0 关闭） |
-| `dreamAnalyzerMaxTokens` | `8192` | Dream 分析单元的初始输出预算 |
+| `dreamMaxFileChars` | `100000` | 单次写入的正文上限；模型想写的正文超了就拒绝这条写入 |
 | `rulesMaxChars` | `8000` | 注入规则（memory-rules.md）允许的最大字符数，超出拒绝保存 |
 | `secretScan` | `warn` | 写记忆/dream 写文件/改 rules 前的机密扫描：`warn`（写入但带 warnings）/ `deny`（拒绝）/ `off` |
-| `dreamMaxTotalTokens` | `0` | dream 单次 total token 上限（0=off）；warn 模式超限仍出副本，block 不写副本 |
-| `dreamCostMode` | `warn` | 超成本上限的行为：`warn` / `review` / `block`（预检超限不调 LLM、事后不写副本） |
+| `dreamMaxTotalTokens` | `0` | dream 单次 total token 上限（0=off）；到上限 agent 循环停止，warn 模式仍出副本，block 不写副本 |
+| `dreamCostMode` | `warn` | 超成本上限的行为：`warn` / `block`（预检超限不调 LLM、事后不写副本） |
 | `policyDuplicateThreshold` / `policySuggestThreshold` | `0.82` / `0.55` | 重复阈值 / 相似候选阈值 |
 | `projectId` | `''` | **v9** 显式项目身份（优先级最高）；空则读 workspace 标记 > git root > workspace |
 | `tools` / `commands` / `ui` | `true` | 各面开关 |
@@ -395,11 +393,11 @@ node scripts/verify.mjs
 
 完整清单见 [ARCHITECTURE §5.6](ARCHITECTURE.md#56-与-claude-code-auto-memory-的对照)。实现层面最值得记住的是：
 
-- 自动抽取是**可选兜底**（`autoExtract:false` 默认关）：开启后每 N 个 `turn/end` 做一次单次 JSON 抽取，默认只进 Inbox，accept 时才走 `memory_save` 的门禁。官方是每轮 query loop 后的 forked agent（5-turn、工具、互斥、节流），插件没有复刻这套实时 agent。
+- 自动抽取默认开启：主线每 N 个 `turn/end` 后，在进程内跑一次最多 5 turn 的工具循环（`memory_read/search/save/update`），只读上次游标之后的转写，写入直接过 `memory_save` 门。官方是每轮 query loop 后的 forked agent；插件不创建 live Agent/session，工具结果和轮数都有硬上限。
 - 召回默认由模型选择器执行，每轮附加条数受 `autoRecallMaxFiles` 限制。失败或超时则本轮跳过自动召回。
 - 子代理默认不注入（与官方一致）；`subagentMemory:'own'` 时带 `agentPreset` 的子代理有独立的 `agents/<preset>/memory`，只注入/只写自己的目录，但没有官方的 `memory` frontmatter、user/project/local 三种 scope 与快照合并。
 - 没有团队记忆（`team/` 服务器同步、secret scanner、团队 scope 规则）与 `autoMemoryDirectory`/每项目开关；只有全局 `memoryRoot`/`projectId`。
-- Dream 是受控管线，不是官方那种能 grep transcript、对照代码库、做 CLAUDE.md 对账的 agent；shadow、人工 switch、引用核验、Inbox 是有意保留的安全差异。
+- Dream 是单个 agent：宿主只给候选 session id，模型用 `session_search/read` 定点搜转写、用 `memory_read/search` 按需读记忆，改动只写 shadow；Review 时能看到每处改动对应的 `session #seq — quote` 证据，最终由人 switch/discard/undo。它不是官方的 forked agent，也不做 CLAUDE.md 对账；shadow、人工 switch 与证据面板是有意保留的安全差异。
 - 系统提示是 19 行紧凑手册，覆盖四类型、保存/不保存、`**Why:**`/`**How to apply:**`、绝对日期与“推荐前先核验”，但不是官方完整 auto-memory 段的等价实现。
 - Worktree 已共享主仓库记忆；Windows 盘符大小写已归一。
 - 超预算时只注入头部，超出部分不加载；回执要求重写索引，索引行超过约 200 字符会截断 hook，模型可用 `memory_update` 合并与删除。

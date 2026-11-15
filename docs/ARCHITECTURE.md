@@ -69,18 +69,15 @@
 | `src/policy.js` | 写入策略：重复/相反停止写入，其余 advisory | `evaluateWrite`, `loadPolicyEntries` |
 | `src/tools.js` | 4 个 `memory_*` 工具（JSON Schema + output.render）；关闭态门控 | `registerTools` |
 | `src/commands.js` | `/memory` 子命令族、`/remember`；纯函数解析器；JSON 输出 | `registerCommands`, `parseCommandLine`, `parseRememberInput` |
-| `src/scheduler.js` | 监听 `session/event` 的 `turn/end`；auto dream 闸门（含退避）；v20 可选 auto-extract（写互斥 + 每 N 轮 + 5-turn 单次抽取）；跳过 subagent 会话 | `registerScheduler` |
-| `src/dream.js` | 校验/应用/回滚/undo：计划校验→证据检查→备份→应用→回滚→changelog→state（`run` 已删除，运行由 `dream-pipeline.js` 负责） | `DreamEngine`, `validateDreamPlan` |
-| `src/dream-input.js` | **纯读取**：收集还没读完的主线会话，按创建时间从旧到新；按水位线只读新增部分并切块；一个会话推迟后更新的全部推迟，最旧的一个总会读；subagent/探针过滤 | `gatherDreamInput`, `pruneProbeSessions` |
+| `src/scheduler.js` | 监听 `session/event` 的 `turn/end`；auto dream 闸门（含退避）；auto-extract（写互斥 + 每 N 轮 + 5-turn 工具循环）；跳过 subagent 会话 | `registerScheduler` |
+| `src/dream.js` | 校验/应用/回滚/undo：计划校验→备份→应用→回滚→changelog→state；模型运行由 `dream-agent.js` 负责 | `DreamEngine`, `validateDreamPlan` |
 | `src/dream-session-text.js` | 会话事件 → 带来源标签的转写：只保留用户消息、每条用户消息前的那一条助手回复、失败的工具调用及报错；过滤宿主注入、识别 `[user-pasted]`、日期标记、转义伪造的标签行、按字符切块 | `buildSessionTranscript`, `chunkTranscript`, `extractSessionText`, `isProbeSession` |
-| `src/dream-run.js` | 运行目录与单元记录：`runId`、`.dreams/<runId>/manifest.json`、逐单元分析结果、状态/取消/续跑所需字段 | `newRunId`, `writeRunManifest`, `readUnitRecord`, `summarizeRun` |
-| `src/dream-pipeline.js` | Dream v2 主路径：按单元分析→宿主校验→逐条合并（`dream-merge.js`）→证据门→复用 `DreamEngine.executePlan`；单元级断点与续跑 | `DreamPipeline` |
-| `src/dream-merge.js` | 宿主合并：同一事实跨会话去重、`contradicts` 命中唯一行则替换并记历史、无法定位的新值与旧行并列提出并附原因；退役页面先把目标页没有的条目搬过去再删除；每个改动带 `proposals`（事实键），被用户拒绝过的键不再提出；生成索引与 `Related:` | `mergeClaims`, `claimKey`, `buildMemoryIndex` |
-| `src/dream-analyzer.js` | 三种模型调用的提示词与解析：逐段提取（只看索引，返回 claims/retire）、核对（看被涉及页面正文，返回 holds/contradicts）、只整理记忆（返回 retire） | `ANALYZER_SYSTEM_PROMPT`, `CHECK_SYSTEM_PROMPT`, `TIDY_SYSTEM_PROMPT`, `buildAnalyzerPrompt`, `buildCheckPrompt`, `buildTidyPrompt` |
-| `src/dream-verifier.js` | 宿主校验：claim 的引用必须能在原文定位，否则丢弃；核对结论只接受本次已核验的 claim 和页面上真实存在的行，`holds` 还要求引用说的是同一件事 | `verifyAnalysis`, `verifyCheck` |
-| `src/dream-evidence.js` | 文本匹配工具：忽略大小写/空白/markdown/标点的比对、转写块解析与引用定位、正文行级增删对比、写入被拒时连带丢弃依赖的破坏性操作 | `normalizeForMatch`, `parseTranscriptBlocks`, `locateQuote`, `bodyLineChanges`, `dropDestructiveDependents` |
+| `src/dream-run.js` | 运行目录与单元记录：`runId`、`.dreams/<runId>/manifest.json`、状态/取消/续跑所需字段 | `newRunId`, `writeRunManifest`, `readRunManifest`, `summarizeRun` |
+| `src/dream-agent.js` | Dream 唯一路径：给模型 `MEMORY.md` 头部 + 元数据 + 候选 session id；模型用 `memory_index/read/search`、`session_search/read` 按需读，只写 shadow；结束时 diff + 人工 switch/discard/undo；记录证据 provenance | `DreamAgent` |
+| `src/dream-evidence.js` | 文本匹配工具：忽略大小写/空白/markdown/标点的比对、转写块解析与引用定位、正文行级增删对比 | `normalizeForMatch`, `parseTranscriptBlocks`, `locateQuote`, `bodyLineChanges` |
 | `src/recall.js` | 自动召回：`recallMode` 只有 `model`（默认）/ `off`；model 每个用户输入最多一次廉价 selector 调用，失败或超时静默不附加；`agent/pre-step` 挂载但同 turn 的后续模型步跳过；每条每会话去重 | `selectRecallByModel`, `recallManifest`, `buildRecallText`, `attachRecall`, `RECALL_SOURCE_KIND` |
-| `src/auto-extract.js` | v20 可选抽取：turn/end 后只读上次游标之后的转写，一次结构化 JSON 调用产出提案；只暂存到 Inbox，人工 accept 后才走 `memory_save` 门；不会创建 live Agent | `extractProposals`, `applyProposals`, `runAutoExtract` |
+| `src/auto-extract.js` | 官方式自动抽取：turn/end 后只读上次游标之后的转写，在进程内跑 5-turn 工具循环（`memory_read/search/save/update`），主 agent 本 turn 已写记忆则跳过；写入直接走 `memory_save` 门，不创建 live Agent | `runAutoExtract`, `applyProposals` |
+| `src/tool-loop.js` | 进程内工具循环：`llm.stream` + `tools` + `tool-call`/tool 消息；不建 session/Agent | `runToolLoop` |
 | `src/inbox.js` | 抽取提案的暂存目录 `<projectDir>/inbox/*.json`；人工 `/memory inbox accept` 后才进入主库 | `writeProposal`, `listProposals`, `readProposal`, `removeProposal` |
 | `src/rules.js` | 注入规则文件读取（project > global > default）、保存/清除、8000 字符上限 | `DEFAULT_RULES`, `loadRules`, `saveRulesFile` |
 | `src/http.js` | 静默 HTTP API：token 鉴权/持久化、loopback+Origin 校验、状态/文件/规则/Inbox/Dream 端点、plugin-disabled 门控 | `registerHttpApi`, `createHttpHandler`, `API_PREFIX` |
@@ -364,20 +361,20 @@ agent/pre-step（异步瀑布）
 
 ### 5.6 与 Claude Code auto memory 的对照
 
-基线：Claude Code 官方文档与系统提示（2026-11-13）。存储布局、索引预算、项目/worktree 共享这些「骨架」已对齐；v23 完成了单一路径清理：模型召回、Inbox-only 抽取、元数据目录、子代理枚举、Dream 输入预算与索引/历史硬上限。自动化程度、团队能力与 Dream 形态仍有差距，另有一些有意偏离。
+基线：Claude Code 官方文档与系统提示（2026-11-13）。存储布局、索引预算、项目/worktree 共享这些「骨架」已对齐；v23/v24 完成了单一路径清理：模型召回、默认开启的 5-turn 自动抽取、元数据目录、子代理枚举、Dream 输入预算与索引/历史硬上限。团队能力与 Dream 形态仍有差距，另有一些有意偏离。
 
 | # | 维度 | 官方（2026-11） | 本插件（v23） | 差距 |
 |---|---|---|---|---|
-| 1 | 写入时机 | 每轮 query loop 后 forked agent 自动抽取；主 agent 本会话已写则跳过；按轮节流；5-turn 预算；只读最近消息、不验证 | 模型主动 `memory_save`/`memory_update`；可选 `autoExtract`（默认关）：turn/end、每 N 轮、本 turn 写过则跳过、单次结构化抽取、只进 Inbox；Dream 批量整理（默认关） | 中：自动路径仍 opt-in，且是单次调用而非官方 5-turn 工具循环 |
+| 1 | 写入时机 | 每轮 query loop 后 forked agent 自动抽取；主 agent 本会话已写则跳过；按轮节流；5-turn 预算；只读最近消息、不验证 | `autoExtract` 默认开：主线 `turn/end`、本 turn 主 agent 写过则跳过、默认每 3 个 turn 一次、进程内 5-turn 工具循环（`memory_read/search/save/update`），只读游标之后的转写；写入直接过 `memory_save` 门 | 低中：机制对齐；仍是进程内循环，不创建官方那种 forked Agent/session |
 | 2 | 召回 | 每个用户输入一次 Sonnet selector：manifest（名称/描述/类型/时间）→ 最多 5 个文件自动附上；`recentTools` 降噪；失败静默空 | `recallMode:'model'`（唯一）：每个用户输入一次廉价 selector + 元数据 manifest + `recentTools` + 本会话去重，候选 ≤5、附加受 `autoRecallMaxFiles` 默认 3 约束；超时/失败静默空，无词面回退 | 低中：机制对齐，模型档位与提示词不是官方实现 |
 | 3 | 写什么/怎么写 | 系统提示含完整 auto-memory 段：四类型与 private/team、保存/不保存清单、`**Why:**`/`**How to apply:**`、漂移核验 | 19 行紧凑手册：四类型、保存/不保存、`**Why:**`/`**How to apply:**`、绝对日期、推荐前核验；无 team 段 | 低中：覆盖了写入质量规则，仍是紧凑版 |
 | 4 | 子代理记忆 | 主记忆不注入子代理（fork 例外）；子代理可用 frontmatter `memory` 拥有 user/project/local 目录，快照合并，Write/Edit 白名单 | 单一 `subagentMemory:'off'|'shared'|'own'`：`off` 不注入/不可写；`shared` 读写项目库；`own` 用 `agents/<preset>/memory`（`agentMemoryPresets` 可限制），只注入该子代理、只写自己目录；无快照合并 | 中：多代理可隔离，但没有官方多 scope/快照语义 |
 | 5 | 团队记忆 | `team/` + 服务器同步 + secret scanner；类型带 private/team 默认 | 无 | 中（取决于 DSH 是否有团队场景） |
-| 6 | Dream 形态 | 4 阶段 agent：grep transcript、对照代码库、CLAUDE.md 对账、直接落盘 | 分析器 JSON + 主机合并 + 引用核验 + shadow + 人工 `switch`；不读代码库；输入受 `dreamInputMaxChars` 约束，每个分析器单元的 memory 上限 12KB；索引由主机重建并 prune | 中：安全 vs 保真 |
+| 6 | Dream 形态 | 4 阶段 agent：grep transcript、对照代码库、CLAUDE.md 对账、直接落盘 | `DreamAgent`：prompt 只给索引头 + 元数据 + 候选 session id，模型用 `session_search/read` 和 `memory_read` 按需读，只写 shadow；不读代码库；结束时 diff + 人工 `switch`/`undo`，人工确认后落盘 | 低中：读法对齐；保留人工闸门，故不是官方直接落盘 |
 | 7 | Dream 触发/应用 | Claude Code 的 [官方维护者说明](https://github.com/anthropics/claude-code/issues/39135) 描述后台自动整理及 `/memory` 开关 | 自动 Dream 默认关闭；启用后的 24 小时、5 会话是插件默认值。结果由用户切换或丢弃 | 本插件保留人工切换 |
 | 8 | 配置 | `autoMemoryDirectory`（任意 settings scope）、`CLAUDE_CODE_PROJECT_DIR_NAME`、每项目开关；后台会话只能关不能开 | 全局 `memoryRoot`/`projectId`；子代理目录按 preset；`/memory on/off` + env；无 per-project 开关/目录 | 低中 |
 | 9 | 文件工具 | 标准 Read/Write/Edit；记忆就是普通文件 | `memory_save`/`memory_update`/`memory_read`/`memory_search`（评估时另有 `memory_eval_dream`）；模型不直接用文件工具写 | 架构差异：可控 vs 通用 |
-| 10 | UI/提示 | `Saved N`/`Recalled N`；`/memory` 列出所有记忆位置并打开目录 | 工具回执、`/memory metrics`、Memory 页、Inbox 页（抽取提案 accept/discard + 上次结果）、`/memory inbox` 命令；`memory_read` 超 30 天提示陈旧 | 低 |
+| 10 | UI/提示 | `Saved N`/`Recalled N`；`/memory` 列出所有记忆位置并打开目录 | 工具回执、`/memory metrics`、Memory 页、Inbox 页（只审阅待切换的 Dream shadow）、`/memory inbox` 命令；`memory_read` 超 30 天提示陈旧 | 低 |
 | 11 | CLAUDE.md 侧 | 层级、`@import`、`.claude/rules`、AGENTS.md、`/doctor`、hook | DSH 用 `AGENTS.md` + 可选 `memory-rules.md`；有 import/export | 范围外（指令层由 `dsh-agent-instructions` 负责） |
 
 **实现落点（与上表对应的细节）**
@@ -387,19 +384,21 @@ agent/pre-step（异步瀑布）
 - 会话：`agent/created` 构建并冻结快照。会话压缩、显式刷新、配置或规则变更会重建。
 - 共享：`resolveProjectRoot` 取最近 `.git`，worktree 解析到主仓库；一个 slug 一份记忆。
 - 子代理：`shouldInject()` 对 `header.parentSession`/`origin:'subagent'` 在 `subagentMemory:'off'` 时返回 false。`own` 且 preset 在 `agentMemoryPresets`（空表 = 任意 preset）时，`runtime.forAgent` 返回 `agents/<preset>/memory` 的独立 `MemoryStore`，注入与写入都只走这份；非 allowlist 的 preset 仍按 `off` 处理（不注入、不可写）。官方默认同样不注入，但允许 frontmatter 声明多 scope 记忆并使用快照合并；插件没有这两项。
-- 自动抽取：`scheduler.js` 在主线 `turn/end` 后，若 `autoExtract` 开启且本 turn 主 agent 没写过记忆，按 `autoExtractEveryTurns` 节流，调用一次 `extractProposals`（读 `sessionQuery.readSession` 中游标之后的事件，单次 JSON，不建 live Agent）。提案只写 `<projectDir>/inbox`；同一 session 的新提案按名称合并进已有提案，队列满 5 条时拒绝新 session 而不是驱逐未读；人工 `/memory inbox accept` 才调用 `memory_save`；没有 direct 模式。
+- 自动抽取：`scheduler.js` 在主线 `turn/end` 后，若 `autoExtract` 开启且本 turn 主 agent 没写过记忆，按 `autoExtractEveryTurns` 节流，调用 `runAutoExtract`。它读 `sessionQuery.readSession` 中游标之后的事件，从最旧的未读部分起取一个 `autoExtractMaxChars` 窗口（积压超过预算时分几轮读完，不丢开头；单条超预算的消息只读到预算为止），在进程内跑 `runToolLoop`（最多 5 turn，工具为 `memory_read/search/save/update`）；抽到的记忆直接走 `memory_save` 门（`basis:inference`、`confidence:low`），本 turn 抽取器自己的写入不触发下一轮互斥。循环正常结束（模型回复 DONE，不管是否调过工具）游标就推进到窗口末尾；只有被 5 turn 上限截断且没写入时保留游标（`reason:'max-turns'`），超时/出错也不推进。Inbox 仍保留给人工/历史提案与 Dream；自动抽取不再暂存。
 - 开关：`/memory on/off`（运行时 live config）+ `resolveConfig(raw,{env})` 读 `CLAUDE_CODE_DISABLE_AUTO_MEMORY`。官方还有 per-project `autoMemoryEnabled`、`autoMemoryDirectory` 与 `CLAUDE_CODE_PROJECT_DIR_NAME`，插件没有。
 - 回执：工具回执带 `version`/`bodyHash`；索引满时回执带 error 与「重写索引」提示（对齐官方「写入成功但要求重写索引」）。
 - 提示词始终包含 `MEMORY_INSTRUCTIONS`，说明四种类型、保存规则、Why/How、绝对日期和核验。
-- 扩展包括 `autoExtract` 的 Inbox 暂存、`subagentMemory` 及 Dream 副本与切换。
+- 扩展包括 `autoExtract` 的进程内工具循环、`subagentMemory` 及 Dream 副本与切换。
 
-**有意保留、不要为了「对齐」丢掉的**：Dream 的人工 `switch` + shadow + 一键 undo；新增事实必须能回查 transcript 的引用核验；`user-explicit` 证据绑定；密钥扫描与 `.trash`；主机重建 `MEMORY.md`；Inbox 默认暂存而不是直接落盘。
+**有意保留、不要为了「对齐」丢掉的**：Dream 的人工 `switch` + shadow + 一键 undo；新增事实必须能回查 transcript 的引用核验；`user-explicit` 证据绑定；密钥扫描与 `.trash`；主机重建 `MEMORY.md`；自动抽取的写入仍必须过 `memory_save` 的重复/冲突/密钥门。
 
 > Claude Code 的索引加载、主题文件按需读取和 worktree 共享行为见[官方记忆文档](https://code.claude.com/docs/en/memory#auto-memory)。选择器、Inbox 和 Dream 准入参数在本文按插件实现描述。
 
 ---
 
 ## 6. Dreaming 详细流程
+
+> **唯一路径：`DreamAgent`。** 运行入口仍是 `runtime.dream(...)`；`src/dream-agent.js` 执行一次进程内工具循环：prompt 只有 `MEMORY.md` 头部、笔记元数据和候选 session id；模型用 `memory_index`/`memory_read`/`memory_search` 和 `session_search`/`session_read` 按需读；`memory_write`/`memory_delete` 只写 `.dreams/shadow`，写入会带 session/seq/quote 证据；结束时 diff → `state.setShadowPending`，人工 `switch`/`discard`/`undo` 不变。旧 `DreamPipeline` 已删除；6.2/6.3 仅保留为历史说明，不再描述当前代码。
 
 ### 6.1 触发与闸门
 
@@ -418,7 +417,7 @@ enabled && autoMemoryEnabled && autoDreamEnabled
 
 `sessionsSince` 只记录**主线会话**；`parentSession` / `origin:'subagent'` 的 teammate 会话直接跳过（不把 Lead 指令误当用户偏好）。
 
-### 6.2 执行管线
+### 6.2 旧 DreamPipeline 执行管线（已删除，仅历史）
 
 ```
 DreamPipeline.run({force, trigger, noSessions, focus, runId, resume, inputId, inputRanges})
@@ -456,7 +455,7 @@ DreamPipeline.run({force, trigger, noSessions, focus, runId, resume, inputId, in
 14) 释放锁（成功 unlink）
 ```
 
-### 6.3 提示词
+### 6.3 旧 DreamPipeline 提示词（已删除，仅历史）
 
 `ANALYZER_SYSTEM_PROMPT`（`src/dream-analyzer.js`）说明：
 
@@ -479,7 +478,7 @@ DreamPipeline.run({force, trigger, noSessions, focus, runId, resume, inputId, in
 - **rules 是持久提示面**：`POST /rules` 会写 `<projectDir>/memory-rules.log` 审计行（scope/source/bytes/sha256/preview），便于追溯 prompt 规则变更。
 - `enabled:false` 时仅 `/status`、`/toggle` 可用，其余返回 `{ok:false,error:'plugin-disabled'}`。
 - 备份/回收站（v7）：`GET /backups`、`GET /trash` → `{ok,items:[{id,at,files}]}`；`POST /restore {kind,id,file?}` → `{ok,restored,reconciled}`（只允许 `.dreams`/`.trash` 下单段路径，写入 changelog + reconcile）。
-- dream 动作（v24 改为副本语义）：`POST /dream {action:'estimate'}` → `{ok,result:{estimatedTokens,limit,rough,inputId,ranges:[{id,lastSeq}]}}`；`{action:'start'|'run',inputId?,inputRanges?,focus?}` 统一启动后台任务；`run` 等待结果（钉定范围被改写时返回 `stale-input`）；`{action:'status',runId}`；`{action:'cancel'|'resume',runId}`；`{action:'switch'}` → `{ok,result:{ok:true,backupDir,counts}}`（运行期间有文件被改 → `{ok:false,error:'conflict',conflicts}`）；`{action:'discard'}`；`{action:'undo'}`。逐项审阅（`preview`/`apply-ops`/`dismiss`/`planId`/`opId`）在 v24 已删除。
+- dream 动作（v24 改为副本语义）：`POST /dream {action:'estimate'}` → `{ok,result:{estimatedTokens,limit,rough,inputId,ranges:[{id,lastSeq}]}}`；`{action:'start'|'run',inputId?,inputRanges?,focus?}` 统一启动后台任务；`run` 等待结果（钉定范围被改写时返回 `stale-input`）；`{action:'status',runId}`；`{action:'cancel',runId}`（没有续跑，重新 `start`）；`{action:'switch'}` → `{ok,result:{ok:true,backupDir,counts}}`（运行期间有文件被改 → `{ok:false,error:'conflict',conflicts}`）；`{action:'discard'}`；`{action:'undo'}`。逐项审阅（`preview`/`apply-ops`/`dismiss`/`planId`/`opId`）在 v24 已删除。
 - 指标（v8）：`GET /metrics` → `{ok,metrics}`（canonical summary：inject/reads/writes/searches/dreams/costs，另带 `injections` 别名）；`/status` 自带 `metrics`。
 
 | 方法 | 路径 | 入参 | 返回 |
@@ -492,7 +491,7 @@ DreamPipeline.run({force, trigger, noSessions, focus, runId, resume, inputId, in
 | POST | `/rules` | `{sessionId?,scope:'project'\|'global',text}` | `{ok,rules}`（空 text=删除覆盖） |
 | POST | `/toggle` | `{enabled?,autoMemoryEnabled?,autoDreamEnabled?,autoExtract?}` | `{ok,overrides,config}` |
 | POST | `/inbox` | `{sessionId?,action:'list'\|'accept'\|'discard',id?}` | list 同 GET；accept `{ok,id,applied,failed,results}`；discard `{ok,id,discarded}` |
-| POST | `/dream` | `{sessionId?,action:'estimate'\|'start'\|'status'\|'cancel'\|'resume'\|'switch'\|'discard'\|'undo'}` | `{ok,result}` |
+| POST | `/dream` | `{sessionId?,action:'estimate'\|'start'\|'status'\|'cancel'\|'switch'\|'discard'\|'undo'}` | `{ok,result}` |
 | POST | `/delete` | `{sessionId?,file,scope?}` | `{ok,trashed,trashPath}`（需 `dreamAllowDelete`） |
 
 错误约定：`{ok:false,error,message}`；坏 body→400 `bad-body`；未知 action→400 `unknown-action`；无 token→401。
@@ -512,8 +511,8 @@ DreamPipeline.run({force, trigger, noSessions, focus, runId, resume, inputId, in
   - `conversation.composer.dock`：`{id:'cc-memory-status', order:50}` → 输入框下方状态 chip（`记忆 N` + 待处理数，自带样式，60s 轮询、卸载清理）。
 - 页面结构（v21 UI）：固定头部（标题 + 项目名/条数 + 「记忆 / 待确认 / Dream / 设置」四个标签 + 刷新）+ 可滚动内容。`MemoryView` 持有 status、busy、toast，并提供 `run(key, task, {check, success})`：同一时间只跑一个动作，成功/失败统一 toast，结束后重新拉 `/status`。
   - `MemoriesTab`：搜索 + 新建 → 类型筛选（+ 本项目/跨项目）→ 列表；详情/编辑器在右栏（sticky，最大高度为可视高度，内部滚动），窄屏替换列表。
-  - `InboxTab`：合并 Dream 副本卡与自动抽取提案；每条提案显示条数与名称、可展开正文，「Accept all」走 `POST /inbox accept`，「Discard」走 `POST /inbox discard`；空状态区分「自动抽取关闭」与「全部处理完」，并显示上次抽取时间与结果。
-  - `TidyTab`：无副本时是引导卡 + 「Estimate the run」→「Start the dream run」；有副本时展示「新增/修改/删除」计数与前 20 个文件，两个按钮「Switch to it」「Discard」；`/dream-history` 单独拉取，最新可撤销批次显示撤销（`undo`）。
+  - `InboxTab`：只承载一个决定——待审阅的 Dream shadow。有待切换副本时显示副本卡与「Review」；没有时显示「All clear」。自动抽取直接写记忆，不再产生提案，因此不渲染提案列表、Accept/Discard 或上次抽取状态。
+  - `TidyTab`：无副本时是引导卡 + 「Estimate the run」→「Start the dream run」；有副本时展示「新增/修改/删除」计数与前 20 个文件，每处 diff 可展开并显示该改动用到的 session/seq/quote 证据，两个按钮「Switch to it」「Discard」；`/dream-history` 单独拉取，最新可撤销批次显示撤销（`undo`）。
   - `SettingsTab`：`/toggle` 四个开关（`enabled`/`autoMemoryEnabled`/`autoDreamEnabled`/`autoExtract`）、只读展示 `recallMode` 与 `subagentMemory`、rules 编辑、`/trash` `/backups` 懒加载 + `/restore`、记忆目录复制、使用情况一行。
 - 记忆预览：内置的小型安全 Markdown 渲染器（标题/列表/代码块/引用/链接/粗斜体），不注入 HTML。
 - 数据访问：统一 `fetch` + `x-cc-memory-token`；数据层（`normalize*`、`createBackend`）与 UI 分离；错误进 toast 或卡片文本，不炸 slot（外层还有 ViewBoundary）。
@@ -534,9 +533,10 @@ DreamPipeline.run({force, trigger, noSessions, focus, runId, resume, inputId, in
 | `recallProvider` / `recallModel` | `''` | selector 用的模型对；空 = 当前默认模型 |
 | `recallTimeoutMs` / `recallMaxCandidates` | `4000` / `200` | selector 超时（超时静默空）/ manifest 最多候选条数 |
 | `autoRecallMaxFiles` / `autoRecallMaxChars` | `3` / `3000` | 每条消息最多附加的记忆数 / 总字符数（硬预算） |
-| `autoExtract` | `false` | turn/end 后自动抽取提案；只进 Inbox，人工 accept；默认关 |
-| `autoExtractEveryTurns` | `3` | 每 N 个主线 turn 最多抽一次；本 turn 已写记忆则跳过 |
-| `autoExtractMaxItems` / `autoExtractMaxChars` | `3` / `12000` | 单次提案上限 / 最近转写字符预算 |
+| `autoExtract` | `true` | turn/end 后自动抽取并直接写记忆；本 turn 已写记忆则跳过 |
+| `autoExtractEveryTurns` | `3` | 每 N 个主线 turn 最多抽一次 |
+| `autoExtractMaxItems` / `autoExtractMaxChars` | `5` / `12000` | 单次抽取最多写入条数 / 最近转写字符预算 |
+| `autoExtractTimeoutMs` | `60000` | 单次工具循环总超时 |
 | `autoExtractProvider` / `autoExtractModel` | `''` | 抽取用的模型对；空 = 当前默认模型 |
 | `subagentMemory` | `off` | 子代理记忆唯一策略：`off`（不注入/不可写）/ `shared`（项目库读写）/ `own`（`agents/<preset>/memory`，只注入/只写自己） |
 | `agentMemoryPresets` | `[]` | `own` 的 preset 白名单；空 = 任意有 preset 名的子代理 |
@@ -544,20 +544,18 @@ DreamPipeline.run({force, trigger, noSessions, focus, runId, resume, inputId, in
 | `autoDreamEnabled` | `false` | 自动Dream |
 | `minHours` / `minSessions` | `24` / `5` | 自动 dream 闸门 |
 | `scanThrottleMs` / `lockTtlMs` | `600000` / `3600000` | 节流 / 锁 TTL |
+| `dreamTimeoutMs` | `600000` | 单次 Dream 工具循环的总超时；超时清掉副本并返回 `timeout`，不计失败退避 |
 | `dreamAnalyzerProvider` / `dreamAnalyzerModel` | `''` | 两项都填才指定模型；空则用宿主默认选择 |
 | `dreamAllowDelete` | `true` | 允许删除（启用后仍只软删除到 `.trash/`；v11 默认开启） |
-| `dreamInputMaxChars` | `96000` | 整理调用的会话字符预算 |
-| `dreamMaxFileChars` / `dreamMaxToolChars` | `100000` / `4000` | 写入单文件正文上限 / 每块工具证据上限 |
-| `dreamMapChunkChars` | `24000` | 收集阶段的默认分块大小；Dream 分析按自己的单元大小切分 |
-| `dreamAnalyzerMaxTokens` | `8192` | Dream 分析单元的初始输出预算 |
+| `dreamMaxFileChars` | `100000` | 写入单文件正文上限 |
 | `tools` / `commands` / `ui` | `true` | 各面开关 |
 | `contextOrder` | `850` | 注入 context 排序 |
 | `maxContentBytes` | `131072` | 单条记忆正文上限 |
 | `rulesMaxChars` | `8000` | 规则文件上限 |
 | `secretScan` | `warn` | 写记忆/dream 写文件/rules 前的机密扫描：`warn`/`deny`/`off` |
-| `dreamMaxTotalTokens` | `0` | dream 单次 total token 软上限（0=off）；超限 `costExceeded` 告警但照常应用 |
+| `dreamMaxTotalTokens` | `0` | dream 单次 total token 上限（0=off）；agent 循环用量到上限就停。`dreamCostMode:'warn'` 保留已写副本并标 `costExceeded`；`'block'` 首个 prompt 估算已超限则不调模型，跑超则丢弃副本、记失败 |
 
-旧 profile 中完整的 `dreamProvider` / `dreamModel` 在加载时转成分析器配置。已填写的完整分析器配置优先。
+Dream 只使用 `dreamAnalyzerProvider` / `dreamAnalyzerModel` 这一对；两个都填才指定模型，否则用宿主默认。旧的 `dreamProvider` / `dreamModel` 不再读取。
 
 运行时开关（不重启）：`<memoryRoot>/.plugin-state.json` 里的 `enabled/autoMemoryEnabled/autoDreamEnabled`；`/memory plugin on|off`、`/memory on|off`、UI pills 都会写这里。
 
@@ -636,7 +634,7 @@ DreamPipeline.run({force, trigger, noSessions, focus, runId, resume, inputId, in
 ## 11. 安全、成本与已知限制
 
 - **安全（v6/v7）**：HTTP 仅接受 loopback 来源 + POST Origin 校验 + token 持久化 `.api-token`（0600）；token 常量时间比对；API 不写会话日志；rules 写入审计 `.memory-rules.log`；**v7 起写入/dream/rules 前做机密扫描**（8 类规则 + 高熵 base64，`secretScan: warn|deny|off`，默认 warn，excerpt≤12 字符）。记忆是明文 Markdown，仍**无 HTTP 限流**。
-- **成本（v8）**：plan/changelog/state/metrics 记录 `durationMs/inputChars/outputChars/usage`（usage 由 `ctx.llm.stream` 提供时）；`dreamMaxTotalTokens` 软上限超限告警（默认 off）；UI 展示最近成本与徽标；仍无硬性成本阻断。
+- **成本（v8）**：plan/changelog/state/metrics 记录 `durationMs/inputChars/outputChars/usage`（usage 由 `ctx.llm.stream` 提供时）；`dreamMaxTotalTokens` 到上限即停止 agent 循环（默认 off），`block` 模式丢弃超限副本；UI 展示最近成本与徽标。
 - **已知限制**：
   1. 会话中的新写入在下个会话创建快照时可见。可用 `/memory refresh` 刷新当前快照。
   2. 非 git 工作区（如 default-workspace）按工作区聚合记忆，无关会话会混用同一份项目记忆（项目身份路线图）。
@@ -655,7 +653,7 @@ DreamPipeline.run({force, trigger, noSessions, focus, runId, resume, inputId, in
 - **加一个工具**：`src/tools.js` 里 `register({name, description, parameters, output, execute})`；execute 里 `projectFor(runtime, exec)` 拿上下文；写后 `invalidate(runtime, agent)`。
 - **加一个命令**：`src/commands.js` 的 `register({name, description, input, handler})`；解析用 `parseCommandLine`。
 - **加 UI 卡片/按钮**：`client.js` 组件内新增；数据走现有 `/status` 字段或新端点（`src/http.js` 加 route + 客户端 request）。
-- **改 dream 行为**：analyzer 提示词在 `src/dream-analyzer.js`，宿主校验在 `src/dream-verifier.js`，合并规则在 `src/dream-merge.js`；校验/应用/回滚在 `src/dream.js`（`validateDreamPlan`、`executePlan`、`handleApplyFailure`）；运行与断点在 `src/dream-pipeline.js` / `src/dream-run.js`；输入收集在 `src/dream-input.js`，转写在 `src/dream-session-text.js`，证据在 `src/dream-evidence.js`。
+- **改 dream 行为**：模型循环与工具在 `src/dream-agent.js`；候选会话/证据/运行清单在 `src/dream-run.js`；shadow 与人工 switch/undo 在 `src/dream-shadow.js` / `src/dream.js`；会话转写工具在 `src/dream-session-text.js`，证据文本匹配在 `src/dream-evidence.js`。
 - **加记忆类型**：`MEMORY_TYPES`（store.js）+ `rules.js` 默认规则 + 前端类型色点/locale。
 - **加配置项**：`config.js` 的 `DEFAULTS` + `resolveConfig` 校验；需要时在 `http.js` 的 `CONFIG_FIELDS`、`tools.js` 的 `configSummary`、commands 状态里暴露。
 
@@ -698,8 +696,8 @@ Dream 的 evidence 使用操作级引用；兼容旧 `{statement,quote}`，来�
 
 ## 0.12.0 Dream v2
 
-- **Dream v2**（默认且唯一路径）：`dream-pipeline.js` 导出 transcript → 按单元切分 → analyzer（`dream-analyzer.js`）→ host 校验（`dream-verifier.js`）→ 宿主合并（`dream-merge.js`）→ 生成副本，待用户切换时备份，切换后可撤销。运行状态与单元记录写在 `.dreams/<runId>/`（`dream-run.js`），`manifest.json` 记录 expected/processed/failed/partial 与每单元范围；不完整批次不移动水位线。配置：`dreamAnalyzerConcurrency`、`dreamAnalyzerProvider/Model`、`dreamAnalyzerMaxTokens`。
-- **应用前比对基线哈希**：见 0.12.1；`dream-pipeline` 把 executePlan 的 `conflict` 返回当失败处理（可 resume）。
+- **Dream v2（已删除，仅历史）**：旧 `dream-pipeline.js` 的 transcript → 单元 → analyzer → host verifier → merge 流程已移除；当前唯一路径是 `DreamAgent`。
+- **应用前比对基线哈希（历史，现由 shadow diff 承担）**：见 0.12.1；旧 `dream-pipeline` 把 executePlan 的 `conflict` 返回当失败处理。
 - **旧引擎已移除**：`DreamEngine.run`/`estimate`、`dream-prompt.js`、`dream-map.js`、`dream-organizer.js` 及 `dreamPipeline`、`dreamOrganizerMode`、`--pipeline`、`--maintenance` 都不再存在。
 - **共享 wiki 格式**：`wiki-core.js` 提供 `[[slug]]`、citation、index、SKILL、validation；`wiki-store.js` 提供独立 `wiki/` 根、原子写、search、link audit、build manifest。`memory/` 继续由 `MemoryStore` 管理，新增 `SKILL.md`（保留名）。
 - **Knowledge Wiki build**：`wiki-build.js` 支持 `.txt/.md` 文档 → source manifest → extractor → analyzer → organizer → `_index.md`/`SKILL.md`；入口 `/memory wiki build <dir>` 与 `POST /api/cc-memory/wiki`。PDF/Office 需先转文本。

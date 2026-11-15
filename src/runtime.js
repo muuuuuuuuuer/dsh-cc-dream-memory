@@ -14,7 +14,7 @@ import { buildPaths, projectLayout, resolveMemoryRoot } from './paths.js';
 import { resolveIdentity } from './identity.js';
 import { MemoryStore } from './store.js';
 import { DreamEngine } from './dream.js';
-import { DreamPipeline } from './dream-pipeline.js';
+import { DreamAgent } from './dream-agent.js';
 import { isDelegated } from './session-kind.js';
 import { ProjectState } from './state.js';
 import { loadRules, saveRulesFile } from './rules.js';
@@ -77,7 +77,7 @@ const OVERRIDE_KEYS = [
 
 export class MemoryRuntime {
   #dreamEngine;
-  #dreamPipeline;
+  #dreamAgent;
 
   /**
    * @param {import('@deepseek-ai/cordis').Context} ctx
@@ -116,7 +116,7 @@ export class MemoryRuntime {
     /** @type {Set<(info:{sessionId:string, agent?:object}) => void>} */
     this.listeners = new Set();
     this.#dreamEngine = new DreamEngine({ runtime: this });
-    this.#dreamPipeline = new DreamPipeline({ ctx, runtime: this });
+    this.#dreamAgent = new DreamAgent({ ctx, runtime: this });
     /** Background promises tracked so dispose() can drain them. */
     this.pending = new Set();
   }
@@ -549,35 +549,31 @@ export class MemoryRuntime {
   }
 
   /**
-   * Start a resumable Dream run and return its id immediately. The pipeline
-   * keeps per-unit state, so a later `resumeDreamRun` only redoes what failed.
+   * Start a Dream run and return its id immediately. A run is one agent loop
+   * with no partial state to continue: a stopped or failed run is started
+   * again, not resumed.
    */
   async startDream(pctx, options = {}) {
-    return this.#dreamPipeline.start({ pctx, ...options });
+    return this.#dreamAgent.start({ pctx, ...options });
   }
 
   /** Run ids a Dream worker in this process is executing. */
   liveDreamRunIds() {
-    return this.#dreamPipeline.liveRunIds();
+    return this.#dreamAgent.liveRunIds();
   }
 
   /** Read one Dream run (or the newest) from disk. */
   async dreamRun(pctx, runId = '') {
-    return this.#dreamPipeline.status(pctx, runId);
+    return this.#dreamAgent.status(pctx, runId);
   }
 
-  /** Ask a running Dream run to stop; finished units stay on disk. */
+  /** Ask a running Dream run to stop; its copy is thrown away. */
   async cancelDreamRun(pctx, runId = '') {
-    return this.#dreamPipeline.cancel(pctx, runId);
-  }
-
-  /** Resume a stopped/failed Dream run, analyzing only the units left. */
-  async resumeDreamRun(pctx, runId = '', options = {}) {
-    return this.#dreamPipeline.resume(pctx, runId, options);
+    return this.#dreamAgent.cancel(pctx, runId);
   }
 
   async estimateDream(pctx, options = {}) {
-    return this.#dreamPipeline.estimate({ pctx, ...options });
+    return this.#dreamAgent.estimate({ pctx, ...options });
   }
 
   /**

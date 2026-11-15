@@ -1,11 +1,9 @@
 /**
  * Does one text support another?
  *
- * Three gates must not trust a model's claim of support:
+ * Two gates must not trust a model's claim of support:
  *   - `user-evidence.js` binds a `user-explicit` write to what the user actually
- *     sent: a located quote proves provenance, not consent for this sentence;
- *   - `dream-verifier.js` decides whether a transcript quote really backs the
- *     memory claim it is filed against.
+ *     sent: a located quote proves provenance, not consent for this sentence.
  *
  * The judgement is deliberately lexical and deterministic: coverage of the
  * statement's content tokens inside the source text. It is a floor, not a

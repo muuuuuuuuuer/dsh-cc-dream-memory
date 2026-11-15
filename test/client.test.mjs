@@ -347,7 +347,7 @@ function internalsOrSkip(t, client) {
 
 const REQUIRED_INTERNALS = ['normalizeStatus', 'normalizeFile', 'createBackend', 'renderMarkdown', 'renderInline'];
 
-test('client: Dream estimates first, then starts the range the user saw', async () => {
+test('client: Dream estimates first, then starts the run the user saw', async () => {
   let resolveEstimate;
   const estimate = new Promise((resolve) => { resolveEstimate = resolve; });
   const ui = await dreamTabHarness({ estimate });
@@ -357,8 +357,7 @@ test('client: Dream estimates first, then starts the range the user saw', async 
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(ui.actions, ['estimate'], 'the first action must be read-only estimation');
   resolveEstimate({
-    estimatedTokens: 12345, inputChars: 48000, limit: 20000, costMode: 'warn', rough: true,
-    inputId: 'in-1', ranges: [{ id: 's1', lastSeq: 3 }],
+    estimatedTokens: 12345, inputChars: 48000, limit: 20000, rough: true,
   });
   await pending;
   await new Promise((resolve) => setImmediate(resolve));
@@ -372,8 +371,8 @@ test('client: Dream estimates first, then starts the range the user saw', async 
   await confirmation.props.onClick();
   await new Promise((resolve) => setImmediate(resolve));
   assert.deepEqual(ui.actions, ['estimate', 'start'], 'showing the estimate must not run Dream on its own');
-  assert.equal(ui.bodies[1].inputId, 'in-1', 'the confirmed range travels with the start');
-  assert.deepEqual(ui.bodies[1].inputRanges, [{ id: 's1', lastSeq: 3 }]);
+  assert.equal(ui.bodies[1].inputId, undefined, 'the agent path takes no pinned range');
+  assert.equal(ui.bodies[1].inputRanges, undefined);
   assert.equal(ui.actions.includes('preview'), false, 'a dream no longer produces a per-operation plan');
 });
 
@@ -393,7 +392,7 @@ test('client: a failed or malformed estimate leaves Dream unstarted with a visib
 });
 
 
-test('client: a running dream shows its progress and can be stopped or continued', async () => {
+test('client: a running dream shows its progress and can be stopped or run again', async () => {
   const running = await dreamTabHarness({
     dreamRuns: [{ runId: '2026-11-12T09-00-00-abcdef', status: 'running', stage: 'analyzing' }],
   });
@@ -410,10 +409,10 @@ test('client: a running dream shows its progress and can be stopped or continued
   });
   const failedText = collectText(failed.render().tree);
   assert.match(failedText, /failed/u);
-  const resume = findNode(failed.render().tree, (node) => node.type === 'button' && collectText(node) === 'Continue');
-  assert.ok(resume, 'a failed dream offers a continue button');
+  const resume = findNode(failed.render().tree, (node) => node.type === 'button' && collectText(node) === 'Run again');
+  assert.ok(resume, 'a failed dream offers a run-again button');
   await resume.props.onClick();
-  assert.deepEqual(failed.actions, ['resume']);
+  assert.deepEqual(failed.actions, ['start'], 'run again starts a fresh run');
 });
 
 
@@ -619,7 +618,8 @@ test('client: normalizeStatus fills safe defaults and filters malformed entries'
   assert.equal(empty.config.enabled, true);
   assert.equal(empty.config.autoMemoryEnabled, true);
   assert.equal(empty.config.autoDreamEnabled, false);
-  assert.equal(empty.config.dreamMode, 'apply');
+  assert.equal(empty.config.recallMode, 'model');
+  assert.equal(empty.config.autoExtractEveryTurns, 3);
   assert.equal(empty.entries.length, 0);
   assert.equal(empty.index.text, '');
   assert.equal(empty.state.lastDreamAt, 0);

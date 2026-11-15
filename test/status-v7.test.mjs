@@ -149,7 +149,7 @@ test('v7 status: service payload mirrors the HTTP status shape with provenance',
   assert.ok(Array.isArray(status.health.warnings));
   assert.equal(status.state.lastDreamDurationMs, 0, 'state exposes the v7 duration field');
   assert.equal(status.config.recallMode, 'model');
-  assert.equal(status.config.autoExtract, false);
+  assert.equal(status.config.autoExtract, true);
   assert.equal(status.config.subagentMemory, 'off');
   assert.equal(status.inbox.count, 0);
   assert.equal(status.inbox.items.length, 0);

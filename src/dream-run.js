@@ -190,7 +190,7 @@ export function summarizeRun(manifest, { running = false } = {}) {
     coverageComplete: manifest.coverageComplete,
     planPath: manifest.planPath,
     applied: manifest.applied,
-    error: interrupted && !manifest.error ? 'stopped before finishing (the host process ended); resume to continue' : manifest.error,
+    error: interrupted && !manifest.error ? 'stopped before finishing (the host process ended); run Dream again' : manifest.error,
     blockedReason: manifest.blockedReason,
     skipReason: manifest.skipReason,
     usage: manifest.usage,

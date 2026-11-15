@@ -45,7 +45,10 @@ export async function withFileLock(file, fn, options = {}) {
   const waitMs = Number.isFinite(Number(options.waitMs)) ? Math.max(0, Number(options.waitMs)) : DEFAULT_WAIT_MS;
   const startedAt = Date.now();
   let handle = null;
-  while (Date.now() - startedAt < waitMs) {
+  // Always attempt once, even with waitMs 0: a zero wait means "do not queue",
+  // not "skip the lock". Contention with no handle is either degraded
+  // best-effort (default) or a hard failure (strict callers such as Dream).
+  do {
     try {
       await fs.mkdir(path.dirname(file), { recursive: true });
       handle = await fs.open(file, 'wx');
@@ -110,6 +113,11 @@ export async function withFileLock(file, fn, options = {}) {
       }
       break;
     }
+  } while (Date.now() - startedAt < waitMs);
+  if (handle === null && options.strict === true) {
+    const error = new Error('another process holds the lock');
+    error.code = 'LOCK_BUSY';
+    throw error;
   }
   try {
     return await fn();

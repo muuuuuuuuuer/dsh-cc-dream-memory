@@ -66,7 +66,7 @@ The screenshots show an earlier Dream interface. The current Dream stages one co
 
 A **Memory** tab sits next to Chat in every session, and the status bar shows how many notes the project has.
 
-The **Inbox** tab is the review surface: it lists auto-extract proposals (open one to read the notes, then accept all or discard) and any Dream result waiting to be switched to. The **Settings** tab has switches for memory, auto memory, automatic Dreams and auto-extract, plus the current recall and subagent memory policies.
+The **Inbox** tab holds the one decision that still needs a human: a Dream shadow waiting to be reviewed, switched to, or discarded. Automatic extraction writes directly through the same memory tools, so there are no staged note proposals. The **Dream** tab estimates, runs the agent, and shows the diff and its evidence before you switch. The **Settings** tab has switches for memory, auto memory, automatic Dreams and auto-extract, plus the current recall and subagent memory policies.
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/memory-tab.png" width="860" alt="DeepSeek Harness with the Memory tab open, listing four notes with search, type filters and a New button">
@@ -120,7 +120,7 @@ Run these in a session.
    /memory dream status <runId>
    ```
 
-   A long session is split into parts and each part is analyzed once. `/memory dream cancel` stops a run and keeps the parts it finished; `/memory dream resume` retries only the missing parts. `/memory dream run --wait` still waits for the run to finish.
+   Dream is one agent run: it searches the sessions it has not reviewed and reads only the memory pages it needs. `/memory dream cancel` stops a run and throws its copy away; run Dream again to start over. `/memory dream run --wait` waits for the run to finish.
 
 4. Review the result in Memory and switch to it when ready. Undo the switch if you change your mind.
 
@@ -147,7 +147,7 @@ What is different here:
 | New facts from Dream | Must quote the transcript |
 | Automatic Dream | Off by default |
 | Recall | A cheap model selector picks at most 5 candidates per turn; autoRecallMaxFiles (default 3) still caps what is attached. There is no lexical fallback |
-| Auto-extract | Off by default; proposals stage in an Inbox for review; never writes directly |
+| Auto-extract | On by default. After the mainline turn ends, a bounded 5-turn in-process tool loop reads only events after the stored cursor and writes through `memory_save` (duplicate/conflict/secret gates still apply) |
 | Subagents | One `subagentMemory` policy: `off` (default), `shared`, or `own` per-agent directories |
 
 ## Is it right for you?
@@ -157,7 +157,7 @@ This plugin suits you if you want to read and correct what your agent remembers,
 Look elsewhere if you need:
 
 - **Vector search or a hosted memory service.** This plugin has neither. Recall is a cheap model selector over note names and descriptions, so a rephrased question can still miss. `@openviking/dsh-memory-plugin`, `@honcho-ai/dsh-honcho` and `dsh-tdai-memory` take other approaches.
-- **Approval for every write.** The Inbox lets you review auto-extract proposals. Ordinary memory saves run through the write policy immediately.
+- **Approval for every write.** Auto-extraction writes directly, like ordinary saves; both still pass duplicate/conflict/secret checks. The Inbox only holds manually staged proposals and Dream results.
 
 ## Your data
 

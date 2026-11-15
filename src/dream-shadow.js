@@ -25,13 +25,18 @@ export function shadowDirOf(paths) {
   return path.join(paths.dreamsDir, 'shadow');
 }
 
-/** A paths object whose memory directory is the shadow copy. */
+/**
+ * A paths object whose memory directory is the shadow copy. Its trash lives
+ * inside the copy, so a page the run deletes never shows up in the live trash
+ * and disappears with a discarded copy.
+ */
 export function shadowPathsOf(paths) {
   const dir = shadowDirOf(paths);
   return {
     ...paths,
     memoryDir: dir,
     indexFile: path.join(dir, 'MEMORY.md'),
+    trashRoot: path.join(dir, '.trash'),
   };
 }
 
@@ -76,7 +81,9 @@ export async function prepareShadow({ store, paths, config }) {
   if (typeof indexText === 'string' && indexText !== '') {
     await fs.writeFile(shadowPaths.indexFile, indexText, 'utf8');
   }
-  const shadowStore = new MemoryStore({ paths: shadowPaths, getConfig: () => config });
+  // `.history` is keyed off the live project dir; the copy needs none (the
+  // switch backs up the live notes), so its rewrites must not fill it.
+  const shadowStore = new MemoryStore({ paths: shadowPaths, getConfig: () => ({ ...config, keepHistory: false }) });
   return { shadowStore, base };
 }
 
@@ -122,14 +129,45 @@ export async function applyShadowOperations({ shadowStore, operations }) {
 
 /**
  * File-level difference between the live notes and the pending copy.
+ *
+ * With `base` (the snapshot hashes the copy was made from) the diff is what
+ * the run changed: a copy page that still matches its snapshot is untouched
+ * even if the live page moved on, and a live page newer than the snapshot is
+ * not a removal. Live edits to pages the run did change are conflicts
+ * ({@link shadowConflicts}).
+ * @param {{store:object, shadowStore:object, base?:Record<string,string>}} input
  * @returns {Promise<{added: string[], changed: string[], removed: string[], files: Array<{file: string, action: 'added'|'changed'|'removed'}>}>}
  */
-export async function diffShadow({ store, shadowStore }) {
+export async function diffShadow({ store, shadowStore, base }) {
   const live = new Map((await store.listEntries('project')).map((entry) => [entry.file, entry]));
   const copy = new Map((await shadowStore.listEntries('project')).map((entry) => [entry.file, entry]));
   const added = [];
   const changed = [];
   const removed = [];
+  if (base && typeof base === 'object') {
+    const has = (file) => Object.prototype.hasOwnProperty.call(base, file);
+    for (const file of copy.keys()) {
+      if (!has(file)) {
+        added.push(file);
+        continue;
+      }
+      const there = await shadowStore.readEntry(file, 'project').then((item) => item.raw).catch(() => null);
+      if (hashText(there) !== base[file]) changed.push(file);
+    }
+    for (const file of Object.keys(base)) {
+      if (!copy.has(file)) removed.push(file);
+    }
+    return {
+      added,
+      changed,
+      removed,
+      files: [
+        ...added.map((file) => ({ file, action: 'added' })),
+        ...changed.map((file) => ({ file, action: 'changed' })),
+        ...removed.map((file) => ({ file, action: 'removed' })),
+      ],
+    };
+  }
   for (const [file, entry] of copy) {
     const before = live.get(file);
     if (!before) {
@@ -165,6 +203,15 @@ export async function diffShadow({ store, shadowStore }) {
  */
 export async function shadowConflicts({ store, base }) {
   const conflicts = [];
+  if (base && typeof base === 'object') {
+    // A note created after the snapshot is not in `base`; switchShadow would
+    // otherwise treat it as "removed" and trash it. Treat it as a conflict.
+    for (const entry of await store.listEntries('project')) {
+      if (!Object.prototype.hasOwnProperty.call(base, entry.file)) {
+        conflicts.push({ file: entry.file, reason: 'created while the dream ran' });
+      }
+    }
+  }
   for (const [file, hash] of Object.entries(base ?? {})) {
     let live = null;
     try {

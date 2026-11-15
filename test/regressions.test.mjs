@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { access, mkdir, readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { loadModule, makeTempDir } from './helpers.mjs';
-import { runtimeEnv as dreamRuntimeEnv, scriptDream, claimOf } from './v10-helpers.mjs';
+
 
 // ---------------------------------------------------------------------------
 // Module loading / shared fixtures
@@ -37,7 +37,6 @@ function core() {
       state: await loadModule('../src/state.js', { requireExports: ['ProjectState'] }),
       runtime: await loadModule('../src/runtime.js', { requireExports: ['MemoryRuntime'] }),
       dream: await loadModule('../src/dream.js', { requireExports: ['DreamEngine'] }),
-      dreamInput: await loadModule('../src/dream-input.js', { requireExports: ['gatherDreamInput'] }),
     }))();
   }
   return corePromise;
@@ -219,10 +218,10 @@ test('v2 config exposes the new autoMemoryEnabled / dream budget defaults', asyn
   const resolved = config.resolveConfig();
   assert.equal(resolved.autoMemoryEnabled, true, 'autoMemoryEnabled defaults to true');
   assert.equal(resolved.dreamMaxFileChars, 100_000, 'dreamMaxFileChars defaults to 100000 (Claude cookbook 100KB)');
-  assert.equal(resolved.dreamMaxToolChars, 4_000, 'dreamMaxToolChars defaults to 4000');
+  assert.equal(resolved.dreamTimeoutMs, 600_000, 'dreamTimeoutMs defaults to ten minutes');
   assert.equal(resolved.enabled, true, 'plugin master switch default stays true');
   assert.equal(config.DEFAULTS.dreamMaxFileChars, 100_000);
-  assert.equal(config.DEFAULTS.dreamMaxToolChars, 4_000);
+  assert.equal(config.DEFAULTS.dreamTimeoutMs, 600_000);
 
   const overridden = config.resolveConfig({
     autoMemoryEnabled: false,
@@ -326,60 +325,8 @@ test('P0-2: two /remember notes with Chinese first lines do not collide', async 
 });
 
 // ---------------------------------------------------------------------------
-// P0-3: subagent session filtering + prompt authority rules
+// P0-3: prompt authority rules
 // ---------------------------------------------------------------------------
-
-test('P0-3: gatherDreamInput filters subagent sessions and keeps mainline sessions', async (t) => {
-  const proj = await setupProject(t);
-  await proj.state.ensureSession('main-1', 1000);
-  await proj.state.ensureSession('sub-1', 2000);
-
-  const ctx = fakeCtx({
-    workspaceDir: proj.workspaceDir,
-    sessions: {
-      'main-1': sessionRecord({
-        id: 'main-1',
-        createdAt: 1000,
-        user: ['主线会话：修复记忆插件'],
-        assistant: ['已完成 P0 修复'],
-      }),
-      'main-2': sessionRecord({ id: 'main-2', createdAt: 3000, user: ['第二个主线会话内容'] }),
-      'sub-1': sessionRecord({
-        id: 'sub-1',
-        createdAt: 2000,
-        parentSession: 'main-1',
-        user: ['SUBAGENT DISPATCH text must not leak'],
-      }),
-      'sub-2': sessionRecord({
-        id: 'sub-2',
-        createdAt: 4000,
-        origin: 'subagent',
-        user: ['SUBAGENT ORIGIN text must not leak'],
-      }),
-    },
-    filterRecords: [
-      { header: { id: 'sub-2', createdAt: 4000, origin: 'subagent' } },
-      { header: { id: 'main-2', createdAt: 3000 } },
-    ],
-  });
-
-  const input = await proj.mods.dreamInput.gatherDreamInput({
-    ctx: ctx.ctx,
-    store: proj.store,
-    config: proj.config,
-    workspaceDir: proj.workspaceDir,
-    state: proj.state,
-  });
-  const ids = input.sessions.map((session) => session.id);
-  assert.equal(ids.includes('sub-1'), false, 'a session with header.parentSession is a subagent session and must be skipped');
-  assert.equal(ids.includes('sub-2'), false, 'a session with header.origin === "subagent" must be skipped');
-  assert.equal(ids.includes('main-1'), true, 'mainline session from state must be included');
-  assert.equal(ids.includes('main-2'), true, 'mainline candidate from filterSessions must be included');
-  const serialized = JSON.stringify(input.sessions);
-  assert.doesNotMatch(serialized, /SUBAGENT/, 'subagent text must not reach the dream prompt');
-  assert.match(serialized, /主线会话|已完成 P0 修复|第二个主线会话内容/);
-});
-
 test('P0-4: repo and its subdirectory share one store/state instance; concurrent saves keep index consistent', async (t) => {
   const { config, paths, store: storeMod, state: stateMod, runtime: runtimeMod } = await core();
   const tmp = await makeTempDir(t);

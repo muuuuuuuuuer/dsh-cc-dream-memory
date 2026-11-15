@@ -58,7 +58,6 @@ export const CONFIG_FIELDS = Object.freeze([
   'autoMemoryEnabled',
   'autoDreamEnabled',
   'dreamAnalyzerModel',
-  'dreamAnalyzerConcurrency',
   'indexMaxLines',
   'indexMaxBytes',
   'autoRecallMaxFiles',
@@ -775,7 +774,18 @@ export function createStatusService(runtime) {
     if (pctx.state.snapshot().shadowPending?.runId !== runId) {
       throw coded('stale-dream', 'The pending Dream changed. Refresh the Memory page.');
     }
-    return { before, after, ...bodyLineChanges(before, after) };
+    const evidence = (Array.isArray(pending.evidence) ? pending.evidence : [])
+      .filter((item) => item && typeof item.sessionId === 'string' && (!item.file || item.file === file))
+      .slice(0, 100)
+      .map((item) => ({
+        sessionId: item.sessionId,
+        seq: Number(item.seq) || 0,
+        quote: typeof item.quote === 'string' ? item.quote : '',
+        source: typeof item.source === 'string' ? item.source : 'citation',
+        verified: item.verified === true,
+        ...(typeof item.file === 'string' ? { file: item.file } : {}),
+      }));
+    return { before, after, evidence, ...bodyLineChanges(before, after) };
   }
 
   /**
@@ -1101,8 +1111,6 @@ export function createStatusService(runtime) {
         return { ok: true, result: lossless(await rt.dreamRun(pctx, runId)) };
       case 'cancel':
         return { ok: true, result: lossless(await rt.cancelDreamRun(pctx, runId)) };
-      case 'resume':
-        return launched(await rt.resumeDreamRun(pctx, runId, { agent, sessionId: options.sessionId }));
       case 'switch': {
         const reject = Array.isArray(options.reject) ? options.reject.filter((file) => typeof file === 'string') : [];
         const result = await rt.switchDream({ pctx, agent, reject });

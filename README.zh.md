@@ -122,7 +122,7 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.20.0
    /memory dream status <runId>
    ```
 
-   长会话按顺序分块分析。`/memory dream cancel` 停止运行并保留已完成的分块，`/memory dream resume` 继续未完成的部分。`/memory dream run --wait` 等待运行结束。
+   Dream 是一次 agent 运行：自己搜还没复查过的会话，只读需要的记忆页。`/memory dream cancel` 停止运行并丢弃副本，之后重新运行即可。`/memory dream run --wait` 等待运行结束。
 
 4. 审阅后切换到副本，需要时可以撤销。
 
@@ -158,7 +158,7 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.20.0
 这些情况可以看看别的插件：
 
 - **需要向量检索或托管的记忆服务。** 本插件都没有。模型按笔记元数据选择候选，可能漏召回。`@openviking/dsh-memory-plugin`、`@honcho-ai/dsh-honcho` 和 `dsh-tdai-memory` 走的是其他路线。
-- **每次写入都要审批。** Inbox 提供自动抽取的提案审阅，普通记忆写入直接经过写入策略。
+- **每次写入都要审批。** 自动抽取和普通记忆写入一样直接经过重复/冲突/密钥检查；Inbox 只保留人工暂存提案与 Dream 结果。
 
 ## 你的数据
 

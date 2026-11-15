@@ -23,7 +23,7 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 
 | Command | What it does |
 |---|---|
-| `/memory dream run` | Start a background run; it writes a cleaned-up copy of your memory under `.dreams/shadow/` and leaves the real notes untouched; `/memory dream status [runId]` shows progress, `cancel`/`resume` stop and continue it |
+| `/memory dream run` | Start a background run; it writes a cleaned-up copy of your memory under `.dreams/shadow/` and leaves the real notes untouched; `/memory dream status [runId]` shows progress, `cancel` stops it (a stopped or failed run is started again with `run`) |
 | `/memory dream run --focus "<topic>"` | Prefer one topic in this round |
 | `/memory dream switch [--reject <file,...>]` | Apply the copy Dream wrote, except the files named in `--reject` (backed up first; `undo` returns). Rejected facts are never proposed again |
 | `/memory dream discard` | Reject every change; memory stays exactly as it is and these facts are never proposed again |
@@ -34,9 +34,9 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 | `/memory dream on` | Turn on automatic Dreams. They are off by default |
 | `/memory dream off` | Turn automatic Dreams off |
 
-## Inbox (auto-extract)
+## Inbox (manual API; UI shows only Dream)
 
-`autoExtract` is off by default. When enabled, every proposal is staged in `<projectDir>/inbox/` until you accept it; accepting applies the `memory_save` gates. There is no direct-write mode.
+Automatic extraction writes directly through `memory_save` and does not stage proposals. The web Inbox tab now shows only a Dream shadow awaiting review. The commands below remain as a manual/legacy staging API: `/memory inbox accept <id>` applies the `memory_save` gates; `/memory inbox discard <id>` removes the proposal.
 
 | Command | What it does |
 |---|---|

@@ -1,13 +1,15 @@
 /**
- * Auto-extraction (v20): a turn-end hook proposes durable notes, stages them
- * in the Inbox, never directly in the store.
+ * Auto-extraction (v24): a turn-end agent uses memory tools directly.
+ *
+ * The loop is bounded and runs in-process; writes go through memory_save. This
+ * test scripts one tool-call turn followed by a final DONE.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { toolsEnv, commandEnv, waitFor } from './v10-helpers.mjs';
-import { parseExtraction } from '../src/auto-extract.js';
-import { listProposals, removeProposal, writeProposal } from '../src/inbox.js';
+import { removeProposal, writeProposal } from '../src/inbox.js';
 import { registerScheduler } from '../src/scheduler.js';
+import { streamOf } from './v10-helpers.mjs';
 
 const now = Date.parse('2026-11-13T10:00:00Z');
 
@@ -37,17 +39,44 @@ function events() {
   ];
 }
 
-function plan() {
+function memorySaveCall(id = 'call-1') {
   return {
-    memories: [
-      {
+    type: 'block-end',
+    block: {
+      type: 'tool-call',
+      id,
+      name: 'memory_save',
+      arguments: {
         name: 'deploy command',
         type: 'project',
         description: 'Releases use make release',
         content: 'Run `make release` to deploy.',
       },
-    ],
+    },
   };
+}
+
+/**
+ * Fake a two-call loop: first a memory_save tool call, then DONE.
+ * Any additional call returns DONE so the test can also assert the turn cap.
+ */
+function scriptToolLoop(env) {
+  let calls = 0;
+  env.host.services.llm.stream = (options) => {
+    calls += 1;
+    env.toolCalls = calls;
+    if (calls === 1) {
+      return streamOf([
+        memorySaveCall(),
+        { type: 'finish', reason: { kind: 'tool-calls' } },
+      ]);
+    }
+    return streamOf([
+      { type: 'text-delta', text: 'DONE' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ]);
+  };
+  return () => calls;
 }
 
 async function extractEnv(t, overrides = {}) {
@@ -56,7 +85,8 @@ async function extractEnv(t, overrides = {}) {
     autoExtractEveryTurns: 1,
     autoDreamEnabled: false,
     ...overrides,
-  }, { plan: JSON.stringify(plan()) });
+  });
+  scriptToolLoop(env);
   env.host.services.sessionQuery = {
     filterSessions: async () => [],
     readSession: async (id) => ({ session: { id, cwd: env.workspaceDir }, events: events() }),
@@ -72,71 +102,60 @@ function turn(env, id = 's1') {
   env.host.emit('session/event', { id, header: { cwd: env.workspaceDir } }, { type: 'turn/end', time: now });
 }
 
-test('parseExtraction keeps valid proposals and ignores the model wrapper', () => {
-  const items = parseExtraction('```json\n{"memories":[{"name":"x","type":"project","description":"d","content":"body"}]}\n```');
-  assert.deepEqual(items, [{ name: 'x', type: 'project', description: 'd', content: 'body' }]);
-  assert.deepEqual(parseExtraction('{"memories":[]}'), []);
-  assert.deepEqual(parseExtraction('not json'), []);
-  assert.deepEqual(parseExtraction('{"memories":[{"name":"","content":"x"}]}'), []);
-});
-
-test('a turn-end stages a proposal in the Inbox instead of writing memory', async (t) => {
+test('a turn-end agent calls memory_save and writes the note directly', async (t) => {
   const env = await extractEnv(t);
   turn(env);
-  const records = await waitFor(async () => {
-    const list = await listProposals(env.pctx.paths);
+  const entries = await waitFor(async () => {
+    const list = await env.pctx.store.listEntries();
     return list.length > 0 ? list : null;
   });
-  const record = records[0];
-  assert.equal(record.sessionId, 's1');
-  assert.equal(record.items.length, 1);
-  assert.equal(record.items[0].name, 'deploy command');
-  assert.equal(record.status, 'pending');
-  assert.equal((await env.pctx.store.listEntries()).length, 0, 'the main store is untouched');
+  assert.equal(entries[0].name, 'deploy command');
+  assert.equal(entries[0].type, 'project');
+  assert.equal(entries[0].description, 'Releases use make release');
+
   const state = await waitFor(async () => {
     const snapshot = env.pctx.state.snapshot();
     return snapshot.lastExtractAt > 0 ? snapshot : null;
   });
+  assert.equal(env.toolCalls, 2, 'one tool turn plus a final answer');
   assert.ok(state.lastExtractAttemptAt > 0);
-  assert.equal(state.lastExtractReason, 'inbox');
+  assert.equal(state.lastExtractReason, 'direct');
   assert.equal(state.lastExtractCount, 1);
 });
 
 test('a write by the main agent skips extraction for that turn', async (t) => {
   const env = await extractEnv(t);
-  turn(env);
-  const list = await waitFor(async () => {
-    const records = await listProposals(env.pctx.paths);
-    return records.length > 0 ? records : null;
-  });
-  await removeProposal(env.pctx.paths, list[0].id);
-
   env.runtime.noteMemoryWrite('s1');
   turn(env);
   await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.equal((await listProposals(env.pctx.paths)).length, 0, 'a model write is the mutex');
+  assert.equal((await env.pctx.store.listEntries()).length, 0, 'the model write is the mutex');
 });
 
 test('autoExtractEveryTurns waits for the Nth turn', async (t) => {
   const env = await extractEnv(t, { autoExtractEveryTurns: 2 });
   turn(env);
   await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.equal((await listProposals(env.pctx.paths)).length, 0, 'turn 1 is not a multiple');
+  assert.equal((await env.pctx.store.listEntries()).length, 0, 'turn 1 is not a multiple');
 
   turn(env);
-  const records = await waitFor(async () => {
-    const next = await listProposals(env.pctx.paths);
-    return next.length > 0 ? next : null;
+  const entries = await waitFor(async () => {
+    const list = await env.pctx.store.listEntries();
+    return list.length > 0 ? list : null;
   });
-  assert.equal(records.length, 1);
+  assert.equal(entries.length, 1);
 });
 
-test('/memory inbox lists and accepts a proposal through memory_save', async (t) => {
-  const env = await commandEnv(t, { autoExtract: true, autoDreamEnabled: false });
+test('/memory inbox still accepts a manually staged proposal', async (t) => {
+  const env = await commandEnv(t, { autoExtract: false, autoDreamEnabled: false });
   const record = await writeProposal(env.pctx.paths, {
     sessionId: 's1',
     cwd: env.workspaceDir,
-    items: plan().memories,
+    items: [{
+      name: 'deploy command',
+      type: 'project',
+      description: 'Releases use make release',
+      content: 'Run `make release` to deploy.',
+    }],
     model: 'fake',
     trigger: 'manual',
   });
@@ -151,5 +170,5 @@ test('/memory inbox lists and accepts a proposal through memory_save', async (t)
   const entries = await env.pctx.store.listEntries();
   assert.equal(entries.length, 1);
   assert.equal(entries[0].name, 'deploy command');
-  assert.equal((await listProposals(env.pctx.paths)).length, 0, 'accepted proposals are removed');
+  await removeProposal(env.pctx.paths, record.id);
 });

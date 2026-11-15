@@ -1,11 +1,11 @@
 /**
- * Text-matching helpers shared by the dream layers.
+ * Text-matching helpers for quote-backed memory checks.
  *
- * The verifier (`src/dream-verifier.js`) and the user-evidence check
- * (`src/user-evidence.js`) locate the quote a claim cites in what the dream
- * actually read; the apply path diffs a proposed body against the stored one.
- * Matching ignores case, whitespace, markdown and punctuation, so a real quote
- * survives reformatting without turning the check into a loose substring test.
+ * The user-evidence check (`src/user-evidence.js`) locates the quote a claim
+ * cites in what the model actually read, and the diff view compares proposed
+ * bodies against stored ones. Matching ignores case, whitespace, markdown and
+ * punctuation, so a real quote survives reformatting without turning the check
+ * into a loose substring test.
  */
 
 /** Below this many significant characters a quote proves nothing. */

@@ -14,6 +14,7 @@ function warn(scope, error) {
 export function registerScheduler(ctx, runtime) {
   const cleanups = [];
   const extracting = new Set();
+  const projectQueues = new Map();
   let disposed = false;
 
   const onTurnEnd = (session, event) => {
@@ -35,8 +36,19 @@ export function registerScheduler(ctx, runtime) {
     } catch (error) {
       warn('state.ensureSession', error);
     }
-    runtime.track(maybeAutoDream(projectContext).catch((error) => warn('auto dream', error)));
-    maybeAutoExtract(projectContext, sessionId, at, session);
+    // One consolidation queue per project: the extractor writes live notes, so
+    // it must finish before Dream snapshots them (and Dream must not run twice).
+    const key = projectContext.paths.projectDir;
+    const previous = projectQueues.get(key) ?? Promise.resolve();
+    const work = previous.catch(() => {}).then(async () => {
+      const extraction = maybeAutoExtract(projectContext, sessionId, at, session);
+      if (extraction) await extraction.catch((error) => warn('auto extract', error));
+      await maybeAutoDream(projectContext).catch((error) => warn('auto dream', error));
+    });
+    projectQueues.set(key, work);
+    runtime.track(work.finally(() => {
+      if (projectQueues.get(key) === work) projectQueues.delete(key);
+    }));
   }
 
   async function maybeAutoDream(projectContext) {
@@ -73,7 +85,7 @@ export function registerScheduler(ctx, runtime) {
       .then(async (result) => {
         await state.markExtractResult({
           ok: result?.ok === true,
-          count: Number(result?.count) || 0,
+          count: Number(result?.written ?? result?.count) || 0,
           reason: result?.ok === true ? String(result?.mode ?? 'ok') : String(result?.reason ?? 'failed'),
           trigger: 'auto',
         });
@@ -87,7 +99,7 @@ export function registerScheduler(ctx, runtime) {
         }
       })
       .finally(() => extracting.delete(sessionId));
-    runtime.track(work);
+    return work;
   }
 
   // `session/event` is the post-commit fire-and-forget append feed; `turn/end`

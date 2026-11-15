@@ -1,7 +1,7 @@
 /**
  * Dream engine: the filesystem half of a run.
  *
- * Analysis and merging live in `src/dream-pipeline.js`, which writes its result
+ * Analysis and model work live in `src/dream-agent.js`, which writes its result
  * into a copy of the memory directory (see `src/dream-shadow.js`). This module
  * owns what happens to that copy: the human either switches to it or throws it
  * away, and a switch can be undone from the backup taken right before it.
@@ -190,7 +190,7 @@ export class DreamEngine {
     const config = this.effectiveConfig;
     const shadowStore = new MemoryStore({ paths: shadowPathsOf(paths), getConfig: () => config });
     const stamp = timestampName(Date.now());
-    const diff = await diffShadow({ store, shadowStore }).catch(() => ({ files: [] }));
+    const diff = await diffShadow({ store, shadowStore, base: pending.base }).catch(() => ({ files: [] }));
     const rejected = new Set(reject);
     // A retired page and the page its facts moved into are one decision.
     for (const [retiredFile, into] of Object.entries(pending.links ?? {})) {
@@ -288,7 +288,15 @@ export class DreamEngine {
     const backupDir = meta.backupDir;
     const rewritten = Array.isArray(meta.rewritten) ? meta.rewritten.filter((name) => hashes[name]) : [];
     const created = Array.isArray(meta.created) ? meta.created.filter((name) => hashes[name]) : [];
+    // Pages the switch removed come back from the backup, unless a page of
+    // that name exists again (then it is the human's, and undo stops).
+    const removed = Array.isArray(meta.removed) ? meta.removed.filter((name) => typeof name === 'string' && name !== '') : [];
     const conflicts = [];
+    for (const name of removed) {
+      if (await fs.stat(path.join(paths.memoryDir, name)).then(() => true, () => false)) {
+        conflicts.push({ file: name, expected: 'missing', actual: 'present', reason: 'recreated since the switch' });
+      }
+    }
     for (const name of [...rewritten, ...created]) {
       const expected = hashes[name];
       let actual = 'missing';
@@ -301,7 +309,7 @@ export class DreamEngine {
     }
     if (conflicts.length > 0) return { ok: false, error: 'conflict', conflicts };
     const restored = [];
-    for (const name of rewritten) {
+    for (const name of [...rewritten, ...removed]) {
       try {
         await fs.copyFile(path.join(backupDir, name), path.join(paths.memoryDir, name));
         restored.push(name);

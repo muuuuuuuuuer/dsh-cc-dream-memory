@@ -10,7 +10,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import path from 'node:path';
-import { checkReplyFor, loadModule, makeTempDir } from './helpers.mjs';
+import { loadModule, makeTempDir } from './helpers.mjs';
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -129,59 +129,6 @@ export function seedUserMessages(env, ...texts) {
     readSession: async (id) => ({ session: { id }, events }),
   };
   return env;
-}
-
-/**
- * Script one Dream for a runtime env: the transcripts the host returns and what
- * the model answers. `sessions` maps a session id to the user's messages.
- * `claims` is the map reply for every unit, or pass `analyzer(prompt)` to
- * answer per unit. `verify` items (`{file, claim: <saved line>, result, quote}`)
- * become the check reply: each is cited by the claim whose quote it names.
- * Returns the list of map prompts sent; check prompts land in `checkPrompts`.
- */
-export async function scriptDream(env, {
-  sessions = { s1: ['Deploy with make release.'] },
-  claims = [],
-  verify = [],
-  summary = 'scripted dream',
-  usage = null,
-  analyzer = null,
-  checkPrompts = [],
-} = {}) {
-  const { ANALYZER_SYSTEM_PROMPT, CHECK_SYSTEM_PROMPT } = await import('../src/dream-analyzer.js');
-  const prompts = [];
-  const eventsById = new Map(Object.entries(sessions).map(([id, texts]) => [id, texts.map((message, index) => ({
-    type: 'user/message',
-    seq: index + 1,
-    time: Date.parse('2026-11-12T09:00:00Z') + index,
-    data: { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: message }] },
-  }))]));
-  env.host.services.sessionQuery = {
-    filterSessions: async () => [],
-    readSession: async (id) => ({ session: { id, createdAt: '2026-11-12T09:00:00Z' }, events: eventsById.get(id) ?? [] }),
-  };
-  env.host.services.llm = {
-    stream(options) {
-      env.host.llmCalls.push(options);
-      const prompt = (options.messages ?? []).flatMap((message) => message.content ?? []).map((part) => part.text ?? '').join('');
-      let reply;
-      if (options?.system === CHECK_SYSTEM_PROMPT) {
-        checkPrompts.push(prompt);
-        reply = checkReplyFor(prompt, verify);
-      } else if (options?.system === ANALYZER_SYSTEM_PROMPT) {
-        prompts.push(prompt);
-        reply = typeof analyzer === 'function' ? analyzer(prompt) : { summary, claims };
-      } else {
-        throw new Error('Dream calls only the map and check prompts');
-      }
-      const chunks = [{ type: 'text-delta', text: typeof reply === 'string' ? reply : JSON.stringify(reply) }];
-      if (usage) chunks.push({ type: 'usage', usage });
-      chunks.push({ type: 'finish', reason: { kind: 'stop' } });
-      return streamOf(chunks);
-    },
-  };
-  for (const id of Object.keys(sessions)) await env.pctx.state.ensureSession(id);
-  return prompts;
 }
 
 /** One analyzer claim quoting a user message verbatim. */

@@ -21,13 +21,14 @@ export const DEFAULTS = Object.freeze({
   recallMaxCandidates: 200,
   autoRecallMaxFiles: 3,
   autoRecallMaxChars: 3_000,
-  // Optional end-of-turn extraction. Every proposal is staged in the inbox for
-  // human acceptance; there is no direct-write mode.
-  autoExtract: false,
+  // End-of-turn extraction writes live notes directly through the memory_save
+  // gates (no review step, unlike Dream), so it runs every few turns, not
+  // after every one.
+  autoExtract: true,
   autoExtractEveryTurns: 3,
-  autoExtractMaxItems: 3,
+  autoExtractMaxItems: 5,
   autoExtractMaxChars: 12_000,
-  autoExtractTimeoutMs: 30_000,
+  autoExtractTimeoutMs: 60_000,
   autoExtractProvider: '',
   autoExtractModel: '',
   // One policy for subagent memory: off (no injection, no writes), shared
@@ -37,22 +38,17 @@ export const DEFAULTS = Object.freeze({
   indexMaxLines: 200,
   indexMaxBytes: 25 * 1024,
   autoDreamEnabled: false,
+  /** One Dream path: the model is an agent with session/memory tools. */
+  /** Wall-clock ceiling for one Dream run; the agent loop is abortable. */
+  dreamTimeoutMs: 10 * 60 * 1000,
   minHours: 24,
   minSessions: 5,
   scanThrottleMs: 10 * 60 * 1000,
   lockTtlMs: 60 * 60 * 1000,
   dreamAnalyzerProvider: '',
   dreamAnalyzerModel: '',
-  dreamAnalyzerConcurrency: 3,
-  dreamAnalyzerMaxTokens: 8192,
-  dreamAnalyzerMemoryChars: 12_000,
   dreamAllowDelete: true,
-  dreamInputMaxChars: 96_000,
   dreamMaxFileChars: 100_000,
-  // Tool evidence kept per transcript chunk: errors first, then evenly spread pairs.
-  dreamMaxToolChars: 4_000,
-  // Long sessions are read in chunks of this size, up to this many per dream.
-  dreamMapChunkChars: 24_000,
   tools: true,
   commands: true,
   ui: true,
@@ -143,17 +139,14 @@ export function resolveConfig(raw, { env } = {}) {
     indexMaxLines: integer(input.indexMaxLines, DEFAULTS.indexMaxLines, { min: 1, max: 100_000 }),
     indexMaxBytes: integer(input.indexMaxBytes, DEFAULTS.indexMaxBytes, { min: 256, max: 10 * 1024 * 1024 }),
     autoDreamEnabled: bool(input.autoDreamEnabled, DEFAULTS.autoDreamEnabled),
+    dreamTimeoutMs: integer(input.dreamTimeoutMs, DEFAULTS.dreamTimeoutMs, { min: 1_000, max: 24 * 60 * 60 * 1000 }),
     minHours: integer(input.minHours, DEFAULTS.minHours, { min: 0, max: 24 * 365 }),
     minSessions: integer(input.minSessions, DEFAULTS.minSessions, { min: 1, max: 100_000 }),
     scanThrottleMs: integer(input.scanThrottleMs, DEFAULTS.scanThrottleMs, { min: 1000, max: 24 * 60 * 60 * 1000 }),
     lockTtlMs: integer(input.lockTtlMs, DEFAULTS.lockTtlMs, { min: 60_000, max: 7 * 24 * 60 * 60 * 1000 }),
     dreamAnalyzerProvider: model ? provider : '',
     dreamAnalyzerModel: provider ? model : '',
-    dreamAnalyzerConcurrency: integer(input.dreamAnalyzerConcurrency, DEFAULTS.dreamAnalyzerConcurrency, { min: 1, max: 16 }),
-    dreamAnalyzerMaxTokens: integer(input.dreamAnalyzerMaxTokens, DEFAULTS.dreamAnalyzerMaxTokens, { min: 512, max: 200_000 }),
-    dreamAnalyzerMemoryChars: integer(input.dreamAnalyzerMemoryChars, DEFAULTS.dreamAnalyzerMemoryChars, { min: 1000, max: 1_000_000 }),
     dreamAllowDelete: bool(input.dreamAllowDelete, DEFAULTS.dreamAllowDelete),
-    dreamInputMaxChars: integer(input.dreamInputMaxChars, DEFAULTS.dreamInputMaxChars, { min: 4096, max: 1_000_000 }),
     dreamMaxFileChars: integer(input.dreamMaxFileChars, DEFAULTS.dreamMaxFileChars, { min: 1000, max: 500_000 }),
     recallMode,
     recallProvider: recallPair ? recallProvider : '',
@@ -171,8 +164,6 @@ export function resolveConfig(raw, { env } = {}) {
     autoExtractModel: extractPair ? extractModel : '',
     subagentMemory: choice(input.subagentMemory, DEFAULTS.subagentMemory, ['off', 'shared', 'own']),
     agentMemoryPresets: agentPresets,
-    dreamMapChunkChars: integer(input.dreamMapChunkChars, DEFAULTS.dreamMapChunkChars, { min: 2_000, max: 200_000 }),
-  dreamMaxToolChars: integer(input.dreamMaxToolChars, DEFAULTS.dreamMaxToolChars, { min: 0, max: 20_000 }),
     tools: bool(input.tools, DEFAULTS.tools),
     commands: bool(input.commands, DEFAULTS.commands),
     ui: bool(input.ui, DEFAULTS.ui),

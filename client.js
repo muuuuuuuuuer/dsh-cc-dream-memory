@@ -3,15 +3,15 @@
  *
  * Two registrations:
  *  - `conversation.view` (id `cc-memory`, order 40): the Memory page. The header
- *    always says what a new conversation loads. Five tabs:
+ *    always says what a new conversation loads. Four tabs:
  *      Memories — search, type and trust filters, one list, and a reader that
  *                 shows how far each note can be trusted (loaded, verified,
  *                 edited since verified, outdated), its conditions, earlier
  *                 values and change history; plus the editor;
- *      Inbox    — every decision waiting for the user: queued agent writes with
- *                 their reasons and proposed text, and a Dream plan to review;
- *      Dream    — estimate → plan → review and apply, with Dream v2 coverage
- *                 and evidence per change, auto dream, recent dreams and undo;
+ *      Inbox    — the one decision waiting for the user: a Dream shadow whose
+ *                 diff and evidence need review before switching;
+ *      Dream    — estimate → agent run → review shadow + evidence, with auto
+ *                 dream, recent dreams and undo;
  *      Settings — switches, what new conversations load, the memory rules,
  *                 trash/backup restore and storage.
  *  - `conversation.composer.dock` (id `cc-memory-status`, order 50): a small
@@ -105,22 +105,10 @@ window.__ModuleLoader__.load({
   'err.more': '… and {n} more',
   'err.stale': 'Memory changed after this plan was made. Create a new plan.',
   'error.load': 'Couldn\'t load memory',
-  'inbox.emptyBody': 'Nothing needs your decision right now.',
+  'inbox.emptyBody': 'Nothing needs your decision right now. When Dream has a shadow waiting, it shows up here for review.',
   'inbox.emptyTitle': 'All clear',
-  'inbox.planBody': 'Memory stays exactly as it is until you switch to the new copy.',
+  'inbox.planBody': 'Memory stays exactly as it is until you review the diff and evidence and switch to the new copy.',
   'inbox.planTitle': 'A Dream result is ready',
-  'inbox.extractTitle': 'Auto-extracted notes are waiting',
-  'inbox.extractBody': '{n} proposed note(s) from a recent conversation. Accept keeps them through the normal save checks.',
-  'inbox.accept': 'Accept all',
-  'inbox.discard': 'Discard',
-  'inbox.acceptFailed': 'Only {applied} of {total} notes were saved; the rest failed their checks.',
-  'inbox.offTitle': 'Auto-extract is off',
-  'inbox.offBody': 'Turn it on in Settings to stage notes from recent conversations here for review.',
-  'inbox.emptyOffBody': 'Turn on Auto-extract in Settings to see proposed notes here before they reach memory.',
-  'inbox.lastExtract': 'Last attempt: {reason} · {time}',
-  'inbox.commandHint': 'From the conversation: /memory inbox accept <id>',
-  'notice.inboxAccepted': 'Accepted {n} note(s).',
-  'notice.inboxDiscarded': 'Proposal discarded.',
   'list.emptyBody': 'Tell the agent "remember …" in a conversation, or add one yourself.',
   'list.emptyTitle': 'No memories yet',
   'list.filterEmpty': 'No memories match these filters.',
@@ -176,8 +164,7 @@ window.__ModuleLoader__.load({
   'settings.autoDream': 'Auto dream',
   'settings.autoDreamHint': 'Dream memory in the background from time to time.',
   'settings.autoExtract': 'Auto-extract',
-  'settings.autoExtractHint': 'Every {n} turns, ask the model for notes worth keeping and stage them in the Inbox.',
-  'settings.extractDirect': 'Every few turns, save through the normal checks',
+  'settings.autoExtractHint': 'Every {n} turn(s), ask the model for durable notes and save them through the normal write checks. No staging in Inbox.',
   'settings.perAgent': 'Per-agent memory',
   'settings.perAgentHint': 'Give delegated agents their own memory folder instead of the project memory.',
   'settings.perAgentOff': 'Off',
@@ -195,11 +182,8 @@ window.__ModuleLoader__.load({
   'settings.mode': 'At the start',
   'settings.modeIndex': 'The whole index, MEMORY.md',
   'settings.recall': 'During the conversation',
-  'settings.recallLexical': 'Word matching only; no model call',
   'settings.recallModel': 'Model selector picks up to five notes per message',
   'settings.recallNone': 'Off; the agent searches when it needs to',
-  'settings.recallOff': 'Nothing more; the agent searches when it needs to',
-  'settings.recallOn': 'Notes that match a message are attached to it (autoRecall)',
   'settings.switches': 'Switches',
   'settings.switchesHint': 'These apply to every project.',
   'status.disputed': 'Disputed',
@@ -221,7 +205,7 @@ window.__ModuleLoader__.load({
   'tidy.generate': 'Estimate the run',
   'tidy.historyTitle': 'Recent dreams',
   'tidy.indexMeta': '{lines} / {maxLines} lines · {bytes} / {maxBytes}',
-  'tidy.intro': 'A dream reads the conversations it has not read yet, oldest first, and proposes changes to your memory. You pass or reject each change. A rejected fact is never proposed again, and a passed change can be undone under Recent dreams.',
+  'tidy.intro': 'Dream runs as an agent: it searches the sessions it has not read yet, reads only the memory pages it needs, and writes changes to a shadow copy. You see each diff and its evidence before anything is applied.',
   'tidy.linked': 'goes together with {file}',
   'tidy.memoryOnly': 'Tidy saved memory only (read no conversations)',
   'tidy.memoryOnlyHint': 'Looks for pages about the same topic and proposes folding one into the other. No fact is lost.',
@@ -240,11 +224,13 @@ window.__ModuleLoader__.load({
   'tidy.reject': 'Reject',
   'tidy.rejectAll': 'Reject all',
   'tidy.rejectHint': 'Rejected facts are remembered; no later dream proposes them again.',
+  'tidy.evidenceTitle': 'Evidence used for this change',
+  'tidy.quoteUnchecked': 'quote not found in the session',
   'tidy.resultCounts': '{added} added, {changed} changed, {removed} removed',
   'tidy.resultTitle': 'A dream result is waiting for your review',
   'tidy.runAlready': 'A dream is already running for this project.',
   'tidy.runCancel': 'Stop',
-  'tidy.runResume': 'Continue',
+  'tidy.runAgain': 'Run again',
   'tidy.runStarted': 'Dream started. You can keep working; the new copy appears when the run finishes.',
   'tidy.runState.blocked': 'blocked',
   'tidy.runState.cancelled': 'cancelled',
@@ -354,22 +340,10 @@ const ZH = {
   'err.more': '……还有 {n} 条',
   'err.stale': '方案生成后记忆又有改动，请重新生成方案。',
   'error.load': '无法加载记忆',
-  'inbox.emptyBody': '现在没有需要你决定的事。',
+  'inbox.emptyBody': '现在没有需要你决定的事。Dream 有待审的 shadow 时会出现在这里。',
   'inbox.emptyTitle': '都处理完了',
-  'inbox.planBody': '在你切换过去之前，记忆不会有任何变化。',
+  'inbox.planBody': '在你查看 diff 和证据并切换过去之前，记忆不会有任何变化。',
   'inbox.planTitle': 'Dream 结果已就绪',
-  'inbox.extractTitle': '有自动抽取的笔记待确认',
-  'inbox.extractBody': '来自最近对话的 {n} 条建议笔记。接受后会走正常保存检查。',
-  'inbox.accept': '全部接受',
-  'inbox.discard': '放弃',
-  'inbox.acceptFailed': '只保存了 {applied}/{total} 条，其余未通过检查。',
-  'inbox.offTitle': '自动抽取未开启',
-  'inbox.offBody': '在设置里开启后，最近对话里抽出的笔记会先出现在这里供你确认。',
-  'inbox.emptyOffBody': '在设置里开启「自动抽取」，新笔记会先出现在这里，确认后才进入记忆。',
-  'inbox.lastExtract': '上次尝试：{reason} · {time}',
-  'inbox.commandHint': '也可以在对话里：/memory inbox accept <id>',
-  'notice.inboxAccepted': '已接受 {n} 条笔记。',
-  'notice.inboxDiscarded': '已放弃这条建议。',
   'list.emptyBody': '在对话里说「记住……」，或者自己新建一条。',
   'list.emptyTitle': '还没有记忆',
   'list.filterEmpty': '没有符合筛选条件的记忆。',
@@ -425,8 +399,7 @@ const ZH = {
   'settings.autoDream': '自动 Dream',
   'settings.autoDreamHint': '定期在后台 Dream 记忆。',
   'settings.autoExtract': '自动抽取',
-  'settings.autoExtractHint': '每隔 {n} 轮让模型找值得记住的笔记，先放进「待确认」。',
-  'settings.extractDirect': '每隔几轮，走正常检查后直接保存',
+  'settings.autoExtractHint': '每隔 {n} 轮让模型找值得记住的内容，并走正常写入检查直接保存，不再放进「待确认」。',
   'settings.perAgent': '子代理独立记忆',
   'settings.perAgentHint': '让子代理使用自己的记忆目录，而不是共享项目记忆。',
   'settings.perAgentOff': '关闭',
@@ -444,11 +417,8 @@ const ZH = {
   'settings.mode': '会话开始时',
   'settings.modeIndex': '完整索引 MEMORY.md',
   'settings.recall': '会话进行中',
-  'settings.recallLexical': '只做词面匹配，不调用模型',
   'settings.recallModel': '模型选择器按每条消息挑最多五条',
   'settings.recallNone': '关闭，需要时由智能体自己搜索',
-  'settings.recallOff': '不额外附加，智能体需要时自己搜索',
-  'settings.recallOn': '和消息相关的笔记会附在消息上（autoRecall）',
   'settings.switches': '开关',
   'settings.switchesHint': '对所有项目生效。',
   'status.disputed': '有争议',
@@ -470,7 +440,7 @@ const ZH = {
   'tidy.generate': '估算这次运行',
   'tidy.historyTitle': '最近 Dream',
   'tidy.indexMeta': '{lines} / {maxLines} 行 · {bytes} / {maxBytes}',
-  'tidy.intro': 'Dream 会从旧到新读还没读过的对话，提出对记忆的修改。每一项修改由你决定通过或不通过。不通过的内容会被记住，以后不会再提出；通过的修改可以在「最近的 Dream」里撤销。',
+  'tidy.intro': 'Dream 以智能体方式运行：自己搜索还没读过的会话，只读取需要的记忆页，改动先写进 shadow。切换前你能看到每一处 diff 和对应证据。',
   'tidy.linked': '与 {file} 一起决定',
   'tidy.memoryOnly': '只整理已有记忆（不读对话）',
   'tidy.memoryOnlyHint': '找出主题相同的页面，提议把其中一页并入另一页，内容不会丢失。',
@@ -489,11 +459,13 @@ const ZH = {
   'tidy.reject': '不通过',
   'tidy.rejectAll': '全部不通过',
   'tidy.rejectHint': '不通过的内容会被记住，以后的 Dream 不会再提出。',
+  'tidy.evidenceTitle': '这次改动引用的证据',
+  'tidy.quoteUnchecked': '会话里找不到这段引用',
   'tidy.resultCounts': '新增 {added}，修改 {changed}，删除 {removed}',
   'tidy.resultTitle': 'Dream 结果等你审核',
   'tidy.runAlready': '这个项目已经有一次 Dream 在运行。',
   'tidy.runCancel': '停止',
-  'tidy.runResume': '继续',
+  'tidy.runAgain': '重新运行',
   'tidy.runStarted': 'Dream 已开始。你可以继续工作，运行结束后会出现新的副本。',
   'tidy.runState.blocked': '被阻断',
   'tidy.runState.cancelled': '已取消',
@@ -1307,6 +1279,19 @@ function normalizePendingSwitch(raw) {
     added: counted('added', 'added'),
     changed: counted('changed', 'changed'),
     removed: counted('removed', 'removed'),
+    evidence: Array.isArray(raw.evidence)
+      ? raw.evidence
+          .filter((item) => item && typeof item.sessionId === 'string' && Number.isFinite(Number(item.seq)))
+          .slice(0, 100)
+          .map((item) => ({
+            sessionId: item.sessionId,
+            seq: Number(item.seq) || 0,
+            quote: typeof item.quote === 'string' ? item.quote : '',
+            source: typeof item.source === 'string' ? item.source : 'citation',
+            verified: item.verified === true,
+            ...(typeof item.file === 'string' ? { file: item.file } : {}),
+          }))
+      : [],
     files,
   };
 }
@@ -1321,24 +1306,15 @@ function normalizeStatus(raw) {
           enabled: config.enabled !== false,
           autoMemoryEnabled: config.autoMemoryEnabled !== false,
           autoDreamEnabled: Boolean(config.autoDreamEnabled),
-          dreamMode: config.dreamMode === 'review' ? 'review' : 'apply',
           indexMaxLines: asNumber(config.indexMaxLines, 0),
           indexMaxBytes: asNumber(config.indexMaxBytes, 0),
           dreamAllowDelete: Boolean(config.dreamAllowDelete),
           minHours: asNumber(config.minHours, 0),
           minSessions: asNumber(config.minSessions, 0),
-          dreamMaxTotalTokens: asNumber(config.dreamMaxTotalTokens, 0),
-          dreamCostMode:
-            config.dreamCostMode === 'review' || config.dreamCostMode === 'block'
-              ? config.dreamCostMode
-              : 'warn',
-            dreamPipeline: 'v2',
-          injectHotOnly: config.injectHotOnly === true,
-          injectHotEntries: asNumber(config.injectHotEntries, 3),
           recallMode: config.recallMode === 'off' || config.recallMode === 'model' ? config.recallMode : 'model',
           autoExtract: config.autoExtract === true,
           autoExtractEveryTurns: asNumber(config.autoExtractEveryTurns, 3),
-          autoExtractMaxItems: asNumber(config.autoExtractMaxItems, 3),
+          autoExtractMaxItems: asNumber(config.autoExtractMaxItems, 5),
           subagentMemory:
             config.subagentMemory === 'shared' || config.subagentMemory === 'own' ? config.subagentMemory : 'off',
           agentMemoryPresets: Array.isArray(config.agentMemoryPresets)
@@ -1752,7 +1728,7 @@ function normalizeStatus(raw) {
         };
       }
 
-      /** POST /dream: estimate, start, status, cancel, resume, switch, discard, undo. */
+      /** POST /dream: estimate, start, status, cancel, switch, discard, undo. */
       async function dream(action, options = {}) {
         const body = { action };
         const focus = typeof options.focus === 'string' ? options.focus.trim() : '';
@@ -1795,7 +1771,7 @@ function normalizeStatus(raw) {
         return normalizeDreamHistory(await get('/dream-history'));
       }
 
-      /** v21: staged auto-extract proposals (`list|accept|discard`). */
+      /** Manual Inbox API retained for commands/API; the UI no longer stages auto-extract proposals. */
       async function inbox(action = 'list', id = '') {
         const act = String(action || 'list').toLowerCase();
         if (act === 'list') return get('/inbox');
@@ -2325,11 +2301,9 @@ function normalizeStatus(raw) {
       return Boolean(state.pendingSwitch && state.pendingSwitch.dir);
     }
 
-    /** Items waiting for the user: an unreviewed dream shadow + staged notes. */
+    /** One decision waiting for the user: an unreviewed Dream shadow. */
     function attentionCount(status) {
-      if (!status) return 0;
-      const staged = status.inbox && Number.isFinite(status.inbox.count) ? status.inbox.count : 0;
-      return (planWaiting(status) ? 1 : 0) + Math.max(0, staged);
+      return planWaiting(status) ? 1 : 0;
     }
 
     /**
@@ -3283,155 +3257,45 @@ function normalizeStatus(raw) {
     }
 
     // -----------------------------------------------------------------------
-    // Inbox tab: every decision waiting for the user in one place.
+    // Inbox tab: the one decision that still needs a human — an unswitched
+    // Dream shadow. Auto-extraction writes directly, so there are no staged
+    // note proposals here anymore.
     // -----------------------------------------------------------------------
     function InboxTab(props) {
-      const { status, backend, t, goTo, readOnly, busy, run } = props;
-      const [open, setOpen] = React.useState('');
+      const { status, t, goTo } = props;
       const waiting = planWaiting(status);
-      const proposals = Array.isArray(status.inbox?.items) ? status.inbox.items : [];
-      const enableExtract = status.config?.autoExtract === true;
-      const idle = busy === '';
 
-      const accept = (id) =>
-        run('inbox', () => backend.inbox('accept', id), {
-          success: (value) => t('notice.inboxAccepted', { n: value?.applied ?? 0 }),
-          check: (value) =>
-            value && value.ok === false
-              ? new Error(t('inbox.acceptFailed', {
-                  applied: value.applied ?? 0,
-                  total: (value.applied ?? 0) + (value.failed ?? 0),
-                }))
-              : '',
-        });
-      const discard = (id) =>
-        run('inbox', () => backend.inbox('discard', id), { success: t('notice.inboxDiscarded') });
-
-      if (!waiting && proposals.length === 0) {
-        const reason = status.state.lastExtractReason;
-        const time = formatTime(status.state.lastExtractAt || status.state.lastExtractAttemptAt);
+      if (!waiting) {
         return h(EmptyState, {
-          icon: enableExtract ? 'check' : 'inbox',
-          tone: enableExtract ? 'ok' : undefined,
-          title: enableExtract ? t('inbox.emptyTitle') : t('inbox.offTitle'),
-          text: enableExtract
-            ? reason && reason !== 'inbox'
-              ? t('inbox.lastExtract', { reason, time: time || '—' })
-              : t('inbox.emptyBody')
-            : t('inbox.emptyOffBody'),
-          action: enableExtract
-            ? null
-            : h(
-                'button',
-                { type: 'button', className: 'ccm-btn', onClick: () => goTo('settings') },
-                t('tab.settings'),
-                icon('chevron', 14),
-              ),
+          icon: 'check',
+          tone: 'ok',
+          title: t('inbox.emptyTitle'),
+          text: t('inbox.emptyBody'),
         });
       }
 
-      const planCard = waiting
-        ? h(
-            'section',
-            { className: 'ccm-card ccm-plan-cta' },
-            h('div', { className: 'ccm-empty-icon' }, icon('sparkle', 20)),
-            h(
-              'div',
-              { className: 'ccm-setting-text' },
-              h('div', { className: 'ccm-setting-name' }, t('inbox.planTitle')),
-              h('div', { className: 'ccm-setting-hint' }, t('inbox.planBody')),
-            ),
-            h(
-              'button',
-              { type: 'button', className: 'ccm-btn ccm-btn-primary', onClick: () => goTo('tidy') },
-              t('btn.review'),
-              icon('chevron', 14),
-            ),
-          )
-        : null;
-
-      const proposalCards = proposals.map((proposal) => {
-        const expanded = open === proposal.id;
-        const names = proposal.items.map((note) => note.name).filter(Boolean);
-        return h(
-          'section',
-          { className: 'ccm-card', key: proposal.id },
-          h(
-            'div',
-            { className: 'ccm-card-head' },
-            h('span', { className: 'ccm-card-title' }, t('inbox.extractTitle')),
-            h('span', { className: 'ccm-card-sub' }, formatTime(proposal.createdAt) || proposal.id),
-          ),
-          h(
-            'p',
-            { className: 'ccm-card-text' },
-            t('inbox.extractBody', { n: proposal.count }),
-            names.length > 0 ? ' ' + names.slice(0, 4).join('、') : '',
-          ),
-          h(
-            'div',
-            { className: 'ccm-card-body' },
-            !expanded
-              ? null
-              : proposal.items.map((note, index) =>
-                  h(
-                    'div',
-                    { key: index, style: { padding: '12px 0', borderTop: index > 0 ? '1px solid var(--ccm-line)' : 0 } },
-                    h(
-                      'div',
-                      { className: 'ccm-inbox-head' },
-                      h(TypeTag, { type: note.type, t }),
-                      h('span', { className: 'ccm-inbox-name' }, note.name),
-                    ),
-                    note.description ? h('div', { className: 'ccm-inbox-desc' }, note.description) : null,
-                    note.content ? h('pre', { className: 'ccm-pre', style: { marginTop: 8 } }, note.content) : null,
-                  ),
-                ),
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'ccm-btn ccm-btn-sm ccm-btn-ghost',
-                'aria-expanded': expanded ? 'true' : 'false',
-                onClick: () => setOpen(expanded ? '' : proposal.id),
-              },
-              h('span', { className: 'ccm-chev' + (expanded ? ' is-open' : '') }, icon('chevron', 13)),
-              expanded ? t('btn.close') : t('btn.review'),
-            ),
-          ),
-          h(
-            'div',
-            { className: 'ccm-foot' },
-            h('span', { className: 'ccm-spacer' }),
-            readOnly ? h('span', { className: 'ccm-card-sub' }, t('inbox.commandHint')) : null,
-            h(ConfirmButton, {
-              tone: 'danger',
-              className: 'ccm-btn-ghost',
-              label: t('inbox.discard'),
-              disabled: !idle || readOnly,
-              onConfirm: () => discard(proposal.id),
-              t,
-            }),
-            h(
-              'button',
-              {
-                type: 'button',
-                className: 'ccm-btn ccm-btn-primary',
-                disabled: !idle || readOnly,
-                onClick: () => accept(proposal.id),
-              },
-              t('inbox.accept'),
-            ),
-          ),
-        );
-      });
-
-      return h(React.Fragment, null, planCard, ...proposalCards);
+      return h(
+        'section',
+        { className: 'ccm-card ccm-plan-cta' },
+        h('div', { className: 'ccm-empty-icon' }, icon('sparkle', 20)),
+        h(
+          'div',
+          { className: 'ccm-setting-text' },
+          h('div', { className: 'ccm-setting-name' }, t('inbox.planTitle')),
+          h('div', { className: 'ccm-setting-hint' }, t('inbox.planBody')),
+        ),
+        h(
+          'button',
+          { type: 'button', className: 'ccm-btn ccm-btn-primary', onClick: () => goTo('tidy') },
+          t('btn.review'),
+          icon('chevron', 14),
+        ),
+      );
     }
 
 
     // -----------------------------------------------------------------------
-    // Dream tab: estimate -> plan -> review and apply selected -> undo.
+    // Dream tab: estimate -> agent run -> review shadow + evidence -> switch/undo.
     // -----------------------------------------------------------------------
     function DreamTab(props) {
       const { status, backend, t, busy, run, notify, readOnly, refresh } = props;
@@ -3515,13 +3379,8 @@ function normalizeStatus(raw) {
       };
 
       const startDream = async () => {
-        // v23: the confirmation covered a priced range; send it so a session
-        // that grew in between cannot add work the user did not approve.
-        const pinned = estimate && typeof estimate === 'object'
-          ? { inputId: typeof estimate.inputId === 'string' ? estimate.inputId : '', inputRanges: Array.isArray(estimate.ranges) ? estimate.ranges : null }
-          : {};
         setEstimate(null);
-        const started = await run('start', () => backend.dream('start', { focus, noSessions: memoryOnly, ...pinned }), {
+        const started = await run('start', () => backend.dream('start', { focus, noSessions: memoryOnly }), {
           check: (result) => (result && result.ok === false ? result.error || 'failed' : ''),
           refresh: false,
         });
@@ -3543,10 +3402,6 @@ function normalizeStatus(raw) {
         });
         if (!done) return;
         const value = done.value || {};
-        if (action === 'resume') {
-          setLive({ ...(shownRun || {}), ...value, status: value.status || 'running' });
-          return;
-        }
         setLive({ ...(shownRun || {}), ...value, status: action === 'cancel' ? 'cancelling' : 'cancelled' });
       };
 
@@ -3611,7 +3466,7 @@ function normalizeStatus(raw) {
                   { className: 'ccm-foot' },
                   running
                     ? h('button', { type: 'button', className: 'ccm-btn', disabled: !idle || readOnly || runStatus === 'cancelling', onClick: () => runAction('cancel', 'cancel') }, t('tidy.runCancel'))
-                    : h('button', { type: 'button', className: 'ccm-btn', disabled: !idle || readOnly, onClick: () => runAction('resume', 'resume') }, icon('refresh', 14), t('tidy.runResume')),
+                    : h('button', { type: 'button', className: 'ccm-btn', disabled: !idle || readOnly, onClick: startDream }, icon('refresh', 14), t('tidy.runAgain')),
                 )
               : null,
           )
@@ -3693,15 +3548,24 @@ function normalizeStatus(raw) {
                       ),
                 ),
                 expanded ? (detail && !detail.failed
-                  ? h('div', { className: 'ccm-diff' },
-                    ...['before', 'after'].map((side) => h('div', { key: side },
-                      h('div', { className: 'ccm-diff-label' }, t('tidy.' + side)),
-                      h('pre', { className: 'ccm-pre' }, detail[side]
-                        ? detail[side].split(/\r?\n/u).map((line, index) => {
-                          const changed = (side === 'before' ? detail.removedLines : detail.addedLines)?.some((item) => item.line === index + 1);
-                          return h('span', { key: index, className: changed ? (side === 'before' ? 'ccm-pre-removed' : 'ccm-pre-after') : undefined }, line, '\n');
-                        })
-                        : t('tidy.emptyFile')))))
+                  ? h('div', { className: 'ccm-diff-wide' },
+                    h('div', { className: 'ccm-diff' },
+                      ...['before', 'after'].map((side) => h('div', { key: side },
+                        h('div', { className: 'ccm-diff-label' }, t('tidy.' + side)),
+                        h('pre', { className: 'ccm-pre' }, detail[side]
+                          ? detail[side].split(/\r?\n/u).map((line, index) => {
+                            const changed = (side === 'before' ? detail.removedLines : detail.addedLines)?.some((item) => item.line === index + 1);
+                            return h('span', { key: index, className: changed ? (side === 'before' ? 'ccm-pre-removed' : 'ccm-pre-after') : undefined }, line, '\n');
+                          })
+                          : t('tidy.emptyFile'))))),
+                    Array.isArray(detail.evidence) && detail.evidence.length > 0
+                      ? h('div', { className: 'ccm-evidence' },
+                        h('div', { className: 'ccm-diff-label' }, t('tidy.evidenceTitle')),
+                        ...detail.evidence.map((item, index) => h('div', { key: index, className: 'ccm-evidence-row' },
+                          h('code', null, `${item.sessionId} #${item.seq}`),
+                          item.quote ? h('span', null, ' — ' + item.quote) : null,
+                          item.verified === true ? null : h('span', { className: 'ccm-note-error' }, ` (${t('tidy.quoteUnchecked')})`))))
+                      : null)
                   : h('p', { className: 'ccm-card-text', role: 'status' }, t(detail ? 'tidy.diffError' : 'tidy.diffLoading')))
                   : null,
               );
