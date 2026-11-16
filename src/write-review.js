@@ -15,7 +15,8 @@ const STATUS_LINE_RE = /^\s*status:\s*([a-z-]+)\s*$/iu;
 /** Superseded values may be inline bullets (Dream pipeline) or under `## History`. */
 const SUPERSEDED_LINE_RE = /^\s*[-*]\s+Superseded:/iu;
 /** Engineering-note lines that stay with the current value across a correction. */
-const NOTE_LINE_RE = /^\s*(APPLIES WHEN|HOW TO VERIFY|VERIFY|OBSERVED|EXCEPTION):\s*(.+)$/iu;
+/** Includes the `**Why:**` / `**How to apply:**` lines the save prompt asks for. */
+const NOTE_LINE_RE = /^\s*(?:\*\*)?(APPLIES WHEN|HOW TO VERIFY|HOW TO APPLY|VERIFY|OBSERVED|EXCEPTION|WHY):(?:\*\*)?\s*(.+)$/iu;
 /** A superseded value is collapsed onto one history line and capped for size. */
 const MAX_SUPERSEDED_CHARS = 1000;
 /** Inline history is a short audit trail, not an append-only log. */
@@ -36,7 +37,7 @@ function oneLine(text) {
  * - `status`: the `STATUS:` metadata line (first one, when present);
  * - `value`: every other active line (blank lines included);
  * - `notes`: engineering-note lines (`APPLIES WHEN`, `HOW TO VERIFY`, `VERIFY`,
- *   `OBSERVED`, `EXCEPTION`), which describe how to apply/verify the value and
+ *   `OBSERVED`, `EXCEPTION`, `**Why:**`, `**How to apply:**`), which describe how to apply/verify the value and
  *   are carried forward instead of being superseded;
  * - `history`: superseded values kept by earlier writes: inline
  *   `- Superseded: ...` bullets (Dream pipeline) and every line under an

@@ -32,6 +32,7 @@ test('v17 memory_update: failed rename+content leaves no half-applied state', as
     content: 'OLD BODY',
   });
   const before = await env.pctx.store.indexText();
+  await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const tooLarge = await env.definitions.get('memory_update').execute(
     { file: seed.file, name: 'atomic new name', content: 'x'.repeat(200 * 1024) },
     exec,
@@ -55,6 +56,7 @@ test('v17 memory_update: case-only rename is not a conflict', async (t) => {
     description: 'case description',
     content: 'case body',
   });
+  await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const updated = await env.definitions.get('memory_update').execute(
     { file: seed.file, name: 'case sensitive name', content: 'case body updated' },
     exec,

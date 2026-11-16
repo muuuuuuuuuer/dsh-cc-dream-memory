@@ -29,6 +29,7 @@ import { parseFrontmatter, stringifyFrontmatter } from './frontmatter.js';
 import { currentBody, isCurrentPage } from './memory-body.js';
 import { bodyHashOf } from './verification-ledger.js';
 import { withFileLock } from './lock.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
   SECRET_DETECTED,
   scanSecrets,
@@ -408,6 +409,12 @@ function backupTimestamp(name) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+const writeTransaction = new AsyncLocalStorage();
+
+function fileRevision(info) {
+  return `${info.ino}:${info.mtimeMs}:${info.ctimeMs}:${info.size}`;
+}
+
 /**
  * One project's memory files and index.
  *
@@ -563,6 +570,13 @@ export class MemoryStore {
 
   /** Serialize mutating operations so index read-modify-write cannot interleave. */
   _run(operation) {
+    const transaction = writeTransaction.getStore();
+    if (transaction?.store === this && transaction.active) {
+      return Promise.resolve().then(operation).finally(() => {
+        this._contentCache.clear();
+        this._metaCache.clear();
+      });
+    }
     const locked = async () => {
       try {
         return await this._withWriteLock(operation);
@@ -579,16 +593,31 @@ export class MemoryStore {
     return next;
   }
 
+  /** Run a batch and its awaited store mutations under the normal write lock. */
+  withWriteTransaction(operation) {
+    const current = writeTransaction.getStore();
+    if (current?.store === this && current.active) return operation();
+    return this._run(async () => {
+      const transaction = { store: this, active: true };
+      try {
+        return await writeTransaction.run(transaction, operation);
+      } finally {
+        transaction.active = false;
+      }
+    });
+  }
+
   /**
    * Run one mutating operation under the cross-process write lock (v10).
-   * `ttlMs` tolerates a crashed writer, `waitMs` bounds the contention wait and
-   * the lock module itself degrades to best-effort past that budget.
+   * The wait is bounded. A busy lock must fail the write, since it may
+   * protect a Dream switch or undo.
    * @param {() => Promise<any>} operation
    */
   async _withWriteLock(operation) {
     return withFileLock(this._paths.writeLockFile, operation, {
       ttlMs: 30_000,
       waitMs: 2_000,
+      strict: true,
       onDegrade: (error) => warn('write lock degrade', error),
     });
   }
@@ -621,8 +650,9 @@ export class MemoryStore {
       }
       throw error;
     }
+    const revision = fileRevision(info);
     const cached = this._contentCache.get(file);
-    if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached.raw;
+    if (cached?.revision === revision) return cached.raw;
     let raw;
     try {
       raw = await fs.readFile(file, 'utf8');
@@ -633,7 +663,7 @@ export class MemoryStore {
       }
       throw error;
     }
-    this._contentCache.set(file, { mtimeMs: info.mtimeMs, size: info.size, raw });
+    this._contentCache.set(file, { revision, raw });
     this.contentReads += 1;
     return raw;
   }
@@ -682,8 +712,9 @@ export class MemoryStore {
       }
       throw error;
     }
+    const revision = fileRevision(info);
     const cached = this._metaCache.get(name);
-    if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached.meta;
+    if (cached?.revision === revision) return cached.meta;
     let raw = await this._readHead(target);
     if (raw === undefined) {
       this._metaCache.delete(name);
@@ -694,7 +725,8 @@ export class MemoryStore {
     }
     const meta = this._entryMeta(name, parseFrontmatter(raw), raw);
     meta.bytes = info.size;
-    this._metaCache.set(name, { mtimeMs: info.mtimeMs, size: info.size, meta });
+    meta.revision = revision;
+    this._metaCache.set(name, { revision, meta });
     return meta;
   }
 
@@ -960,12 +992,6 @@ export class MemoryStore {
     if (raw === undefined) throw memoryError('NOT_FOUND', `memory file not found: ${name}`);
     const parsed = parseFrontmatter(raw);
     const meta = this._entryMeta(name, parsed, raw);
-    try {
-      const info = await fs.stat(target);
-      this._metaCache.set(name, { mtimeMs: info.mtimeMs, size: info.size, meta });
-    } catch {
-      // The body read already succeeded; a failed stat only skips the cache.
-    }
     return {
       file: name,
       scope: normalized,
@@ -980,6 +1006,7 @@ export class MemoryStore {
       },
       body: parsed.body,
       raw,
+      revision: this._contentCache.get(target)?.revision,
       bytes: byteLength(raw),
     };
   }
@@ -1168,6 +1195,9 @@ export class MemoryStore {
       }
       const scan = this._scanContent(`${name}\n${description}\n${body}`);
       const { file, created, existing } = await this._chooseSaveFile(scope, type, name);
+      if (!created && input.createOnly === true) {
+        throw memoryError('ALREADY_EXISTS', `Read ${file} and use memory_update to change it.`);
+      }
       const { target } = this._entryTarget(file, scope);
       const modified = new Date().toISOString();
       const raw = this._composeFrontmatter({

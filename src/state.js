@@ -49,6 +49,7 @@ function emptyState() {
     // The pending memory copy a finished dream produced. `null` means no
     // switch is waiting; the human either switches to the copy or discards it.
     shadowPending: null,
+    lastDreamDecision: null,
     // Keys of Dream proposals the human did not pass (claim keys and
     // `retire:<file>`). Merge skips them, so they are never proposed again.
     dreamRejected: [],
@@ -72,6 +73,7 @@ function emptyState() {
     // Per-session extraction cursors survive a Host restart. The in-memory
     // runtime map is only the fast path.
     extractSeqs: {},
+    extractOffsets: {},
   };
 }
 
@@ -99,7 +101,8 @@ function normalize(raw) {
     ? raw.sessionsSince
         .filter((entry) => entry && typeof entry.id === 'string' && entry.id !== '')
         .slice(-MAX_SESSIONS)
-        .map((entry) => ({ id: entry.id, at: Number(entry.at) || 0 }))
+        .map((entry) => ({ id: entry.id, at: Number(entry.at) || 0,
+          ...(entry.lastActivityAt ? { lastActivityAt: Number(entry.lastActivityAt) || 0 } : {}) }))
     : [];
   state.dreamProcessedSessions = Array.isArray(raw.dreamProcessedSessions)
     ? raw.dreamProcessedSessions
@@ -109,6 +112,7 @@ function normalize(raw) {
           id: entry.id,
           at: Number(entry.at) || 0,
           seq: Math.max(0, Math.trunc(Number(entry.seq) || 0)),
+          ...(entry.coverageVersion === 1 ? { coverageVersion: 1 } : {}),
           ...(entry.partial === true ? { partial: true } : {}),
         }))
     : [];
@@ -153,11 +157,40 @@ function normalize(raw) {
         .map(([id, seq]) => [id, Math.max(0, Math.trunc(Number(seq)))]),
     )
     : {};
+  state.extractOffsets = Object.fromEntries(Object.entries(raw.extractOffsets ?? {}).filter(([id, position]) =>
+    Object.hasOwn(state.extractSeqs, id) && Number.isSafeInteger(position?.seq)
+      && position.seq > state.extractSeqs[id] && Number.isSafeInteger(position.offset) && position.offset > 0));
   state.shadowPending = raw.shadowPending && typeof raw.shadowPending === 'object'
     && typeof raw.shadowPending.dir === 'string' && raw.shadowPending.dir !== ''
     ? { ...raw.shadowPending }
     : null;
   return state;
+}
+
+function applyDreamCoverage(state, drop, reads) {
+  const processed = Array.isArray(state.dreamProcessedSessions) ? state.dreamProcessedSessions : [];
+  const captured = new Map();
+  for (const read of reads) {
+    if (typeof read?.id !== 'string' || read.id === '') continue;
+    const seq = Math.max(0, Math.trunc(Number(read.seq) || 0));
+    const partial = read.complete !== true;
+    const existing = processed.find((item) => item.id === read.id);
+    if (existing) {
+      existing.seq = read.capturedAt && existing.coverageVersion !== 1 ? seq : Math.max(Number(existing.seq) || 0, seq);
+      if (read.capturedAt) existing.coverageVersion = 1;
+      existing.at = Date.now();
+      if (partial) existing.partial = true;
+      else delete existing.partial;
+    } else {
+      processed.push({ id: read.id, at: Date.now(), seq, ...(partial ? { partial: true } : {}),
+        ...(read.capturedAt ? { coverageVersion: 1 } : {}) });
+    }
+    if (read.capturedAt) captured.set(read.id, read.capturedAt);
+    drop.add(read.id);
+  }
+  state.dreamProcessedSessions = processed.slice(-MAX_SESSIONS);
+  state.sessionsSince = state.sessionsSince.filter((entry) =>
+    !drop.has(entry.id) || (captured.has(entry.id) && (entry.lastActivityAt || entry.at) >= captured.get(entry.id)));
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -284,7 +317,11 @@ export class ProjectState {
   async ensureSession(sessionId, at = Date.now()) {
     if (typeof sessionId !== 'string' || sessionId === '') return;
     await this._mutate((state) => {
-      if (state.sessionsSince.some((entry) => entry.id === sessionId)) return;
+      const prior = state.sessionsSince.find((entry) => entry.id === sessionId);
+      if (prior) {
+        prior.lastActivityAt = Math.max(prior.lastActivityAt || prior.at, Number(at) || Date.now());
+        return;
+      }
       state.sessionsSince.push({ id: sessionId, at: Number(at) || Date.now() });
       if (state.sessionsSince.length > MAX_SESSIONS) {
         state.sessionsSince = state.sessionsSince.slice(-MAX_SESSIONS);
@@ -319,24 +356,7 @@ export class ProjectState {
     const reads = Array.isArray(options.reads) ? options.reads : [];
     if (drop.size === 0 && reads.length === 0) return;
     await this._mutate((state) => {
-      const processed = Array.isArray(state.dreamProcessedSessions) ? state.dreamProcessedSessions : [];
-      for (const read of reads) {
-        if (typeof read?.id !== 'string' || read.id === '') continue;
-        const seq = Math.max(0, Math.trunc(Number(read.seq) || 0));
-        const partial = read.complete !== true;
-        const existing = processed.find((item) => item.id === read.id);
-        if (existing) {
-          existing.seq = Math.max(Number(existing.seq) || 0, seq);
-          existing.at = Date.now();
-          if (partial) existing.partial = true;
-          else delete existing.partial;
-        } else {
-          processed.push({ id: read.id, at: Date.now(), seq, ...(partial ? { partial: true } : {}) });
-        }
-        drop.add(read.id);
-      }
-      state.dreamProcessedSessions = processed.slice(-MAX_SESSIONS);
-      state.sessionsSince = state.sessionsSince.filter((entry) => !drop.has(entry.id));
+      applyDreamCoverage(state, drop, reads);
     });
   }
 
@@ -427,15 +447,24 @@ export class ProjectState {
   }
 
   /** Persist one session's extraction cursor (max event seq already processed). */
-  async noteExtractSeq(sessionId, seq) {
+  async noteExtractSeq(sessionId, seq, nextOffset) {
     if (typeof sessionId !== 'string' || sessionId === '') return;
     const value = Math.max(0, Math.trunc(Number(seq) || 0));
     await this._mutate((state) => {
       state.extractSeqs = state.extractSeqs && typeof state.extractSeqs === 'object' ? state.extractSeqs : {};
+      if (value < Number(state.extractSeqs[sessionId] ?? 0)) return;
+      const offsets = state.extractOffsets;
+      const previous = offsets[sessionId];
+      if (nextOffset && previous?.seq === nextOffset.seq && previous.offset > nextOffset.offset) return;
+      if (nextOffset) offsets[sessionId] = nextOffset;
+      else delete offsets[sessionId];
       state.extractSeqs[sessionId] = value;
       const keys = Object.keys(state.extractSeqs);
       if (keys.length > MAX_SESSIONS) {
-        for (const key of keys.slice(0, keys.length - MAX_SESSIONS)) delete state.extractSeqs[key];
+        for (const key of keys.slice(0, keys.length - MAX_SESSIONS)) {
+          delete state.extractSeqs[key];
+          delete offsets[key];
+        }
       }
     });
   }
@@ -471,6 +500,19 @@ export class ProjectState {
     await this._mutate((state) => {
       const merged = [...new Set([...(state.dreamRejected ?? []), ...add])];
       state.dreamRejected = merged.slice(-MAX_REJECTED);
+    });
+  }
+
+  /** Save the human decision and any accepted progress in one state write. */
+  async settleShadowPending(runId, decision, rejected = []) {
+    await this._mutate((state) => {
+      const pending = state.shadowPending;
+      if (!pending || pending.runId !== runId) throw new Error('pending Dream changed before settlement');
+      const reads = Array.isArray(pending.reviewRecords) ? pending.reviewRecords : [];
+      if (decision === 'applied' || decision === 'rejected') applyDreamCoverage(state, new Set(), reads);
+      state.dreamRejected = [...new Set([...state.dreamRejected, ...rejected])].slice(-MAX_REJECTED);
+      state.lastDreamDecision = { runId, decision, reads, at: Date.now() };
+      state.shadowPending = null;
     });
   }
 

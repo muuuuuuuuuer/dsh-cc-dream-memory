@@ -1117,7 +1117,7 @@ test('client: each change of a dream result is passed or rejected', async () => 
   assert.match(text, /1 added, 1 changed, 0 removed/u);
   assert.match(text, /release\.md/u);
   assert.match(text, /MEMORY\.md/u);
-  assert.match(text, /no later dream proposes them again/u);
+  assert.match(text, /Rejected changes are recorded separately from deferred runs/u);
   assert.deepEqual(ui.actions, []);
   const preview = findNode(ui.render().tree, (node) => node.type === 'button' && collectText(node).includes('release.md'));
   assert.ok(preview, 'each pending file can be opened');
@@ -1139,5 +1139,10 @@ test('client: each change of a dream result is passed or rejected', async () => 
   const rejectAll = findNode(second.render().tree, (node) => typeof node.type === 'function' && node.props.label === 'Reject all');
   assert.ok(rejectAll, 'the panel offers rejecting everything');
   await rejectAll.props.onConfirm();
-  assert.deepEqual(second.actions, ['discard']);
+  assert.deepEqual(second.actions, ['switch']);
+  assert.deepEqual(second.bodies.at(-1).reject, ['release.md', 'style.md']);
+  const third = await dreamTabHarness({ pending });
+  const defer = findNode(third.render().tree, (node) => node.type === 'button' && collectText(node) === 'Defer');
+  await defer.props.onClick();
+  assert.deepEqual(third.actions, ['discard']);
 });

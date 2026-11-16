@@ -38,7 +38,7 @@ export function conditionConfig(condition, memoryRoot, extra = {}) {
 /** A pure consolidation must read no sessions; a transcript scenario must read some. */
 export function dreamPurityError(result, scenario) {
   if (!result) return null;
-  const reviewed = Number(result.sessionsReviewed) || 0;
+  const reviewed = Number(result.sessionsRead ?? result.sessionsReviewed) || 0;
   if (scenario?.dreamSessions === true) return reviewed > 0 ? null : `sessionsReviewed=${reviewed}, expected transcripts to be read`;
   return reviewed === 0 ? null : `sessionsReviewed=${reviewed}, expected a pure consolidation`;
 }

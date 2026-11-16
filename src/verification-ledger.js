@@ -18,11 +18,18 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { stripVerification } from './memory-body.js';
 
-export const LEDGER_FILE = 'verification.json';
+// A dot file, so the memory folder a user opens or copies holds only notes.
+export const LEDGER_FILE = '.verification.json';
+/** Where versions up to 0.20.0 kept the ledger; read as a fallback, removed on the next write. */
+const LEGACY_LEDGER_FILE = 'verification.json';
 export const LEDGER_VERSION = 2;
 
 function ledgerPath(store, scope) {
   return path.join(store._scopeDir(scope), LEDGER_FILE);
+}
+
+function legacyLedgerPath(store, scope) {
+  return path.join(store._scopeDir(scope), LEGACY_LEDGER_FILE);
 }
 
 function digest(value) {
@@ -75,8 +82,13 @@ export async function readLedger(store, scope = 'project') {
   let parsed;
   try {
     parsed = JSON.parse(await fs.readFile(ledgerPath(store, scope), 'utf8'));
-  } catch {
-    return { version: LEDGER_VERSION, entries: {} };
+  } catch (error) {
+    try {
+      if (error?.code !== 'ENOENT') throw error;
+      parsed = JSON.parse(await fs.readFile(legacyLedgerPath(store, scope), 'utf8'));
+    } catch {
+      return { version: LEDGER_VERSION, entries: {} };
+    }
   }
   const entries = {};
   for (const [file, record] of Object.entries(parsed?.entries ?? {})) {
@@ -87,6 +99,7 @@ export async function readLedger(store, scope = 'project') {
 
 async function writeLedger(store, scope, ledger) {
   await store._atomicWrite(ledgerPath(store, scope), `${JSON.stringify({ version: LEDGER_VERSION, entries: ledger.entries }, null, 2)}\n`);
+  await fs.rm(legacyLedgerPath(store, scope), { force: true });
 }
 
 // One ledger per scope and scope directory: two verifications racing in the same

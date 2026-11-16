@@ -28,6 +28,7 @@ for (const example of examples) {
       let target;
       if (operation === 'update') {
         target = await e.pctx.store.saveEntry({ name: 'working note', type: 'project', description: 'Unrelated placeholder', content: 'A fact awaiting details.' });
+        await e.definitions.get('memory_read').execute({ file: target.file }, exec);
       }
       const args = operation === 'save'
         ? { type: 'project', ...example.addition }
@@ -73,6 +74,7 @@ test('an opposite fact against another page stops and leaves both files untouche
   const owner = await e.pctx.store.saveEntry({ name: 'indentation', type: 'user', description: 'Indentation preference', content: 'Always use tabs for indentation.' });
   const target = await e.pctx.store.saveEntry({ name: 'draft convention', type: 'user', description: 'Another convention', content: 'Pending a concrete convention.' });
   const ownerBefore = await e.pctx.store.readEntry(owner.file);
+  await e.definitions.get('memory_read').execute({ file: target.file }, exec);
   const result = await e.definitions.get('memory_update').execute({ file: target.file, description: 'Changed indentation', content: 'Never use tabs for indentation.' }, exec);
   assert.equal(result.ok, false, JSON.stringify(result));
   assert.equal(result.error, 'CONFLICT');
@@ -92,6 +94,7 @@ test('cross-file conflict updates stop and never overwrite the conflict owner', 
   const owner = await e.pctx.store.saveEntry({ name: 'indentation', type: 'user', description: 'Indentation preference', content: 'Always use tabs for indentation.' });
   const target = await e.pctx.store.saveEntry({ name: 'draft convention', type: 'user', description: 'Another convention', content: 'Pending a concrete convention.' });
   const ownerBefore = await e.pctx.store.readEntry(owner.file);
+  await e.definitions.get('memory_read').execute({ file: target.file }, exec);
   const result = await e.definitions.get('memory_update').execute({ file: target.file, description: 'Changed indentation', content: 'Never use tabs for indentation.' }, exec);
   assert.equal(result.ok, false, JSON.stringify(result));
   assert.equal(result.error, 'CONFLICT');

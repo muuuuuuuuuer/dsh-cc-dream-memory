@@ -22,7 +22,7 @@ test('status names the build and the capabilities this Host mounted', async (t) 
   assert.equal(status.ok, true);
   assert.match(status.build.id, /^[0-9a-f]{12}$/u);
   assert.equal(status.build.packageVersion, buildIdentity().packageVersion);
-  assert.equal(status.uiApi, 4);
+  assert.equal(status.uiApi, 5);
   assert.deepEqual(status.capabilities, {
     dreamPipeline: 'v2',
     dreamRuns: true,

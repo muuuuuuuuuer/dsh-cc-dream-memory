@@ -428,14 +428,12 @@ test('v9 tools: possible-duplicate is advisory and force still writes', async (t
   assert.equal(typeof suspected.hint, 'string');
   assert.equal((await env.pctx.store.listEntries()).length, 2);
 
-  const forced = await save.execute({ ...candidate, force: true }, exec);
+  const forced = await save.execute({ ...candidate, name: `${candidate.name} alternate`, force: true }, exec);
   assert.equal(forced.ok, true, JSON.stringify(forced));
   assert.equal(typeof forced.file, 'string', 'force:true still writes the candidate');
-  // Same name/type targets the same topic file, so force upserts rather than
-  // creating a third memory.
   const entries = await env.pctx.store.listEntries();
-  assert.equal(entries.length, 2, 'force reuses the candidate topic file');
-  assert.equal(forced.file, suspected.file);
+  assert.equal(entries.length, 3, 'force allows a separate note with a distinct name');
+  assert.notEqual(forced.file, suspected.file);
 });
 
 // ---------------------------------------------------------------------------

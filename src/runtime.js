@@ -597,11 +597,11 @@ export class MemoryRuntime {
    * memory is backed up first, so {@link undoLastDream} can put it back.
    * @param {{agent?:object, pctx?:object, reject?:string[]}} [options]
    */
-  async switchDream({ agent, pctx, reject = [] } = {}) {
+  async switchDream({ agent, pctx, reject = [], defer = [], confirm = [], runId = '' } = {}) {
     const projectContext = pctx ?? (agent ? await this.forAgent(agent) : undefined);
     if (!projectContext) return { ok: false, error: 'no-project' };
     try {
-      const result = await this.#dreamEngine.switchShadow({ pctx: projectContext, agent: agent ?? projectContext.agent, reject });
+      const result = await this.#dreamEngine.switchShadow({ pctx: projectContext, agent: agent ?? projectContext.agent, reject, defer, confirm, runId });
       if (result?.ok === true) {
         try {
           this.invalidateAllInjections('dream-switch');
@@ -620,11 +620,11 @@ export class MemoryRuntime {
    * Discard the pending copy. Live memory is untouched.
    * @param {{agent?:object, pctx?:object}} [options]
    */
-  async discardDream({ agent, pctx } = {}) {
+  async discardDream({ agent, pctx, runId = '' } = {}) {
     const projectContext = pctx ?? (agent ? await this.forAgent(agent) : undefined);
     if (!projectContext) return { discarded: false, error: 'no-project' };
     try {
-      return await this.#dreamEngine.discardShadow({ pctx: projectContext });
+      return await this.#dreamEngine.discardShadow({ pctx: projectContext, runId });
     } catch (error) {
       warn('discardDream', error);
       return { discarded: false, error: 'discard-failed', message: String(error?.message ?? error) };

@@ -249,12 +249,13 @@ function renderChunk(items, toolBudget) {
  *   last event this chunk fully covers; a message split across chunks only counts
  *   as read in the chunk holding its final piece.
  */
-export function chunkTranscript(transcript, { chunkChars, toolCharsPerChunk }) {
+export function chunkTranscript(transcript, { chunkChars, toolCharsPerChunk, resume }) {
   const blocks = Array.isArray(transcript?.blocks) ? transcript.blocks : [];
   if (blocks.length === 0) return [];
   const limit = Number.isFinite(chunkChars) && chunkChars > 0 ? chunkChars : Infinity;
   // Conversation comes first: tool evidence may use at most a third of a chunk.
-  const toolBudget = Number.isFinite(toolCharsPerChunk) && toolCharsPerChunk > 0 ? Math.min(toolCharsPerChunk, limit / 3) : 0;
+  const toolBudget = Number.isFinite(toolCharsPerChunk) && toolCharsPerChunk > 0 && blocks.some((item) => item.kind === 'tool')
+    ? Math.min(toolCharsPerChunk, limit / 3) : 0;
   // Date markers and tags live inside the text budget.
   const textLimit = Math.max(200, limit - toolBudget - 32);
   const chunks = [];
@@ -262,9 +263,10 @@ export function chunkTranscript(transcript, { chunkChars, toolCharsPerChunk }) {
   let textChars = 0;
   let firstSeq = 0;
   let lastSeq = 0;
-  const close = () => {
+  const close = (nextOffset) => {
     if (items.length === 0) return;
-    chunks.push({ text: renderChunk(items, toolBudget), firstSeq, lastSeq, evidenceBlocks: transcriptEvidenceBlocks(items) });
+    chunks.push({ text: renderChunk(items, toolBudget), firstSeq, lastSeq, evidenceBlocks: transcriptEvidenceBlocks(items),
+      ...(nextOffset ? { nextOffset } : {}) });
     items = [];
     textChars = 0;
     firstSeq = 0;
@@ -274,7 +276,10 @@ export function chunkTranscript(transcript, { chunkChars, toolCharsPerChunk }) {
     if (firstSeq === 0) firstSeq = Number(item.seq) || 0;
     lastSeq = Math.max(lastSeq, coveredSeq);
   };
-  for (const block of blocks) {
+  for (const original of blocks) {
+    const prefix = original.kind === 'text' ? `[${original.tag}] ` : '';
+    const offset = original.kind === 'text' && resume?.seq === original.seq ? resume.offset : 0;
+    const block = offset > 0 ? { ...original, text: prefix + original.text.slice(prefix.length + offset) } : original;
     if (block.kind === 'tool') {
       add(block, block.seq);
       continue;
@@ -289,13 +294,14 @@ export function chunkTranscript(transcript, { chunkChars, toolCharsPerChunk }) {
     // Longer than a whole chunk: split it. Continuation pieces repeat the tag so
     // a cut can never leave content sitting at a line start.
     close();
-    const prefix = `[${block.tag}] `;
     const pieces = splitText(block.text.slice(prefix.length), textLimit - prefix.length - 17);
+    let next = offset;
     pieces.forEach((piece, index) => {
       const isLast = index === pieces.length - 1;
       add({ ...block, text: `${prefix}${escapeToolText(piece)}` }, isLast ? block.seq : Math.max(lastSeq, block.seq - 1));
       textChars += piece.length + prefix.length + 17;
-      if (!isLast) close();
+      next += piece.length;
+      if (!isLast) close({ seq: block.seq, offset: next });
     });
   }
   close();

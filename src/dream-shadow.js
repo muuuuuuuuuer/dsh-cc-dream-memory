@@ -54,7 +54,7 @@ export async function clearShadow(paths) {
 export async function archiveShadow(paths, stamp) {
   const source = shadowDirOf(paths);
   const target = path.join(paths.dreamsDir, stamp || `switch-${Date.now()}`, 'output');
-  if (!fs.existsSync(source)) return '';
+  if (!(await fs.stat(source).then(() => true, () => false))) return '';
   await fs.mkdir(path.dirname(target), { recursive: true });
   await fs.rm(target, { recursive: true, force: true });
   await fs.cp(source, target, { recursive: true });
@@ -269,30 +269,67 @@ export function mergeIndexText(liveText, shadowText, passed) {
  * @param {{store:object, shadowStore:object, paths:object, base?:Record<string,string>, stamp?:string, files:Iterable<string>}} input
  * @returns {Promise<{ok: boolean, error?: string, conflicts?: Array<{file:string,reason:string}>, backupDir?: string, counts?: Record<string, number>}>}
  */
-export async function switchShadow({ store, shadowStore, paths, base, stamp = '', files }) {
+export async function switchShadow({ store, shadowStore, paths, base, stamp = '', files, revisions, dependencies = [], recordSwitch }) {
   const passed = new Set(files);
-  // Only a passed file can be overwritten, so only its live edits conflict.
-  const conflicts = (await shadowConflicts({ store, base })).filter((item) => passed.has(item.file));
-  if (conflicts.length > 0) return { ok: false, error: 'conflict', conflicts };
-  const live = new Map((await store.listEntries('project')).map((entry) => [entry.file, entry]));
-  const copy = new Map((await shadowStore.listEntries('project')).map((entry) => [entry.file, entry]));
-  const backupDir = path.join(paths.dreamsDir, stamp || `switch-${Date.now()}`, 'memory');
-  await fs.mkdir(backupDir, { recursive: true });
-  await fs.cp(paths.memoryDir, backupDir, { recursive: true });
-  const counts = { added: 0, changed: 0, removed: 0 };
-  for (const file of passed) {
-    if (copy.has(file)) {
-      const page = await shadowStore.readEntry(file, 'project');
-      await fs.writeFile(path.join(paths.memoryDir, file), page.raw, 'utf8');
-      counts[live.has(file) ? 'changed' : 'added'] += 1;
-    } else if (live.has(file)) {
-      await store.trashEntry(file, { scope: 'project', reason: 'dream consolidation' }).catch(async () => {
-        await fs.rm(path.join(paths.memoryDir, file), { force: true });
-      });
-      counts.removed += 1;
+  return store.withWriteTransaction(async () => {
+    // Only a passed file can be overwritten, so only its live edits conflict.
+    const required = new Set([...passed, ...dependencies]);
+    const conflicts = (await shadowConflicts({ store, base })).filter((item) => required.has(item.file));
+    if (conflicts.length > 0) return { ok: false, error: 'conflict', conflicts };
+    const live = new Map((await store.listEntries('project')).map((entry) => [entry.file, entry]));
+    const copy = new Map((await shadowStore.listEntries('project')).map((entry) => [entry.file, entry]));
+    const backupDir = path.join(paths.dreamsDir, stamp || `switch-${Date.now()}`, 'memory');
+    await fs.mkdir(backupDir, { recursive: true });
+    await fs.cp(paths.memoryDir, backupDir, { recursive: true });
+    const counts = { added: 0, changed: 0, removed: 0 };
+    const touched = [];
+    try {
+      for (const file of passed) {
+        if (copy.has(file)) {
+          const page = await shadowStore.readEntry(file, 'project');
+          if (revisions && revisions.get(file) !== hashText(page.raw)) {
+            throw Object.assign(new Error('The reviewed copy changed: ' + file), { code: 'stale-dream' });
+          }
+          touched.push(file);
+          await store._atomicWrite(path.join(paths.memoryDir, file), page.raw);
+          counts[live.has(file) ? 'changed' : 'added'] += 1;
+        } else if (live.has(file)) {
+          if (revisions && revisions.get(file) !== 'removed') {
+            throw Object.assign(new Error('The reviewed copy changed: ' + file), { code: 'stale-dream' });
+          }
+          touched.push(file);
+          await store.trashEntry(file, { scope: 'project', reason: 'dream consolidation' });
+          counts.removed += 1;
+        }
+      }
+      await store.writeIndex(mergeIndexText(await store.indexText('project'), await shadowStore.indexText('project'), passed), 'project');
+      await store.refreshIndex('project');
+      await recordSwitch?.({ backupDir, counts });
+    } catch (error) {
+      const rollbackFailed = [];
+      for (const file of touched.reverse()) {
+        try {
+          const target = path.join(paths.memoryDir, file);
+          if (live.has(file)) {
+            await store._atomicWrite(target, await fs.readFile(path.join(backupDir, file), 'utf8'));
+          } else {
+            await fs.rm(target, { force: true });
+          }
+        } catch (rollbackError) {
+          rollbackFailed.push({ file, error: String(rollbackError?.message ?? rollbackError) });
+        }
+      }
+      try {
+        const index = await fs.readFile(path.join(backupDir, 'MEMORY.md'), 'utf8');
+        const current = await store.indexText('project');
+        await store.writeIndex(mergeIndexText(current, index, new Set(touched)), 'project');
+        await store.refreshIndex('project');
+      } catch (rollbackError) {
+        rollbackFailed.push({ file: 'MEMORY.md', error: String(rollbackError?.message ?? rollbackError) });
+      }
+      return { ok: false, error: error.code === 'stale-dream' ? error.code : 'switch-failed', partial: rollbackFailed.length > 0,
+        backupDir, rollbackFailed, cause: error?.message ?? String(error) };
     }
-  }
-  await store.writeIndex(mergeIndexText(await store.indexText('project'), await shadowStore.indexText('project'), passed), 'project');
-  await store.refreshIndex('project');
-  return { ok: true, backupDir, counts };
+    return { ok: true, backupDir, counts };
+  });
 }

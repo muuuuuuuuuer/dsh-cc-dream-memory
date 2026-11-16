@@ -6,7 +6,7 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 
 | Command | What it does |
 |---|---|
-| `/remember [--type=user\|feedback\|project\|reference] [--scope=project\|user] <text>` | Save one note |
+| `/remember [--type=user\|feedback\|project\|reference] [--force] <text>` | Save one note. A duplicate or a contradiction of an existing note is refused unless you add `--force`; related notes are listed so you can check them |
 | `/memory` | Show status: entries, index size, recall mode, auto-extract and Inbox state, per-agent policy, Dream state and health |
 | `/memory status` | Same as bare `/memory` |
 | `/memory list` | List memories |
@@ -25,7 +25,8 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 |---|---|
 | `/memory dream run` | Start a background run; it writes a cleaned-up copy of your memory under `.dreams/shadow/` and leaves the real notes untouched; `/memory dream status [runId]` shows progress, `cancel` stops it (a stopped or failed run is started again with `run`) |
 | `/memory dream run --focus "<topic>"` | Prefer one topic in this round |
-| `/memory dream switch [--reject <file,...>]` | Apply the copy Dream wrote, except the files named in `--reject` (backed up first; `undo` returns). Rejected facts are never proposed again |
+| `/memory dream diff <file>` | Show one pending change: removed and added lines, whether its source was checked, its evidence, and what you rejected on that page before |
+| `/memory dream switch [--reject <file,...>] [--defer <file,...>] [--confirm <file,...>]` | Apply the copy Dream wrote (backed up first; `undo` returns). `--reject` keeps those files and remembers the exact change so it is not proposed again without new evidence; `--defer` keeps them without remembering anything. A change without a checked source applies only with `--confirm`, after you read its diff |
 | `/memory dream discard` | Reject every change; memory stays exactly as it is and these facts are never proposed again |
 | `/memory dream undo` | Undo the most recent switch (only the notes that switch touched) |
 | `/memory dream history` | List past Dreams |

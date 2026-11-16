@@ -216,6 +216,10 @@ export function createHttpHandler({ runtime, token }) {
   async function handleAction(res, action, body) {
     const projectContext = await dreamContext(res, body);
     if (!projectContext) return;
+    if (['switch', 'discard'].includes(String(action).toLowerCase())
+      && (typeof body.runId !== 'string' || !body.runId.trim())) {
+      return sendJson(res, 400, { ok: false, error: 'missing-run-id', message: 'Open the current Dream before reviewing it.' });
+    }
     let response;
     try {
       response = await service.dream(projectContext, {
@@ -228,6 +232,8 @@ export function createHttpHandler({ runtime, token }) {
         inputId: typeof body.inputId === 'string' ? body.inputId : '',
         inputRanges: Array.isArray(body.inputRanges) ? body.inputRanges : null,
         reject: Array.isArray(body.reject) ? body.reject : [],
+        defer: Array.isArray(body.defer) ? body.defer : [],
+        confirm: Array.isArray(body.confirm) ? body.confirm : [],
         trigger: 'manual',
         reason: 'web ui',
       });

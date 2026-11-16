@@ -119,7 +119,8 @@ test('Dream records session reads as complete when the last seq is reached', asy
     source: { via: 'test' },
   });
   env.host.services.sessionQuery = {
-    filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir, createdAt: now - 1000, lastSeq: 7 } }],
+    filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir, createdAt: now - 1000 } }],
+    listEvents: async () => [{ seq: 0, type: 'turn/start' }, { seq: 7, type: 'user/message' }],
     searchEvents: async () => ({ items: [] }),
     readEvent: async () => ({
       events: [{ seq: 7, type: 'user/message', data: { content: [{ type: 'text', text: 'Use pnpm.' }] } }],
@@ -131,7 +132,8 @@ test('Dream records session reads as complete when the last seq is reached', asy
     if (call === 1) {
       return streamOf([
         toolCall('c1', 'session_read', { session_id: 's1', seq: 7 }),
-        toolCall('c2', 'memory_write', {
+        toolCall('c2', 'session_done', { session_id: 's1' }),
+        toolCall('c3', 'memory_write', {
           file: 'project_deploy.md',
           name: 'Deploy',
           type: 'project',
@@ -146,8 +148,9 @@ test('Dream records session reads as complete when the last seq is reached', asy
 
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-read-1' });
   assert.equal(result.ready, true);
-  const processed = env.pctx.state.snapshot().dreamProcessedSessions.find((item) => item.id === 's1');
-  assert.ok(processed, 'session should be recorded as processed');
+  assert.deepEqual(env.pctx.state.snapshot().dreamProcessedSessions, []);
+  const processed = env.pctx.state.snapshot().shadowPending.reviewRecords.find((item) => item.id === 's1');
+  assert.ok(processed, 'completed review waits for settlement');
   assert.equal(processed.seq, 7);
   assert.equal(processed.partial, undefined);
 });
@@ -185,7 +188,7 @@ test('auto-extract never forwards a delete to memory_update', async (t) => {
     call += 1;
     if (call === 1) {
       return streamOf([
-        toolCall('d1', 'memory_update', { file: 'project_x.md', delete: true }),
+        toolCall('d1', 'memory_update', { file: 'project_x.md', delete: true, expectedHash: 'read-version' }),
         { type: 'finish', reason: { kind: 'tool-calls' } },
       ]);
     }
@@ -196,6 +199,7 @@ test('auto-extract never forwards a delete to memory_update', async (t) => {
   const update = calls.find((item) => item.name === 'memory_update');
   assert.ok(update, 'memory_update should be executed');
   assert.equal(update.args.delete, undefined);
+  assert.equal(update.args.expectedHash, 'read-version');
   assert.equal(env.pctx.state.snapshot().extractSeqs.s1, 1, 'cursor should persist in project state');
 });
 
@@ -274,7 +278,8 @@ test('Dream status reads the run manifest after the process forgets it', async (
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-status-1' });
   assert.equal(result.skipped, true);
   const status = await env.runtime.dreamRun(env.pctx, 'run-status-1');
-  assert.equal(status.status, 'skipped');
+  // The agent ran and changed nothing: a finished run, not a skipped one.
+  assert.equal(status.status, 'done');
   assert.equal(status.skipReason, 'nothing-new');
 });
 
@@ -298,4 +303,44 @@ test('the legacy dreamAgent config toggle is gone', async () => {
   const { resolveConfig } = await loadModule('../src/config.js', { requireExports: ['resolveConfig'] });
   const config = resolveConfig({});
   assert.equal(Object.hasOwn(config, 'dreamAgent'), false);
+});
+
+test('memory_update refuses to overwrite a file changed since the read', async (t) => {
+  const env = await toolsEnv(t, { autoDreamEnabled: false });
+  await env.pctx.store.saveEntry({
+    name: 'Style',
+    type: 'feedback',
+    description: 'Reply style',
+    content: 'Be concise.',
+    source: { via: 'test' },
+  });
+  const read = env.definitions.get('memory_read');
+  const update = env.definitions.get('memory_update');
+  const exec = { agent: { id: 's1' }, sessionId: 's1' };
+  const first = await read.execute({ file: 'feedback_style.md' }, exec);
+  assert.equal(first.ok, true);
+  // A live edit between the model's read and its write.
+  await env.pctx.store.updateEntry('feedback_style.md', { scope: 'project', content: 'Be very concise.' });
+  const stale = await update.execute({ file: 'feedback_style.md', content: 'Be concise and warm.' }, exec);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.error, 'STALE');
+  assert.equal((await env.pctx.store.readEntry('feedback_style.md')).body.trim(), 'Be very concise.');
+});
+
+test('a Dream run does not complete a session it never finished', async (t) => {
+  const env = await toolsEnv(t, { autoDreamEnabled: false });
+  env.host.services.sessionQuery = {
+    filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir, createdAt: now - 1000 } }],
+    listEvents: async () => [{ seq: 0 }, { seq: 1 }, { seq: 2 }],
+    searchEvents: async () => ({ items: [] }),
+    readEvent: async () => ({ events: [] }),
+  };
+  env.host.services.llm.stream = () => streamOf([
+    toolCall('w1', 'memory_write', { file: 'project_note.md', name: 'Note', type: 'project', body: 'New note.' }),
+    { type: 'finish', reason: { kind: 'tool-calls' } },
+  ]);
+  const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-partial-1' });
+  assert.equal(result.ready, true);
+  const processed = env.pctx.state.snapshot().dreamProcessedSessions.find((item) => item.id === 's1');
+  assert.equal(processed, undefined, 'unread session must stay a candidate');
 });

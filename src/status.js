@@ -35,7 +35,7 @@ import {
 } from './secrets.js';
 import { MEMORY_TYPES, MemoryStore, entryVersion, normalizeScope } from './store.js';
 import { memoryHash } from './write-review.js';
-import { isCurrentPage } from './memory-body.js';
+import { currentBody, HISTORY_HEADING_RE, isCurrentPage, stripVerification, SUPERSEDED_LINE_RE } from './memory-body.js';
 import { applyProposals } from './auto-extract.js';
 import { listProposals, readProposal, removeProposal } from './inbox.js';
 import { matchesRecord, readLedger, recordVerifiedEntry } from './verification-ledger.js';
@@ -45,7 +45,7 @@ import { matchesRecord, readLedger, recordVerifiedEntry } from './verification-l
  * compares it with its own and says so when the running backend is older
  * (the host keeps imported modules until it restarts).
  */
-export const UI_API = 4;
+export const UI_API = 5;
 
 /** Changelog tail length used by the UI. */
 export const DEFAULT_LOG_LINES = 40;
@@ -89,6 +89,7 @@ export const STATE_FIELDS = Object.freeze([
   'lastDreamOps',
   'lastDreamMode',
   'shadowPending',
+  'lastDreamDecision',
   'lastError',
   'consecutiveFailures',
   'lastDreamDurationMs',
@@ -562,6 +563,7 @@ export function createStatusService(runtime) {
         scope,
         name,
         type,
+        createOnly: true,
         description: typeof input.description === 'string' ? input.description : '',
         content: typeof input.content === 'string' ? input.content : '',
         source,
@@ -668,43 +670,69 @@ export function createStatusService(runtime) {
       typeof input.description === 'string' && input.description !== ''
         ? input.description
         : `Merged from ${files.length} memories`;
-    const sections = [];
-    for (const file of files) {
-      let entry;
-      try {
-        entry = await store.readEntry(file, scope);
-      } catch (error) {
-        throw coded('not-found', `memory file not found: ${file}`);
+    const { result, trashed, audit } = await store.withWriteTransaction(async () => {
+      const sources = [];
+      for (const file of files) {
+        try {
+          sources.push(await store.readEntry(file, scope));
+        } catch (error) {
+          if (error?.code !== 'NOT_FOUND') throw error;
+          throw coded('not-found', 'memory file not found: ' + file);
+        }
       }
-      const sectionName =
-        typeof entry.frontmatter?.name === 'string' && entry.frontmatter.name !== ''
-          ? entry.frontmatter.name
-          : file.replace(/\.md$/i, '');
-      const body = typeof entry.body === 'string' ? entry.body.trim() : '';
-      sections.push(`## ${sectionName}\n\n${body}`);
-    }
-    const result = await store.saveEntry({
-      scope,
-      name,
-      type,
-      description,
-      content: sections.join('\n\n'),
-      source: { via: 'api:merge', sessionId: typeof pctx?.sessionId === 'string' ? pctx.sessionId : '' },
+      const sections = [];
+      const history = [];
+      for (const entry of sources) {
+        const heading = `## Source: ${entry.frontmatter.name}`;
+        const text = stripVerification(entry.body);
+        if (isCurrentPage(text)) {
+          sections.push(`${heading}\n\n${currentBody(text).trim()}`);
+          const lines = text.split(/\r?\n/u);
+          const index = lines.findIndex((line) => HISTORY_HEADING_RE.test(line.trim()));
+          const older = index < 0 ? [] : lines.splice(index + 1);
+          const historyText = [...lines.filter((line) => SUPERSEDED_LINE_RE.test(line)), ...older].join('\n').trim();
+          if (historyText) history.push(`### ${entry.frontmatter.name}\n\n${historyText}`);
+        } else {
+          history.push(`### ${entry.frontmatter.name}\n\n${text}`);
+        }
+      }
+      if (history.length > 0) sections.push(`## History\n\n${history.join('\n\n')}`);
+      const result = await store.saveEntry({
+        scope, name, type, description, createOnly: true, content: sections.join('\n\n'),
+        source: { via: 'api:merge', sessionId: typeof pctx?.sessionId === 'string' ? pctx.sessionId : '' },
+      });
+      const merged = await store.readEntry(result.file, scope);
+      const touched = [];
+      const trashed = [];
+      try {
+        for (const entry of sources) {
+          touched.push(entry);
+          const removed = await store.trashEntry(entry.file, {
+            scope, reason: 'merged into ' + result.file, expectedHash: memoryHash(entry.raw),
+          });
+          trashed.push(removed.file);
+        }
+        return { result, trashed, audit: await store.reconcileIndex(scope) };
+      } catch (error) {
+        const failures = [];
+        for (const entry of touched) {
+          try {
+            const target = path.join(pctx.paths.memoryDir, entry.file);
+            if (!(await store._exists(target))) await store._atomicWrite(target, entry.raw);
+          } catch (rollbackError) {
+            failures.push(entry.file + ': ' + rollbackError.message);
+          }
+        }
+        try {
+          await store.trashEntry(result.file, { scope, reason: 'merge rolled back', expectedHash: memoryHash(merged.raw) });
+          await store.reconcileIndex(scope);
+        } catch (rollbackError) {
+          failures.push(result.file + ': ' + rollbackError.message);
+        }
+        if (failures.length > 0) throw coded('merge-partial', error.message + '; restore failed: ' + failures.join(', '));
+        throw error;
+      }
     });
-    const trashed = [];
-    for (const file of files) {
-      if (file === result.file) continue;
-      try {
-        const trashedEntry = await store.trashEntry(file, {
-          scope,
-          reason: `merged into ${result.file}`,
-        });
-        trashed.push(trashedEntry.file);
-      } catch (error) {
-        if (error?.code !== 'NOT_FOUND') throw error;
-      }
-    }
-    const audit = await store.reconcileIndex(scope);
     const reconciled = {
       missing: Array.isArray(audit?.appended) ? audit.appended : [],
       dangling: Array.isArray(audit?.removed) ? audit.removed : [],
@@ -775,11 +803,13 @@ export function createStatusService(runtime) {
       throw coded('stale-dream', 'The pending Dream changed. Refresh the Memory page.');
     }
     const evidence = (Array.isArray(pending.evidence) ? pending.evidence : [])
-      .filter((item) => item && typeof item.sessionId === 'string' && (!item.file || item.file === file))
+      .filter((item) => item && (typeof item.sessionId === 'string' || typeof item.memoryFile === 'string')
+        && (!item.file || item.file === file))
       .slice(0, 100)
       .map((item) => ({
-        sessionId: item.sessionId,
-        seq: Number(item.seq) || 0,
+        ...(typeof item.memoryFile === 'string'
+          ? { memoryFile: item.memoryFile }
+          : { sessionId: item.sessionId, seq: Number(item.seq) || 0 }),
         quote: typeof item.quote === 'string' ? item.quote : '',
         source: typeof item.source === 'string' ? item.source : 'citation',
         verified: item.verified === true,
@@ -1100,7 +1130,7 @@ export function createStatusService(runtime) {
     const launched = ({ done, ...info }) => ({ ok: true, result: lossless(info) });
     switch (action) {
       case 'estimate':
-        return { ok: true, result: lossless(await rt.estimateDream(pctx, { focus: launch.focus })) };
+        return { ok: true, result: lossless(await rt.estimateDream(pctx, { focus: launch.focus, noSessions: launch.noSessions })) };
       case 'start':
       case 'run': {
         const started = await rt.startDream(pctx, launch);
@@ -1112,13 +1142,14 @@ export function createStatusService(runtime) {
       case 'cancel':
         return { ok: true, result: lossless(await rt.cancelDreamRun(pctx, runId)) };
       case 'switch': {
-        const reject = Array.isArray(options.reject) ? options.reject.filter((file) => typeof file === 'string') : [];
-        const result = await rt.switchDream({ pctx, agent, reject });
+        const files = (value) => (Array.isArray(value) ? value.filter((file) => typeof file === 'string') : []);
+        const reject = files(options.reject);
+        const result = await rt.switchDream({ pctx, agent, reject, defer: files(options.defer), confirm: files(options.confirm), runId });
         if (result?.ok === true) invalidateAll('dream-switch');
         return { ok: true, result: lossless(result) };
       }
       case 'discard':
-        return { ok: true, result: lossless(await rt.discardDream({ pctx, agent })) };
+        return { ok: true, result: lossless(await rt.discardDream({ pctx, agent, runId })) };
       case 'undo': {
         const result = await rt.undoLastDream(pctx, { agent });
         invalidateAll('dream-undo');

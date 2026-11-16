@@ -235,7 +235,7 @@ function sessionIdOf(exec) {
  * @param {object} [candidate] candidate text used to rank body reads
  * @returns {Promise<object[]>}
  */
-async function loadPolicyEntries(store, scope, excludeFile = '', candidate = null) {
+export async function loadPolicyEntries(store, scope, excludeFile = '', candidate = null) {
   const entries = (await store.listEntries(scope)).filter((entry) => entry.file !== excludeFile);
   let ranked = entries;
   if (candidate && typeof candidate === 'object') {
@@ -269,7 +269,7 @@ async function loadPolicyEntries(store, scope, excludeFile = '', candidate = nul
 }
 
 /** Candidate shape for one policy evaluation. */
-function policyCandidate({ name, type, description, content, confidence }) {
+export function policyCandidate({ name, type, description, content, confidence }) {
   return {
     name: typeof name === 'string' ? name : '',
     type: typeof type === 'string' ? type : '',
@@ -401,6 +401,11 @@ function subagentReadonly(runtime, exec) {
  * @returns {() => void} disposer removing every tool registration.
  */
 export function registerTools(ctx, runtime) {
+  const foregroundReads = new Map();
+  const readsFor = (exec) => exec?.memoryReadHashes ?? foregroundReads;
+  const readHashKey = (exec, project, file) => JSON.stringify([
+    exec?.internal === true, sessionIdOf(exec), project.paths?.projectDir, file,
+  ]);
   // Dynamic view over `runtime.config` (a getter): Web/CLI toggles apply
   // immediately without re-registering the tools.
   const config = new Proxy({}, {
@@ -451,7 +456,7 @@ export function registerTools(ctx, runtime) {
     parameters: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Stable name, no extension.' },
+        name: { type: 'string', description: 'Stable short name in kebab-case, no extension (e.g. release-process).' },
         type: {
           type: 'string',
           enum: ['user', 'feedback', 'project', 'reference'],
@@ -543,6 +548,7 @@ export function registerTools(ctx, runtime) {
         const result = await projectContext.store.saveEntry({
           scope,
           name: input.name,
+          createOnly: true,
           type,
           description: input.description,
           content: writeContent,
@@ -582,7 +588,7 @@ export function registerTools(ctx, runtime) {
   register({
     name: 'memory_update',
     description:
-      'Edit one memory or delete it (recoverable).',
+      'Edit one memory or delete it (recoverable). Read the page first before replacing its body.',
     parameters: {
       type: 'object',
       properties: {
@@ -590,6 +596,7 @@ export function registerTools(ctx, runtime) {
         name: { type: 'string', description: 'New stable name; renames file/index.' },
         content: { type: 'string', description: 'New body; omit to keep.' },
         description: { type: 'string', description: 'New index summary; omit to keep it.' },
+        expectedHash: { type: 'string', description: 'Hash from the memory_read result you based this change on.' },
         delete: { type: 'boolean', description: 'Remove this memory.' },
         basis: BASIS_SCHEMA,
         evidence: { type: 'string' },
@@ -631,6 +638,22 @@ export function registerTools(ctx, runtime) {
           existing = null;
         }
         if (!existing) return { ok: false, error: 'NOT_FOUND', message: `memory file not found: ${input.file}` };
+        const currentHash = memoryHash(existing.raw);
+        const seenHash = readsFor(exec).get(readHashKey(exec, projectContext, existing.file));
+        const wantedHash = typeof input.expectedHash === 'string' && input.expectedHash !== '' ? input.expectedHash : seenHash;
+        if (!wantedHash && input.delete !== true && typeof input.content === 'string') {
+          return { ok: false, error: 'READ_REQUIRED', message: 'Read this memory before replacing its body.' };
+        }
+        if (wantedHash && wantedHash !== currentHash) {
+          return {
+            ok: false,
+            error: 'STALE',
+            message: 'the file changed since you read it; read it again and merge your change',
+            file: input.file,
+            expectedHash: wantedHash,
+            currentHash,
+          };
+        }
         if (input.delete === true) {
           await projectContext.store.trashEntry(input.file, { scope, reason: 'memory_update delete', expectedHash: memoryHash(existing.raw) });
           invalidate(runtime, resolved.agent);
@@ -773,6 +796,7 @@ export function registerTools(ctx, runtime) {
         properties: {
           dryRun: { type: 'boolean', description: 'Only produce the plan; do not apply.' },
           sessions: { type: 'boolean', description: 'Read recent session transcripts (default false = pure consolidation).' },
+          focus: { type: 'string', description: 'Optional topic to prioritize in this run.' },
         },
         additionalProperties: false,
       },
@@ -790,6 +814,7 @@ export function registerTools(ctx, runtime) {
             dryRun: input?.dryRun === true,
             trigger: 'manual',
             reason: 'eval',
+            focus: typeof input?.focus === 'string' ? input.focus.slice(0, 2_000) : '',
             // C group defaults to pure consolidation; transcript scenarios opt in
             // so the gather/watermark path is evaluated too.
             noSessions: input?.sessions !== true,
@@ -797,16 +822,23 @@ export function registerTools(ctx, runtime) {
           // Keep the result JSON-lossless and small: the tool layer rejects
           // nested plans/signals it cannot serialize losslessly.
           return {
-            ok: true,
+            ok: result?.ok !== false && !result?.error,
             ran: result?.ran === true,
+            ready: result?.ready === true,
+            runId: result?.runId ?? '',
+            ...(result?.error ? { error: result.error } : {}),
             applied: result?.applied === true,
             skipped: result?.skipped === true,
             skipReason: typeof result?.skipReason === 'string' ? result.skipReason : '',
             ops: Number(result?.ops ?? result?.operations?.length ?? 0) || 0,
-            filesTouched: Number(result?.filesTouched ?? 0) || 0,
+            filesTouched: result?.files?.length ?? 0,
+            counts: result?.counts ?? { added: 0, changed: 0, removed: 0 },
             summary: typeof result?.summary === 'string' ? result.summary : '',
             path: typeof result?.path === 'string' ? result.path : '',
-            dryRun: result?.dryRun === true,
+            dryRun: input?.dryRun === true,
+            sessionsOffered: Number(result?.sessionsOffered) || 0,
+            sessionsRead: Number(result?.sessionsRead) || 0,
+            sessionsPartial: Number(result?.sessionsPartial) || 0,
             sessionsReviewed: Number(result?.sessionsReviewed ?? 0) || 0,
           };
         } catch (error) {
@@ -839,6 +871,11 @@ export function registerTools(ctx, runtime) {
       if (resolved.error) return resolved.error;
       try {
         const entry = await resolved.projectContext.store.readEntry(input.file);
+        const hashes = readsFor(exec);
+        const key = readHashKey(exec, resolved.projectContext, entry.file);
+        hashes.delete(key);
+        hashes.set(key, memoryHash(entry.raw));
+        if (hashes.size > 4096) hashes.delete(hashes.keys().next().value);
         // v23: one read is one read. The counters share a single best-effort
         // block and never hold the reply: the model already has the body.
         Promise.resolve()
@@ -847,9 +884,13 @@ export function registerTools(ctx, runtime) {
             await recordAdoption(resolved.projectContext.paths, entry.file, sessionIdOf(exec));
           })
           .catch((error) => warn('read metrics', error));
+        // `raw` is the whole file, History included; returning it would hand the
+        // model the superseded values that `body` leaves out.
+        const { raw, ...visible } = entry;
         return {
           ok: true,
-          ...entry,
+          ...visible,
+          hash: memoryHash(raw),
           // A read answers "what holds now". Old values stay in the file, the
           // changelog and `/memory history` rather than coming back as current.
           body: currentBody(entry.body),
@@ -928,5 +969,6 @@ export function registerTools(ctx, runtime) {
     }
     if (runtime && runtime.memoryTools === definitions) runtime.memoryTools = undefined;
     definitions.clear();
+    foregroundReads.clear();
   };
 }

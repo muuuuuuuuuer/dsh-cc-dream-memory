@@ -10,6 +10,9 @@ import { toolsEnv, commandEnv, exists } from './v10-helpers.mjs';
 const now = Date.parse('2026-11-15T10:00:00Z');
 const AWS_KEY = `AKIA${'ABCDEFGHIJKLMNOP'}`;
 const QUOTE = 'We moved to pnpm for installs';
+const correction = [{ session_id: 's1', seq: 7, quote: QUOTE }];
+const ciSource = [{ session_id: 's1', seq: 8, quote: 'CI runs on every push.' }];
+const deletion = [{ session_id: 's1', seq: 9, quote: 'Remove the old project note, it is obsolete.' }];
 
 function toolCall(id, name, args) {
   return { type: 'block-end', block: { type: 'tool-call', id, name, arguments: args } };
@@ -54,7 +57,7 @@ async function dreamEnv(t, overrides = {}, make = toolsEnv) {
     filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir, createdAt: now - 1000, lastSeq: 9 } }],
     searchEvents: async () => ({ items: [{ seq: 7, snippet: QUOTE }] }),
     readEvent: async ({ seq }) => ({
-      events: seq === 7 ? [{ seq: 7, type: 'user/message', data: { content: [{ type: 'text', text: `${QUOTE} last week.` }] } }] : [],
+      events: seq === 7 ? [{ seq: 7, type: 'user/message', data: { content: [{ type: 'text', text: `${QUOTE} last week.` }] } }] : [{ seq, type: 'user/message', data: { content: [{ type: 'text', text: seq === 8 ? ciSource[0].quote : deletion[0].quote }] } }],
     }),
   };
   return env;
@@ -79,9 +82,9 @@ test('a Dream write carrying a secret is refused and never reaches the copy', as
 test('undo after a switch restores changed and removed pages and trashes added ones', async (t) => {
   const env = await dreamEnv(t);
   script(env, [[
-    { name: 'memory_write', arguments: { file: 'project_deploy.md', body: 'Use pnpm release.' } },
-    { name: 'memory_write', arguments: { file: 'project_ci.md', type: 'project', description: 'CI runs on push', body: 'CI runs on every push.' } },
-    { name: 'memory_delete', arguments: { file: 'project_old.md' } },
+    { name: 'memory_write', arguments: { file: 'project_deploy.md', body: 'Use pnpm release.', citations: correction } },
+    { name: 'memory_write', arguments: { file: 'project_ci.md', type: 'project', description: 'CI runs on push', body: 'CI runs on every push.', citations: ciSource } },
+    { name: 'memory_delete', arguments: { file: 'project_old.md', citations: deletion } },
   ]]);
   assert.equal((await dream(env, 'run-undo')).ready, true);
   assert.equal((await env.runtime.switchDream({ pctx: env.pctx })).ok, true);
@@ -107,9 +110,9 @@ test('undo after a switch restores changed and removed pages and trashes added o
 
 test('undo refuses when a page Dream changed was edited after the switch', async (t) => {
   const env = await dreamEnv(t);
-  script(env, [[{ name: 'memory_write', arguments: { file: 'project_deploy.md', body: 'Use pnpm release.' } }]]);
+  script(env, [[{ name: 'memory_write', arguments: { file: 'project_deploy.md', body: 'Use pnpm release.', citations: correction } }]]);
   await dream(env, 'run-undo-conflict');
-  await env.runtime.switchDream({ pctx: env.pctx });
+  assert.equal((await env.runtime.switchDream({ pctx: env.pctx })).ok, true);
   await env.pctx.store.updateEntry('project_deploy.md', { content: 'Human rewrite after the switch.' });
   const undone = await env.runtime.undoLastDream(env.pctx);
   assert.equal(undone.ok, false);
@@ -118,9 +121,9 @@ test('undo refuses when a page Dream changed was edited after the switch', async
 
 test('undo refuses to overwrite a removed page that was recreated after the switch', async (t) => {
   const env = await dreamEnv(t);
-  script(env, [[{ name: 'memory_delete', arguments: { file: 'project_old.md' } }]]);
+  script(env, [[{ name: 'memory_delete', arguments: { file: 'project_old.md', citations: deletion } }]]);
   await dream(env, 'run-undo-recreated');
-  await env.runtime.switchDream({ pctx: env.pctx });
+  assert.equal((await env.runtime.switchDream({ pctx: env.pctx })).ok, true);
   await env.pctx.store.saveEntry({ name: 'Old', type: 'project', description: 'Written again by hand', content: 'new text', source: { via: 'test' } });
   const undone = await env.runtime.undoLastDream(env.pctx);
   assert.equal(undone.ok, false);
@@ -157,7 +160,7 @@ test('only citations count as evidence, and each one is checked against the sess
 test('warn mode stops the agent at the token cap and keeps the flagged copy', async (t) => {
   const env = await dreamEnv(t, { dreamMaxTotalTokens: 5_000, dreamCostMode: 'warn' });
   const steps = Array.from({ length: 10 }, () => [{ name: 'memory_index', arguments: {} }]);
-  steps[0] = [{ name: 'memory_write', arguments: { file: 'project_deploy.md', body: 'Use pnpm release.' } }];
+  steps[0] = [{ name: 'memory_write', arguments: { file: 'project_deploy.md', body: 'Use pnpm release.', citations: correction } }];
   const { calls } = script(env, steps, { usage: { inputTokens: 2_000, outputTokens: 500, totalTokens: 2_500 } });
   const result = await dream(env, 'run-cap-warn');
   assert.equal(calls(), 2, 'no model call after the cap is reached');
@@ -169,7 +172,7 @@ test('warn mode stops the agent at the token cap and keeps the flagged copy', as
 test('block mode throws away a copy built past the token cap', async (t) => {
   const env = await dreamEnv(t, { dreamMaxTotalTokens: 5_000, dreamCostMode: 'block' });
   const steps = Array.from({ length: 10 }, () => [{ name: 'memory_index', arguments: {} }]);
-  steps[0] = [{ name: 'memory_write', arguments: { file: 'project_deploy.md', body: 'Use pnpm release.' } }];
+  steps[0] = [{ name: 'memory_write', arguments: { file: 'project_deploy.md', body: 'Use pnpm release.', citations: correction } }];
   script(env, steps, { usage: { totalTokens: 2_500 } });
   const result = await dream(env, 'run-cap-block');
   assert.equal(result.error, 'cost-limit-exceeded');

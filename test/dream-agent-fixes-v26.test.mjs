@@ -46,8 +46,14 @@ async function dreamEnv(t, sessions = [{ id: 's1', lastSeq: 9 }]) {
   env.sessions = headers;
   env.host.services.sessionQuery = {
     filterSessions: async () => env.sessions,
+    listEvents: async (id) => {
+      const header = env.sessions.find((item) => item.header?.id === id)?.header;
+      const last = Number(header?.lastSeq) || 0;
+      return Array.from({ length: last + 1 }, (_, seq) => ({ seq }));
+    },
     searchEvents: async () => ({ items: [] }),
-    readEvent: async () => ({ events: [] }),
+    readEvent: async ({ seq }) => ({ events: [{ seq, type: 'user/message',
+      data: { content: [{ type: 'text', text: 'Keep answers short. Use bullet lists. No tables.' }] } }] }),
   };
   return env;
 }
@@ -57,7 +63,7 @@ const styleFile = 'feedback_style.md';
 test('a write without type or description keeps the page metadata', async (t) => {
   const env = await dreamEnv(t);
   assert.equal(await exists(path.join(env.pctx.paths.memoryDir, styleFile)), true);
-  script(env, [[{ name: 'memory_write', arguments: { file: styleFile, body: 'Keep answers short. Use bullet lists.' } }]]);
+  script(env, [[{ name: 'memory_write', arguments: { file: styleFile, body: 'Keep answers short. Use bullet lists.', citations: [{ session_id: 's1', seq: 1, quote: 'Use bullet lists.' }] } }]]);
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-meta' });
   assert.equal(result.ready, true);
   const switched = await env.runtime.switchDream({ pctx: env.pctx });
@@ -68,25 +74,18 @@ test('a write without type or description keeps the page metadata', async (t) =>
   assert.match(await env.pctx.store.indexText('project'), /Answer in short sentences/u);
 });
 
-test('a run with nothing to change still marks its sessions reviewed', async (t) => {
+test('a run with nothing to change does not mark unread sessions reviewed', async (t) => {
   const env = await dreamEnv(t);
   script(env, [[]]);
   const first = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-review-1' });
   assert.equal(first.skipReason, 'nothing-new');
   const mark = env.pctx.state.snapshot().dreamProcessedSessions.find((item) => item.id === 's1');
-  assert.equal(mark?.seq, 9);
-  assert.equal(mark?.partial, undefined);
+  assert.equal(mark, undefined, 'no session_done means the session stays unread');
 
-  // Unchanged session: not a candidate again.
-  let prompts = script(env, [[]]);
+  // Still a candidate on the next run.
+  const prompts = script(env, [[]]);
   await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-review-2' });
-  assert.ok(!prompts[0].includes('s1'), 'a reviewed session must not be offered again');
-
-  // The session grew: it comes back, with the point to read from.
-  env.sessions = [{ header: { id: 's1', cwd: env.workspaceDir, createdAt: now - 1000, lastSeq: 20 } }];
-  prompts = script(env, [[]]);
-  await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-review-3' });
-  assert.match(prompts[0], /s1 .*new events after seq 9/u);
+  assert.match(prompts[0], /s1/u, 'an unread session is offered again');
 });
 
 test('a run cut short by the turn cap keeps unread sessions eligible', async (t) => {
@@ -100,12 +99,12 @@ test('a run cut short by the turn cap keeps unread sessions eligible', async (t)
   assert.equal(mark, undefined);
 });
 
-test('a discarded change is remembered and shown to the next Dream', async (t) => {
+test('an explicitly rejected change is remembered and shown to the next Dream', async (t) => {
   const env = await dreamEnv(t);
   script(env, [[{ name: 'memory_write', arguments: { file: styleFile, description: 'Answer in long essays', body: 'Write long essays.' } }]]);
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-reject' });
   assert.equal(result.ready, true);
-  const discarded = await env.runtime.discardDream({ pctx: env.pctx });
+  const discarded = await env.runtime.switchDream({ pctx: env.pctx, reject: [styleFile] });
   assert.equal(discarded.discarded, true);
   const rejected = env.pctx.state.snapshot().dreamRejected;
   assert.ok(rejected.some((item) => item.includes(styleFile) && item.includes('Answer in long essays')), JSON.stringify(rejected));
@@ -120,7 +119,7 @@ test('a discarded change is remembered and shown to the next Dream', async (t) =
 test('a note created during the run neither fails the run nor gets removed by the switch', async (t) => {
   const env = await dreamEnv(t);
   let lateFile = '';
-  script(env, [[{ name: 'memory_write', arguments: { file: styleFile, body: 'Keep answers short. No tables.' } }]], {
+  script(env, [[{ name: 'memory_write', arguments: { file: styleFile, body: 'Keep answers short. No tables.', citations: [{ session_id: 's1', seq: 1, quote: 'No tables.' }] } }]], {
     before: async (call) => {
       if (call !== 1) return;
       const saved = await env.pctx.store.saveEntry({

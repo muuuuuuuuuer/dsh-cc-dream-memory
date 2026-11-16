@@ -37,7 +37,7 @@ const EXTRACT_SYSTEM_PROMPT = [
   'You have memory_read, memory_search, memory_save and memory_update. Use them like the main assistant does:',
   '- Read or search an existing note before writing; update or merge it instead of creating a near-duplicate.',
   '- Save only knowledge a future session cannot recover from the repository, its history, or its instruction files.',
-  '- Types: user (stable preferences/role), feedback (a correction or confirmed approach; state the rule, then **Why:** and **How to apply:**), project (ongoing goals/decisions/deadlines the repo does not record), reference (where external information lives).',
+  '- Types: user (who the user is: role/expertise), feedback (how the user wants you to work: a correction, a confirmed approach, or answer style; state the rule, then **Why:** and **How to apply:**), project (goals/decisions/deadlines/release or run facts the repo does not record), reference (where external information lives).',
   '- Never save secrets, credentials, one-off task chatter, code patterns, file paths, repository structure, git history, or generic debugging recipes.',
   '- Write dates as absolute dates. Do not invent facts: use only the transcript and the notes you read.',
   '- At most ' + '{{MAX_ITEMS}}' + ' memory_save calls. If nothing is durable, save nothing and reply DONE.',
@@ -71,7 +71,7 @@ function execFor(agent, sessionId, internal = false) {
  * Execute one tool call. Save/update are forced to inference+low confidence:
  * the extractor must not claim the user said something verbatim.
  */
-async function executeTool(runtime, sessionId, agent, call) {
+async function executeTool(runtime, sessionId, agent, call, memoryReadHashes) {
   if (!TOOL_NAMES.includes(call.name)) {
     return { ok: false, error: 'unknown-tool', message: call.name };
   }
@@ -89,7 +89,16 @@ async function executeTool(runtime, sessionId, agent, call) {
     delete args.evidence;
     args.name = oneLine(args.name, NAME_MAX);
     args.description = oneLine(args.description || args.content, DESCRIPTION_MAX);
-    args.content = String(args.content ?? '').slice(0, CONTENT_MAX);
+    args.content = String(args.content ?? '');
+    // Refuse instead of cutting: a cut note saves fine and the tail is lost
+    // without anyone knowing. The model gets the reason and can retry.
+    if (args.content.length > CONTENT_MAX) {
+      return {
+        ok: false,
+        error: 'TOO_LONG',
+        message: `content is ${args.content.length} characters; the limit is ${CONTENT_MAX}. Nothing was saved. Shorten it, or split it into separate notes, and save again.`,
+      };
+    }
   } else if (call.name === 'memory_update') {
     exec = execFor(agent, sessionId, true);
     args.basis = 'inference';
@@ -98,12 +107,11 @@ async function executeTool(runtime, sessionId, agent, call) {
     delete args.evidence;
     // Auto-extraction may update a note; it must never delete one.
     delete args.delete;
-    delete args.expectedHash;
   } else {
     exec = execFor(agent, sessionId);
   }
   try {
-    return await definition.execute(args, exec);
+    return await definition.execute(args, { ...exec, internal: true, memoryReadHashes });
   } catch (error) {
     return { ok: false, error: 'TOOL_FAILED', message: String(error?.message ?? error) };
   }
@@ -126,7 +134,8 @@ export async function runAutoExtract({ ctx, runtime, pctx, sessionId, agent, tri
     warn('auto-extract readSession', error);
     return { ok: false, reason: 'read-failed' };
   }
-  const persisted = Number(pctx?.state?.snapshot?.().extractSeqs?.[sessionId]) || 0;
+  const checkpoint = pctx?.state?.snapshot?.();
+  const persisted = Number(checkpoint?.extractSeqs?.[sessionId]) || 0;
   const since = Math.max(Number(runtime.extractCursors?.get(sessionId) ?? 0) || 0, persisted);
   const fresh = Array.isArray(log?.events)
     ? log.events.filter((event) => (Number(event?.seq) || 0) > since)
@@ -134,17 +143,14 @@ export async function runAutoExtract({ ctx, runtime, pctx, sessionId, agent, tri
   if (fresh.length === 0) return { ok: false, reason: 'no-new-events' };
   // Oldest unread part first: a backlog longer than the budget is read over
   // the next turns instead of losing its head to the cursor.
-  const [chunk, ...rest] = chunkTranscript(buildSessionTranscript(fresh), {
+  const [chunk] = chunkTranscript(buildSessionTranscript(fresh), {
     chunkChars: config.autoExtractMaxChars,
     toolCharsPerChunk: TOOL_CHARS,
+    resume: checkpoint?.extractOffsets?.[sessionId],
   });
   const tail = chunk?.text ?? '';
-  if (tail.trim().length < 40) return { ok: false, reason: 'empty-transcript' };
-  // The cursor is per event: a single message bigger than the budget is read
-  // up to the budget once, then passed, so it cannot pin the cursor forever.
-  const maxSeq = rest.length > 0
-    ? Math.max(chunk.lastSeq, chunk.firstSeq)
-    : fresh.reduce((max, event) => Math.max(max, Number(event?.seq) || 0), 0);
+  if (!tail.trim()) return { ok: false, reason: 'empty-transcript' };
+  const maxSeq = Math.max(since, chunk.lastSeq);
 
   const model = resolveModel(hostCtx, {
     provider: config.autoExtractProvider,
@@ -162,8 +168,10 @@ export async function runAutoExtract({ ctx, runtime, pctx, sessionId, agent, tri
   }
 
   const maxItems = Math.max(1, Number(config.autoExtractMaxItems) || 5);
+  const rules = runtime.rulesFor?.(pctx)?.text || '';
   const prompt = [
     'Extract durable memories from the turn transcript below.',
+    rules.trim() === '' ? '' : `Project memory rules (follow these over your defaults):\n${rules}`,
     '',
     indexText.trim() === ''
       ? 'The existing index is empty.'
@@ -181,6 +189,8 @@ export async function runAutoExtract({ ctx, runtime, pctx, sessionId, agent, tri
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   let saved = 0;
   let results = [];
+  const memoryReadHashes = new Map();
+  const pendingWrites = new Set();
   try {
     const loop = await runToolLoop({
       ctx: hostCtx,
@@ -193,31 +203,36 @@ export async function runAutoExtract({ ctx, runtime, pctx, sessionId, agent, tri
       purpose: 'cc-memory-extract',
       signal: controller.signal,
       executeTool: async (call) => {
-        if ((call.name === 'memory_save' || call.name === 'memory_update') && saved >= maxItems) {
+        const write = call.name === 'memory_save' || call.name === 'memory_update';
+        const key = String(call.arguments?.file ?? call.arguments?.name ?? call.name);
+        if (write && saved >= maxItems) {
+          pendingWrites.add(key);
           return { ok: false, error: 'limit-reached', message: `at most ${maxItems} writes per turn` };
         }
-        const result = await executeTool(runtime, sessionId, agent, call);
-        if (call.name === 'memory_save' || call.name === 'memory_update') {
-          if (result?.ok !== false) {
+        const result = await executeTool(runtime, sessionId, agent, call, memoryReadHashes);
+        if (write) {
+          const target = result?.existingFile ?? key;
+          if (result?.ok === true || result?.written === true) {
+            pendingWrites.delete(key);
+            pendingWrites.delete(result.file);
             saved += 1;
             results.push({ name: call.arguments?.name ?? call.arguments?.file ?? '', ...result });
+          } else if (result?.error !== 'DUPLICATE' && result?.error !== 'SECRET_DETECTED') {
+            pendingWrites.add(target);
           }
         }
         return result;
       },
     });
-    if (saved === 0) {
-      // A model that answered DONE judged the turn: nothing durable, move on.
-      // Only a loop cut off by the turn cap is unfinished and retried.
-      if (loop.stopped !== 'stop') {
-        return { ok: false, reason: 'max-turns', model, usage: loop.usage };
-      }
-      runtime.extractCursors?.set(sessionId, maxSeq);
-      await pctx?.state?.noteExtractSeq?.(sessionId, maxSeq);
-      return { ok: false, reason: 'no-writes', model, usage: loop.usage, maxSeq };
+    if (loop.stopped !== 'stop') {
+      return { ok: false, reason: loop.stopped, written: saved, model, usage: loop.usage };
     }
+    if (pendingWrites.size > 0) {
+      return { ok: false, reason: 'write-incomplete', written: saved, model, usage: loop.usage };
+    }
+    await pctx?.state?.noteExtractSeq?.(sessionId, maxSeq, chunk.nextOffset);
     runtime.extractCursors?.set(sessionId, maxSeq);
-    await pctx?.state?.noteExtractSeq?.(sessionId, maxSeq);
+    if (saved === 0) return { ok: false, reason: 'no-writes', model, usage: loop.usage, maxSeq };
     return {
       ok: true,
       mode: 'direct',

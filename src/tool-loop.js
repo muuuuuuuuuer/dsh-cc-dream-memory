@@ -62,6 +62,10 @@ function textOf(content) {
     .join('');
 }
 
+/** Host message for a request that never got a usable response. */
+const TRANSPORT_FAILURE_RE = /\btransport failed\b/iu;
+const TRANSPORT_RETRY_DELAY_MS = 1_000;
+
 /**
  * @param {{
  *   ctx: object,
@@ -78,7 +82,7 @@ function textOf(content) {
  *   maxTotalTokens?: number,
  * }} options `maxTotalTokens` (0 = off) stops before the next model call once
  *   the reported usage reaches it; the tools of the last turn still ran.
- * @returns {Promise<{text:string, turns:number, toolCalls:Array<object>, usage:object|null, stopped:'stop'|'max-turns'|'budget'}>}
+ * @returns {Promise<{text:string, turns:number, toolCalls:Array<object>, usage:object|null, stopped:string}>}
  */
 export async function runToolLoop({
   ctx,
@@ -111,61 +115,81 @@ export async function runToolLoop({
   const budget = Math.max(0, Math.trunc(Number(maxTotalTokens) || 0));
 
   while (turns < cap) {
+    signal?.throwIfAborted();
     if (budget > 0 && totalOf(usage) >= budget) return { text, turns, toolCalls: calls, usage, stopped: 'budget' };
     turns += 1;
-    const stream = llm.stream({
-      provider: model.provider,
-      model: model.model,
-      messages,
-      maxTokens,
-      purpose,
-      ...(system ? { system } : {}),
-      ...(tools.length > 0 ? { tools } : {}),
-      ...(signal ? { signal } : {}),
-      ...(model.reasoningEffort !== undefined ? { reasoningEffort: model.reasoningEffort } : {}),
-    });
-    if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') {
-      throw new Error('llm.stream did not return an async iterable');
-    }
+    // One model turn. A transport failure (dropped connection, gateway error)
+    // is retried once; the partial turn is thrown away, so nothing is doubled.
+    const streamTurn = async () => {
+      const stream = llm.stream({
+        provider: model.provider,
+        model: model.model,
+        messages,
+        maxTokens,
+        purpose,
+        ...(system ? { system } : {}),
+        ...(tools.length > 0 ? { tools } : {}),
+        ...(signal ? { signal } : {}),
+        ...(model.reasoningEffort !== undefined ? { reasoningEffort: model.reasoningEffort } : {}),
+      });
+      if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') {
+        throw new Error('llm.stream did not return an async iterable');
+      }
 
-    const blocks = new Map();
-    let assistantText = '';
-    let finishKind = '';
-    for await (const chunk of stream) {
-      if (!chunk || typeof chunk !== 'object') continue;
-      if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
-        assistantText += chunk.text;
-      } else if (chunk.type === 'tool-call-delta') {
-        const key = chunk.id ?? chunk.index ?? `call-${blocks.size}`;
-        const current = blocks.get(key) || { type: 'tool-call', id: String(key), name: '', arguments: '' };
-        if (typeof chunk.name === 'string' && chunk.name !== '') current.name = chunk.name;
-        if (typeof chunk.argumentsDelta === 'string') current.arguments += chunk.argumentsDelta;
-        blocks.set(key, current);
-      } else if (chunk.type === 'block-end' && chunk.block?.type === 'tool-call') {
-        const block = chunk.block;
-        const key = block.id ?? `call-${blocks.size}`;
-        blocks.set(key, {
-          type: 'tool-call',
-          id: String(key),
-          name: String(block.name ?? ''),
-          arguments: typeof block.arguments === 'string' ? block.arguments : JSON.stringify(block.arguments ?? {}),
-        });
-      } else if (chunk.type === 'usage') {
-        usage = mergeUsage(usage, chunk.usage);
-        if (typeof onUsage === 'function') onUsage(chunk.usage);
-      } else if (chunk.type === 'finish') {
-        finishKind = chunk.reason?.kind ?? '';
-        if (finishKind === 'error' || finishKind === 'aborted') {
-          const failure = chunk.reason?.failure;
-          const error = new Error((failure && failure.message) || `llm request ${finishKind}`);
-          if (failure && failure.code) error.code = failure.code;
-          error.name = finishKind === 'aborted' ? 'AbortError' : 'LlmError';
-          throw error;
+      const blocks = new Map();
+      let assistantText = '';
+      let finishKind = '';
+      for await (const chunk of stream) {
+        if (!chunk || typeof chunk !== 'object') continue;
+        if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
+          assistantText += chunk.text;
+        } else if (chunk.type === 'tool-call-delta') {
+          const key = chunk.id ?? chunk.index ?? `call-${blocks.size}`;
+          const current = blocks.get(key) || { type: 'tool-call', id: String(key), name: '', arguments: '' };
+          if (typeof chunk.name === 'string' && chunk.name !== '') current.name = chunk.name;
+          if (typeof chunk.argumentsDelta === 'string') current.arguments += chunk.argumentsDelta;
+          blocks.set(key, current);
+        } else if (chunk.type === 'block-end' && chunk.block?.type === 'tool-call') {
+          const block = chunk.block;
+          const key = block.id ?? `call-${blocks.size}`;
+          blocks.set(key, {
+            type: 'tool-call',
+            id: String(key),
+            name: String(block.name ?? ''),
+            arguments: typeof block.arguments === 'string' ? block.arguments : JSON.stringify(block.arguments ?? {}),
+          });
+        } else if (chunk.type === 'usage') {
+          usage = mergeUsage(usage, chunk.usage);
+          if (typeof onUsage === 'function') onUsage(chunk.usage);
+        } else if (chunk.type === 'finish') {
+          finishKind = chunk.reason?.kind ?? '';
+          if (finishKind === 'error' || finishKind === 'aborted') {
+            const failure = chunk.reason?.failure;
+            const error = new Error((failure && failure.message) || `llm request ${finishKind}`);
+            if (failure && failure.code) error.code = failure.code;
+            error.name = finishKind === 'aborted' ? 'AbortError' : 'LlmError';
+            throw error;
+          }
         }
       }
+      return { blocks, assistantText, finishKind };
+    };
+    let turn;
+    try {
+      turn = await streamTurn();
+    } catch (error) {
+      if (error?.name === 'AbortError' || signal?.aborted || !TRANSPORT_FAILURE_RE.test(String(error?.message ?? ''))) throw error;
+      await new Promise((resolve) => setTimeout(resolve, TRANSPORT_RETRY_DELAY_MS));
+      signal?.throwIfAborted();
+      turn = await streamTurn();
     }
+    const { blocks, assistantText, finishKind } = turn;
 
     text = assistantText.trim();
+    signal?.throwIfAborted();
+    if (finishKind !== 'stop' && finishKind !== 'tool-calls') {
+      return { text, turns, toolCalls: calls, usage, stopped: finishKind || 'incomplete-stream' };
+    }
     const toolCalls = [...blocks.values()]
       .filter((block) => block.name !== '')
       .map((block) => ({
@@ -174,7 +198,7 @@ export async function runToolLoop({
         arguments: argumentsOf(block.arguments),
       }));
     if (toolCalls.length === 0) {
-      return { text, turns, toolCalls: calls, usage, stopped: 'stop' };
+      return { text, turns, toolCalls: calls, usage, stopped: finishKind === 'stop' ? 'stop' : 'incomplete-tool-call' };
     }
 
     messages.push({
@@ -193,6 +217,7 @@ export async function runToolLoop({
     });
 
     for (const call of toolCalls) {
+      signal?.throwIfAborted();
       calls.push(call);
       let result;
       try {

@@ -70,6 +70,7 @@ test('agent searches sessions, reads memory on demand, and writes only the shado
             type: 'project',
             description: 'Release process uses pnpm',
             body: 'Use pnpm for installs. ^[s1#7, 2026-11-15]',
+            citations: [{ session_id: 's1', seq: 7, quote: 'We moved to pnpm for installs' }],
           },
         },
       ],

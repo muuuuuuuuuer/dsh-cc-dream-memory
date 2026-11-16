@@ -123,6 +123,7 @@ test('v23 first turn: an explicit correction refreshes the summary and keeps it 
     exec,
   );
   assert.equal(saved.written, true, JSON.stringify(saved));
+  await env.definitions.get('memory_read').execute({ file: saved.file }, exec);
   const corrected = await updateTool(env).execute(
     {
       file: saved.file,

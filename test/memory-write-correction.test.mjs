@@ -67,6 +67,7 @@ test('v21 correction: explicit user correction activates the new value and keeps
     content: seededBody(),
   });
   const before = today();
+  await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute(
     { file: seed.file, content: 'Always use npm ci for dependency commands.', basis: 'user-explicit' },
     exec,
@@ -117,11 +118,13 @@ test('v21 correction: a second explicit correction keeps both superseded values'
     description: 'how to install dependencies',
     content: seededBody(),
   });
+  await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const first = await update(env).execute(
     { file: seed.file, content: 'Always use npm ci for dependency commands.', basis: 'user-explicit' },
     exec,
   );
   assert.equal(first.ok, true, JSON.stringify(first));
+  await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const second = await update(env).execute(
     { file: seed.file, content: 'Always use bun for dependency commands.', basis: 'user-explicit' },
     exec,
@@ -149,6 +152,7 @@ test('v21 correction: new engineering notes replace the old note with the same l
     description: 'how to install dependencies',
     content: seededBody(),
   });
+  await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute(
     {
       file: seed.file,
@@ -173,6 +177,7 @@ test('v21 correction: an explicit correction writes the composed trace directly'
     description: 'reply language',
     content: '用户喜欢中文回复。',
   });
+  await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute(
     { file: seed.file, content: '用户喜欢英文回复。', basis: 'user-explicit', evidence: '用户喜欢中文回复。' },
     exec,
@@ -194,6 +199,7 @@ test('v21 correction: a legacy engineering-note update without basis writes the 
     description: 'd',
     content: 'Old note body.',
   });
+  await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute({ file: seed.file, content: 'New note body.' }, exec);
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.basis, 'inference', 'an omitted basis is the model inference');
@@ -211,6 +217,7 @@ test('v21 correction: forwarded or inferred updates write directly without the c
     content: 'STATUS: current\n用户喜欢中文回复。',
   });
   for (const basis of ['forwarded', 'inference']) {
+    await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
     const result = await update(env).execute(
       { file: seed.file, content: '用户讨厌中文回复。', basis, force: true },
       exec,
@@ -234,6 +241,7 @@ test('v21 correction: forwarded engineering-note update writes directly without 
     description: 'deploy command',
     content: 'Deploy with make release.',
   });
+  await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute(
     { file: seed.file, content: 'Deploy previews with make release-staging.', basis: 'forwarded' },
     exec,
@@ -259,6 +267,7 @@ test('v21 correction: earlier Dream-style inline Superseded lines are carried, n
       'VERIFY: call the real entry point',
     ].join('\n'),
   });
+  await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute(
     { file: seed.file, content: 'Register routes through the server entry point and verify them.', basis: 'user-explicit' },
     exec,
@@ -283,6 +292,7 @@ test('v21 correction: rename + explicit correction keeps the trace on the owning
     description: 'indentation preference',
     content: 'Use tabs for indentation.',
   });
+  await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute(
     { file: seed.file, name: 'indentation rule', content: 'Use spaces for indentation.', basis: 'user-explicit', evidence: 'Use spaces for indentation.' },
     exec,
@@ -306,6 +316,7 @@ test('v21 correction: an unknown basis is rejected and the file is unchanged', a
     description: 'reply language',
     content: '用户喜欢中文回复。',
   });
+  await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute(
     { file: seed.file, content: '用户讨厌中文回复。', basis: 'guessed' },
     exec,

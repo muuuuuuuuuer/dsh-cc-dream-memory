@@ -60,7 +60,7 @@ Notes go stale. Here, three sessions changed the facts while five older notes st
   <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/dream-before-after.png" width="860" alt="The Memories tab before and after a Dream. Before: five notes, with two duplicates and stale deploy and freeze facts. After: four notes, with the duplicates merged, the facts corrected and the handoff format added.">
 </p>
 
-The screenshots show an earlier Dream interface. The current Dream stages one copy. Review its changes, then switch to that copy or discard it. One command undoes the switch.
+The screenshots show an earlier Dream interface. Dream stages a copy for review. Fact changes need a checked session quote. You can review reorganizations that preserve existing facts without a new quote. Deferring makes the sessions eligible for another review, while rejecting records a decision. You can undo a switch.
 
 ## The interface
 

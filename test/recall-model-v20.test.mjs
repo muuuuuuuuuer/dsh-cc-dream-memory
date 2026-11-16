@@ -122,10 +122,12 @@ test('the selector runs once per user turn, not once per model step', async (t) 
   assert.equal(second.messages.length, 2);
   assert.equal(calls.length, 1);
 
-  // A genuinely new user message starts a new selector turn.
+  // A new user message with every candidate already shown sends no new files
+  // and does not spend another selector call.
   const nextUser = { ...userMessage('上线前要检查什么'), id: 'u2' };
-  await agentCtx.preStep([nextUser]);
-  assert.equal(calls.length, 2);
+  const third = await agentCtx.preStep([nextUser]);
+  assert.equal(calls.length, 1);
+  assert.equal(third.messages.length, 1);
 });
 
 test('recallMode off disables the selector', async (t) => {

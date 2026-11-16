@@ -29,6 +29,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { currentBody, isCurrentPage, HISTORY_HEADING_RE, memoryStatusOf, SUPERSEDED_LINE_RE } from './memory-body.js';
 import { recordRecall } from './metrics.js';
+import { tokenize } from './policy.js';
 import { resolveModel, streamText, describeLlmError } from './llm-call.js';
 
 /** `source.kind` of attached memories; Dream ignores it like any injected context. */
@@ -52,30 +53,16 @@ const WRAPPER_CLOSE = '</system-reminder>';
 /**
  * Dedupe key of one memory version: scope + filename + version.
  *
- * The version is a content hash for pages that were actually read (see
- * `contentVersion`), or the frontmatter `modified` timestamp for metadata-only
- * entries. Including it means a corrected version of the same file can be
+ * Use the same metadata revision before and after selection. Including it
+ * means a corrected version of the same file can be
  * recalled later in the same session while the old version stays deduplicated.
  *
- * @param {{file?:string,version?:string,modified?:string}} entry
+ * @param {{project?:string,scope?:string,file?:string,revision?:string,modified?:string}} entry
  * @returns {string}
  */
 export function recallKey(entry) {
   const file = String(entry?.file ?? '');
-  const version = typeof entry?.version === 'string' && entry.version !== ''
-    ? entry.version
-    : (typeof entry?.modified === 'string' ? entry.modified : '');
-  return version === '' ? file : `${file}@${version}`;
-}
-
-/**
- * Content-addressed version of a just-read page, so two writes that share a
- * millisecond still produce different versions.
- * @param {{raw?:string,body?:string}} read
- */
-function contentVersion(read) {
-  const raw = typeof read?.raw === 'string' ? read.raw : String(read?.body ?? '');
-  return `h${createHash('sha256').update(raw, 'utf8').digest('hex').slice(0, 16)}`;
+  return JSON.stringify([entry?.project ?? '', entry?.scope ?? 'project', file, entry?.revision ?? entry?.modified ?? '']);
 }
 
 /** The currentness marker and predicate live with the body rules. */
@@ -250,9 +237,10 @@ async function readRecallItem(store, entry) {
     return {
       file: entry.file,
       scope: entry.scope,
+      project: entry.project,
       modified: typeof entry.modified === 'string' ? entry.modified : '',
       body: read.body,
-      version: contentVersion(read),
+      revision: read.revision ?? entry.revision,
     };
   } catch {
     return null;
@@ -275,11 +263,36 @@ function recentToolNames(messages, limit = 8) {
   return names;
 }
 
+/**
+ * Order catalog entries for the capped manifest, in place. Overlap with the
+ * user's message (words, CJK bigrams; single CJK characters count a little)
+ * comes first and recency breaks ties, so an old but relevant decision still
+ * reaches the selector when hundreds of newer pages exist. The model still
+ * makes the choice; this only decides what it gets to see.
+ * @param {object[]} entries
+ * @param {string} query
+ * @returns {object[]} the same array
+ */
+export function rankForQuery(entries, query) {
+  const wanted = tokenize(query);
+  const score = (entry) => {
+    if (wanted.size === 0) return 0;
+    const have = tokenize(`${entry?.name ?? ''}\n${entry?.description ?? ''}\n${String(entry?.file ?? '').replace(/[_-]+/gu, ' ')}`);
+    let total = 0;
+    for (const token of wanted) if (have.has(token)) total += token.startsWith('u:') ? 0.25 : 1;
+    return total;
+  };
+  const scores = new Map(entries.map((entry) => [entry, score(entry)]));
+  return entries.sort((a, b) => scores.get(b) - scores.get(a)
+    || String(b.modified ?? '').localeCompare(String(a.modified ?? ''))
+    || String(a.file ?? '').localeCompare(String(b.file ?? '')));
+}
+
 /** The compact manifest the selector sees, one line per candidate file. */
 export function recallManifest(entries, { shown = new Set(), maxCandidates = DEFAULT_MAX_CANDIDATES } = {}) {
   const lines = [];
   let chars = 0;
-  for (const entry of (Array.isArray(entries) ? entries : []).slice(0, Math.max(1, maxCandidates))) {
+  for (const entry of Array.isArray(entries) ? entries : []) {
     if (shown.has(recallKey(entry))) continue;
     const description = String(entry?.description ?? '').replace(/\s+/gu, ' ').trim().slice(0, MANIFEST_DESCRIPTION_CHARS);
     const date = String(entry?.modified ?? '').slice(0, 10);
@@ -444,7 +457,13 @@ export function attachRecall({ agent, agentCtx, runtime, config, shown = new Set
       const maxChars = Number(effective?.autoRecallMaxChars) > 0 ? Number(effective.autoRecallMaxChars) : DEFAULT_MAX_CHARS;
       const entries = [];
       const listed = await project.store.listEntries('project');
-      for (const entry of Array.isArray(listed) ? listed : []) entries.push({ ...entry, scope: 'project' });
+      for (const entry of Array.isArray(listed) ? listed : []) {
+        entries.push({ ...entry, scope: 'project', project: project.paths?.projectDir });
+      }
+      // The manifest is capped, so the order decides which pages the selector
+      // can see at all: pages that share words with this message first, then
+      // the most recently changed.
+      rankForQuery(entries, query);
       if (entries.length === 0) return decision;
       // From here the selector runs; mark the turn so later steps skip it even
       // when the call fails. A failed recall must not be retried every step.

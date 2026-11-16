@@ -105,7 +105,7 @@ $DSH_HOME/cc-memory/
 - `/memory history <file>` — **v10** 审计：provenance + changelog 相关行 + dream 引用
 - `/memory dream history` / `/memory dream undo` — **v10** Dream批次时间线 / 撤销最近一次 apply（恢复备份 + 新增文件移 trash + reconcile）
 - `/memory import <path>` / `/memory export <path>` — **v10** Claude Code 记忆导入 / 导出（含 rules 导出到 `.claude/rules`）
-- `/remember [--type=user|feedback|project|reference] [--scope=project|user] <内容>` — 自动命名取正文首行前 32 个字符（支持中文，不互相覆盖）
+- `/remember [--type=user|feedback|project|reference] [--force] <内容>` — 自动命名取正文首行前 32 个字符（支持中文，不互相覆盖，不在英文单词中间截断）。和已有记忆重复或矛盾时拒绝写入，加 `--force` 强制保存；会列出相关记忆供你核对
 
 开关类命令会写回插件配置行（依赖配置编辑器；保存后重载插件生效）。**`/memory plugin off` 与 UI 开关写的是运行时 override 文件，不重启插件、不影响其他功能注册，因此随时可以再打开。** 真正卸载/移除插件仍需 Plugin Manager 或 profile yml。
 

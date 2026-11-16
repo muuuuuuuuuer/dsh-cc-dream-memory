@@ -150,7 +150,7 @@ export function shapeManifest(base = {}) {
     startedAt: 0,
     updatedAt: 0,
     finishedAt: 0,
-    models: { analyzer: '', organizer: '' },
+    models: { agent: '' },
     input: { sessions: [], expectedUnits: 0, memoryFiles: 0 },
     usage: {},
     counts: { done: 0, failed: 0, pending: 0 },
@@ -193,6 +193,7 @@ export function summarizeRun(manifest, { running = false } = {}) {
     error: interrupted && !manifest.error ? 'stopped before finishing (the host process ended); run Dream again' : manifest.error,
     blockedReason: manifest.blockedReason,
     skipReason: manifest.skipReason,
+    sessionsReviewed: Number(manifest.sessionsReviewed) || 0,
     usage: manifest.usage,
     errors: manifest.errors ?? [],
     sessions: (manifest.input?.sessions ?? []).map((session) => ({

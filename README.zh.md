@@ -64,7 +64,7 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.20.0
   <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/dream-before-after.png" width="860" alt="Dream 前后的记忆列表。之前五条，有两条重复，部署和冻结信息已过时。之后四条，重复项已合并，信息已更正，并加入了交接格式。">
 </p>
 
-截图展示的是旧版界面。当前 Dream 生成一份副本，审阅后可切换或丢弃，一条命令就能撤销切换。
+截图展示的是旧版界面。当前 Dream 先生成副本。事实改动需要可核对的会话引用，原样搬运或重排已有事实可以直接审阅。暂缓会释放副本并保留会话以供以后复查，明确拒绝则会记录这次决定。切换后可以撤销。
 
 ## 界面
 

@@ -54,29 +54,40 @@ export function verificationHash(body) {
 }
 
 /**
+ * Current facts together with the headings they sit under, for deciding
+ * whether an edit kept the meaning. A heading changes what the lines below it
+ * say ("Likes > coffee" vs "Dislikes > coffee"), so each fact is keyed by its
+ * heading path. Only the bullet marker and surrounding whitespace are ignored.
+ *
+ * @param {string} body
+ * @returns {string[]} `"<heading path> » <fact>"`, or the bare fact outside any heading.
+ */
+export function currentFactsInContext(body) {
+  const headings = [];
+  const facts = [];
+  for (const raw of currentBody(body).split('\n')) {
+    const line = raw.trim();
+    const heading = /^(#{1,6})\s+(.*)$/u.exec(line);
+    if (heading) {
+      const level = heading[1].length;
+      while (headings.length > 0 && headings[headings.length - 1].level >= level) headings.pop();
+      const text = heading[2].replace(/\s+#+\s*$/u, '').replace(/\s+/gu, ' ').trim();
+      if (text !== '') headings.push({ level, text });
+      continue;
+    }
+    if (line === '' || FACT_METADATA_RE.test(line) || LINK_ONLY_RE.test(line) || SUPERSEDED_LINE_RE.test(line)) continue;
+    const fact = line.replace(/^(?:[-*+]\s+|\d+[.)]\s+)/u, '');
+    const path = headings.map((item) => item.text).join(' > ');
+    facts.push(path === '' ? fact : `${path} » ${fact}`);
+  }
+  return facts;
+}
+
+/**
  * Host-only: stamp a body as verified on `date`, replacing older stamps.
  * @param {unknown} body
  * @param {string} [date] YYYY-MM-DD
  */
-/**
- * Current factual lines of a memory body: the lines a reader takes as true now.
- * Metadata labels, headings and bare wiki links carry no fact of their own, and
- * `## History` / `- Superseded:` lines describe the past.
- *
- * @param {string} body
- * @returns {string[]}
- */
-export function currentFactLines(body) {
-  return currentBody(body)
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line !== ''
-      && !line.startsWith('#')
-      && !FACT_METADATA_RE.test(line)
-      && !LINK_ONLY_RE.test(line)
-      && !SUPERSEDED_LINE_RE.test(line));
-}
-
 export function stampVerification(body, date = new Date().toISOString().slice(0, 10)) {
   const content = stripVerification(body).replace(/\n+$/u, '');
   const hash = verificationHash(content);

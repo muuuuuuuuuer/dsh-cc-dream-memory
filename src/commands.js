@@ -14,6 +14,8 @@ import { VERSION } from './meta.js';
 import { recordRead } from './metrics.js';
 import { createStatusService, recordUserConfirmedSave } from './status.js';
 import { ensureCurrentStatus } from './write-review.js';
+import { evaluateWrite, textSimilarity } from './policy.js';
+import { loadPolicyEntries, policyCandidate } from './tools.js';
 import { applyProposals } from './auto-extract.js';
 import { listProposals, readProposal, removeProposal } from './inbox.js';
 
@@ -28,8 +30,10 @@ const MEMORY_TYPES = Object.freeze(['user', 'feedback', 'project', 'reference'])
 const TYPE_SET = new Set(MEMORY_TYPES);
 
 const MEMORY_HINT =
-  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|refresh|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|inbox list|inbox show <id>|inbox accept <id>|inbox discard <id>|dream on|off|dream status|dream estimate|dream history|dream undo|dream run [--focus <text>] [--memory-only]|dream switch [--reject <file,...>]|dream discard]';
-const REMEMBER_HINT = '[--type=user|feedback|project|reference] <text>';
+  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|refresh|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|inbox list|inbox show <id>|inbox accept <id>|inbox discard <id>|dream on|off|dream status|dream estimate|dream history|dream undo|dream run [--focus <text>] [--memory-only]|dream diff <file>|dream switch [--reject <file,...>] [--defer <file,...>] [--confirm <file,...>]|dream discard]';
+/** Notes this similar to a /remember are listed for the user to compare. */
+const RELATED_SIMILARITY = 0.35;
+const REMEMBER_HINT = '[--type=user|feedback|project|reference] [--force] <text>';
 
 function warn(scope, error) {
   // eslint-disable-next-line no-console
@@ -145,21 +149,27 @@ export function parseCommandLine(rawInput) {
 
 /**
  * Parse a `/remember` argument string into the note payload: optional
- * `--type=` flag followed by the free-form text.
+ * `--type=` / `--force` flags followed by the free-form text.
  *
  * The text is sliced from the original string so internal whitespace,
  * punctuation and newlines survive untouched.
  *
  * @param {unknown} rawInput
- * @returns {{type: string, text: string}}
+ * @returns {{type: string, text: string, force?: true}}
  */
 export function parseRememberInput(rawInput) {
   const raw = typeof rawInput === 'string' ? rawInput : '';
   const tokens = tokenize(raw);
   let type = 'user';
+  let force = false;
   let index = 0;
   while (index < tokens.length) {
     const token = tokens[index].value;
+    if (/^--force$/iu.test(token)) {
+      force = true;
+      index += 1;
+      continue;
+    }
     const match = /^--(type)(?:=(.*))?$/iu.exec(token);
     if (match === null) break;
     let value = match[2];
@@ -173,7 +183,7 @@ export function parseRememberInput(rawInput) {
     type = value.toLowerCase();
   }
   const text = raw.slice(tokens[index]?.start ?? raw.length).trim();
-  return { type, text };
+  return force ? { type, text, force } : { type, text };
 }
 
 /**
@@ -320,7 +330,14 @@ function deriveName(text) {
     .split(/\r?\n/u)
     .map((line) => line.trim())
     .find((line) => line !== '') ?? '';
-  const clipped = Array.from(first).slice(0, 32).join('').trim();
+  const chars = Array.from(first);
+  let clipped = chars.slice(0, 32).join('');
+  // Do not end the name in the middle of a Latin word ("make" -> "mak").
+  if (chars.length > 32 && /[\p{L}\p{N}]$/u.test(clipped) && /^[A-Za-z0-9]/u.test(chars[32])) {
+    const cut = clipped.search(/[A-Za-z0-9_-]+$/u);
+    if (cut > 0) clipped = clipped.slice(0, cut);
+  }
+  clipped = clipped.trim();
   return clipped === '' ? 'note' : clipped;
 }
 
@@ -628,7 +645,7 @@ export function registerCommands(ctx, runtime) {
     }
     if (snapshot.shadowPending && typeof snapshot.shadowPending === 'object') {
       const files = Array.isArray(snapshot.shadowPending.files) ? snapshot.shadowPending.files.length : 0;
-      lines.push(`pending dream result: ${files} file(s) to switch to (apply with /memory dream switch [--reject <file,...>], reject all with /memory dream discard)`);
+      lines.push(`pending dream result: ${files} file(s) to switch to (apply with /memory dream switch [--reject <file,...>] [--defer <file,...>] [--confirm <file,...>], defer with /memory dream discard)`);
     }
     if (typeof snapshot.lastDreamSummary === 'string' && snapshot.lastDreamSummary !== '') {
       lines.push(`last summary: ${truncate(snapshot.lastDreamSummary, 400)}`);
@@ -993,7 +1010,7 @@ export function registerCommands(ctx, runtime) {
       }
       if (snapshot.shadowPending && typeof snapshot.shadowPending === 'object') {
         const waiting = Array.isArray(snapshot.shadowPending.files) ? snapshot.shadowPending.files.length : 0;
-        lines.push(`pending dream result: ${waiting} file(s) (apply with /memory dream switch [--reject <file,...>], reject all with /memory dream discard)`);
+        lines.push(`pending dream result: ${waiting} file(s) (apply with /memory dream switch [--reject <file,...>] [--defer <file,...>] [--confirm <file,...>], defer with /memory dream discard)`);
       } else {
         lines.push('pending dream result: none');
       }
@@ -1005,9 +1022,7 @@ export function registerCommands(ctx, runtime) {
         const latest = runs[0];
         lines.push('');
         lines.push(`latest run: ${latest.runId} — ${latest.status}${latest.stage ? ` at ${latest.stage}` : ''}`);
-        lines.push(
-          `  units: ${latest.counts?.done ?? 0}/${latest.input?.expectedUnits ?? 0} done, ${latest.counts?.failed ?? 0} failed, ${latest.counts?.pending ?? 0} pending`,
-        );
+        lines.push(`  ${runProgressLine(latest)}`);
         if (latest.error) lines.push(`  error: ${truncate(latest.error, 240)}`);
       }
       lines.push('');
@@ -1072,14 +1087,44 @@ export function registerCommands(ctx, runtime) {
       }
       return ok(formatDreamRunStatus(response.result));
     }
+    if (sub === 'diff') {
+      // Read one pending change before deciding on it (needed for --confirm).
+      const file = positional[1] ?? '';
+      if (file === '') return fail('usage: /memory dream diff <file>');
+      const status = await collectStatus(invocation);
+      if (!status.ok) return fail(`cc-memory: ${status.error}`);
+      const pending = status.pctx.state.snapshot().shadowPending;
+      if (!pending) return fail('no pending dream result');
+      let detail;
+      try {
+        detail = await service.dreamDiff(status.pctx, pending.runId, file);
+      } catch (error) {
+        return fail(`dream diff: ${errorText(error)}`);
+      }
+      const proof = (pending.proofs ?? []).find((item) => item.file === file);
+      const lines = [`dream diff: ${file}`];
+      lines.push(proof && proof.kind !== 'missing' ? `source: ${proof.kind}` : 'source: none checked (apply only with --confirm)');
+      for (const item of detail.removedLines ?? []) lines.push(`- ${item.text}`);
+      for (const item of detail.addedLines ?? []) lines.push(`+ ${item.text}`);
+      for (const item of detail.evidence ?? []) {
+        lines.push(`evidence: ${item.memoryFile ?? `${item.sessionId}#${item.seq}`} — ${item.quote}${item.verified ? '' : ' (not checked)'}`);
+      }
+      for (const item of pending.rejectedBefore?.[file] ?? []) lines.push(`rejected before: ${item}`);
+      return ok(lines.join('\n'));
+    }
     if (sub === 'switch') {
       const status = await collectStatus(invocation);
       if (!status.ok) return fail(`cc-memory: ${status.error}`);
       let response;
       try {
         // `--reject a.md,b.md` keeps those files as they are; the rest is applied.
-        const reject = typeof flags.reject === 'string' ? flags.reject.split(',').map((file) => file.trim()).filter(Boolean) : [];
-        response = await service.dream(status.pctx, { agent: invocation.agent, action: 'switch', reject });
+        // `--defer` leaves files out without remembering a rejection; `--confirm`
+        // accepts files without a checked source after you read their diff.
+        const list = (value) => (typeof value === 'string' ? value.split(',').map((file) => file.trim()).filter(Boolean) : []);
+        const reject = list(flags.reject);
+        response = await service.dream(status.pctx, {
+          agent: invocation.agent, action: 'switch', reject, defer: list(flags.defer), confirm: list(flags.confirm),
+        });
       } catch (error) {
         return fail(`dream switch: ${errorText(error)}`);
       }
@@ -1098,7 +1143,7 @@ export function registerCommands(ctx, runtime) {
       }
       if (!response.ok) return fail(`dream discard: ${response.message || response.error}`);
       const result = response.result ?? {};
-      if (result.discarded === true) return ok('discarded the dream result; memory is unchanged');
+      if (result.discarded === true) return ok('deferred the dream result; its sessions remain eligible');
       return fail(`dream discard: ${result.reason || result.error || 'nothing to discard'}`);
     }
 
@@ -1396,6 +1441,34 @@ export function registerCommands(ctx, runtime) {
     const config = runtime.config;
     const name = deriveName(parsed.text);
     const description = firstLine(parsed.text);
+    let related = [];
+    if (parsed.force !== true) {
+      // The same gate as memory_save: a duplicate or an opposite fact stops the
+      // write and names the page that owns it. Pages on the same subject are
+      // listed so the user can see a contradiction the gate cannot detect.
+      try {
+        const candidate = policyCandidate({ name, type, description, content: parsed.text });
+        const entries = await loadPolicyEntries(pctx.store, 'project', '', candidate);
+        const decision = evaluateWrite({ candidate, entries, config });
+        if (decision?.action === 'duplicate' || decision?.action === 'conflict') {
+          const file = decision.action === 'duplicate' ? decision.existingFile : decision.conflicts?.[0]?.file;
+          return fail([
+            decision.action === 'duplicate'
+              ? `remember: ${file} already covers this; edit that note instead.`
+              : `remember: this contradicts ${file}; edit that note instead.`,
+            'Add --force to save it anyway.',
+          ].join('\n'));
+        }
+        related = entries
+          .map((entry) => ({ entry, score: textSimilarity(`${name}\n${parsed.text}`, `${entry.name}\n${entry.description}`) }))
+          .filter((item) => item.score >= RELATED_SIMILARITY)
+          .sort((left, right) => right.score - left.score)
+          .slice(0, 3)
+          .map((item) => item.entry);
+      } catch (error) {
+        console.warn('[cc-memory] remember: write check failed:', error?.message ?? error);
+      }
+    }
     try {
       const saved = await pctx.store.saveEntry({
         name,
@@ -1426,6 +1499,9 @@ export function registerCommands(ctx, runtime) {
           ? 'verification: current (first-turn summary available)'
           : 'verification: pending (saved; first-turn index will show the name only until the next write)',
       );
+      for (const entry of related) {
+        lines.push(`related: ${entry.file} — ${entry.description || entry.name} (check that the two notes agree)`);
+      }
       if (saved?.index?.warning) lines.push(`warning: ${saved.index.warning}`);
       if (Array.isArray(saved?.warnings)) {
         for (const warning of saved.warnings) lines.push(`warning: ${warning}`);
@@ -1624,6 +1700,21 @@ export function registerCommands(ctx, runtime) {
 // Dream result rendering
 // ---------------------------------------------------------------------------
 
+/**
+ * What a run covered. Agent runs record sessions and tokens; the unit counts
+ * belong to the retired per-unit pipeline and only show for its old records.
+ */
+function runProgressLine(run) {
+  const expected = Number(run?.input?.expectedUnits) || 0;
+  const counts = run?.counts && typeof run.counts === 'object' ? run.counts : {};
+  if (expected > 0) {
+    return `units: ${Number(counts.done) || 0}/${expected} done, ${Number(counts.failed) || 0} failed, ${Number(counts.pending) || 0} pending`;
+  }
+  const offered = Array.isArray(run?.input?.sessions) ? run.input.sessions.length : Number(run?.sessionsOffered) || 0;
+  const tokens = Number(run?.usage?.totalTokens) || 0;
+  return `sessions: ${Number(run?.sessionsReviewed) || 0}/${offered} reviewed, tokens: ${tokens}`;
+}
+
 /** Render one resumable-run summary as chat text. */
 function formatDreamRunStatus(run) {
   if (!run || typeof run !== 'object') return 'no dream run recorded';
@@ -1631,9 +1722,7 @@ function formatDreamRunStatus(run) {
   if (run.status === 'none') return 'no dream runs recorded yet; start one with /memory dream run';
   const lines = [];
   lines.push(`dream run ${run.runId || '(unknown)'} — ${run.status || 'unknown'}${run.stage ? ` at ${run.stage}` : ''}`);
-  const counts = run.counts && typeof run.counts === 'object' ? run.counts : {};
-  const expected = Number(run.input?.expectedUnits) || 0;
-  lines.push(`units: ${Number(counts.done) || 0}/${expected} done, ${Number(counts.failed) || 0} failed, ${Number(counts.pending) || 0} pending`);
+  lines.push(runProgressLine(run));
   if (run.coverageComplete === true) lines.push('coverage: complete');
   if (run.coverageComplete === false) lines.push('coverage: incomplete — apply stays blocked until every unit finishes');
   if (run.planPath) lines.push(`plan: ${run.planPath}${run.status === 'review' ? ' (apply with /memory dream apply)' : ''}`);
@@ -1641,7 +1730,7 @@ function formatDreamRunStatus(run) {
   if (run.error) lines.push(`error: ${truncate(run.error, 300)}`);
   if (run.skipReason) lines.push(`skipped: ${run.skipReason}`);
   const sessions = Array.isArray(run.sessions) ? run.sessions : [];
-  for (const session of sessions.slice(0, 5)) {
+  for (const session of sessions.filter((item) => item.units > 0).slice(0, 5)) {
     lines.push(`- ${session.id}: ${session.done}/${session.units} unit(s)${session.failed ? `, ${session.failed} failed` : ''}`);
   }
   const pending = Array.isArray(run.pendingUnits) ? run.pendingUnits : [];
@@ -1683,7 +1772,7 @@ function formatDreamRun(result) {
     lines.push(`  - ${String(file.action ?? 'changed')} ${file.file ?? ''}`);
   }
   if (files.length > 40) lines.push(`  … ${files.length - 40} more`);
-  if (result.shadowDir) lines.push(`result kept in: ${result.shadowDir} (apply with /memory dream switch [--reject <file,...>], reject all with /memory dream discard)`);
+  if (result.shadowDir) lines.push(`result kept in: ${result.shadowDir} (apply with /memory dream switch [--reject <file,...>] [--defer <file,...>] [--confirm <file,...>], defer with /memory dream discard)`);
   if (result.error) lines.push(`error: ${errorText(result.error)}`);
   if (Array.isArray(result.warnings)) for (const warning of result.warnings) lines.push(`warning: ${truncate(warning, 500)}`);
   return lines.join('\n');
@@ -1695,6 +1784,10 @@ function formatDreamSwitch(result) {
   const lines = [];
   if (result.ok !== true) {
     lines.push(`dream switch: not switched (${errorText(result.error || result.reason || 'unknown')})`);
+    if (result.error === 'evidence-required' && Array.isArray(result.files)) {
+      lines.push(`no checked source for: ${result.files.join(', ')}`);
+      lines.push('Read each diff with /memory dream diff <file>, then add --confirm <file,...> to accept it, --defer to leave it for later, or --reject to turn it down.');
+    }
     if (Array.isArray(result.conflicts) && result.conflicts.length > 0) {
       lines.push('memory changed while the dream ran, so nothing was replaced:');
       for (const item of result.conflicts.slice(0, 10)) {
@@ -1707,6 +1800,10 @@ function formatDreamSwitch(result) {
   const counts = result.counts && typeof result.counts === 'object' ? result.counts : {};
   lines.push('memory switched to the dream result');
   lines.push(`added: ${Number(counts.added) || 0}   changed: ${Number(counts.changed) || 0}   removed: ${Number(counts.removed) || 0}`);
+  if (Array.isArray(result.confirmedWithoutSource) && result.confirmedWithoutSource.length > 0) {
+    lines.push(`accepted without a checked source: ${result.confirmedWithoutSource.join(', ')}`);
+  }
+  if (Array.isArray(result.deferred) && result.deferred.length > 0) lines.push(`left for later: ${result.deferred.join(', ')}`);
   if (result.backupDir) lines.push(`backup: ${result.backupDir}`);
   lines.push('undo with /memory dream undo');
   return lines.join('\n');
