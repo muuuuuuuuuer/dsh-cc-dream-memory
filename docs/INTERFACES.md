@@ -247,7 +247,7 @@ export class DreamAgent {
 - 复查标记：循环正常结束时，所有候选会话标记为已复查到提供给模型的 `lastSeq`（无差异时也标记）；被轮数上限截断时只标记实际读过的会话（未读到末尾记 `partial`）。会话增长超过标记后重新入选，模型看到 `new events after seq N`。
 - 否决：`pending.proposals` 为每个改动文件一行可读描述；`discard`/部分否决写入 `dreamRejected`，下次 Dream 的 prompt 列出最近 20 条，要求无新证据不得再提。
 - 运行状态：`<runId>/manifest.json` 记录 `status`（running/ready/failed/cancelled/skipped）、`stage`、模型、用量、最近错误。
-- 证据：核对结果只做标记，不阻止切换；证据随 pending 交给人工，UI/`dreamDiff` 展示 `session #seq — quote` 和 `verified`。
+- 证据：核对结果只做标记，不阻止切换；证据随 pending 交给人工，UI/`dreamDiff` 展示 `session #seq — quote` 和 `verified`。每页判定记作 `citation`、`preserved`、`description` 或 `missing`：事实不变而只改 `description` 记作 `description`，与 `preserved` 一样无需引文。
 
 ## `src/commands.js`（ui-commands）
 

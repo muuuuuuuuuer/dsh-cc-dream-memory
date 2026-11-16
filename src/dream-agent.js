@@ -65,7 +65,7 @@ Your job:
 4. Write the consolidated result to the shadow copy with memory_write / memory_delete.
    - Merge duplicate facts; keep one canonical line.
    - A contradicted value replaces the old value; keep one short Superseded line in the body.
-   - When two current pages contradict each other, keep the value that another page or a session explicitly states supersedes the other (for example "X is retired"); otherwise keep the more recently modified page. If neither is clear, change nothing.
+   - When two current pages contradict each other, keep the value that another page or a session explicitly states supersedes the other (for example "X is retired"). When the two hold under different conditions, keep both lines and give each its condition; do not average them into one. If neither is clear, change nothing.
    - When a page you keep says the other page's value is retired or replaced, that page is the evidence: delete or correct the other page now and cite it as {memory_file, quote}. Do not wait for a session to repeat it.
    - Remove clearly stale or wrong pages only when the evidence is in a session you read or in another current page that you keep.
    - Add source annotations like ^[session#seq, YYYY-MM-DD] to new fact lines when you can.
@@ -73,8 +73,10 @@ Your job:
 5. Reply DONE when finished. If nothing durable changed, reply DONE without writing.
 
 Rules:
-- Only durable facts that cannot be read from the repository: user preferences, corrections, decisions, external references.
+- Only durable facts that cannot be read from the repository: user preferences, corrections, decisions, external references, and what a session observed that the files do not — the symptom, what was tried, the result that followed, and when it applies. State the observation; mark a cause you only infer as unconfirmed.
 - Never save secrets, one-off task details, code patterns, file paths, or project structure.
+- When a fact holds only under a condition, put \`Applies when: <condition>\` on its own line under it, and keep one canonical line per condition instead of one line that averages them.
+- Rewrite a description that does not say which questions the page answers: recall shows the first ~160 characters of the description and nothing else. Rewrite it in the same write as any fact change — a later write drops the earlier write's citations — and a write that only changes the description needs no citation.
 - Use absolute dates.
 - Do not write to the live store; you only have shadow tools.
 - Prefer updating an existing page over creating a near-duplicate.

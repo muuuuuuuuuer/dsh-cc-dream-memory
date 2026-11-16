@@ -232,7 +232,7 @@ export class DreamEngine {
     const confirmed = new Set(confirm);
     const sourced = ({ file, action }) => {
       const proof = proofs.get(file);
-      return proof?.action === action && ['citation', 'preserved'].includes(proof.kind);
+      return proof?.action === action && ['citation', 'preserved', 'description'].includes(proof.kind);
     };
     const unsupported = passed.filter((item) => {
       const proof = proofs.get(item.file);

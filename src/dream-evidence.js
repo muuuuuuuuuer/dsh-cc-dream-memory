@@ -119,20 +119,27 @@ export async function reviewProofs({ diff, store, shadowStore, links, evidence }
       }
     }
     let preserved = false;
+    let descriptionOnly = false;
     let dependsOn;
     if (next) {
       const moved = await Promise.all(Object.keys(links).filter((source) => endOfMove(source) === file).map(before));
       const priorFacts = facts(prior);
       const nextFacts = facts(next);
-      preserved = Boolean(prior || moved.some(Boolean))
+      const sameFacts = Boolean(prior || moved.some(Boolean))
         && contains(nextFacts, priorFacts)
         && contains([...priorFacts, ...moved.flatMap(facts)], nextFacts)
         && moved.filter(Boolean).every((entry) => memoryStatusOf(entry.body) === memoryStatusOf(next.body)
           && entry.frontmatter.type === next.frontmatter.type)
         && (!prior || (memoryStatusOf(prior.body) === memoryStatusOf(next.body)
-          && prior.frontmatter.type === next.frontmatter.type))
-        && (next.frontmatter.description === prior?.frontmatter.description
-          || !next.frontmatter.description || moved.some((entry) => entry?.frontmatter.description === next.frontmatter.description));
+          && prior.frontmatter.type === next.frontmatter.type));
+      // A description states which questions the page answers, and recall shows
+      // nothing but its first characters. Rewriting it while the facts stay put
+      // loses nothing, so it gets its own kind instead of demanding a citation
+      // no page can supply for a rewording.
+      const sameDescription = next.frontmatter.description === prior?.frontmatter.description
+        || !next.frontmatter.description || moved.some((entry) => entry?.frontmatter.description === next.frontmatter.description);
+      preserved = sameFacts && sameDescription;
+      descriptionOnly = sameFacts && !sameDescription;
     } else if (prior && Object.hasOwn(links, file)) {
       const dest = endOfMove(file);
       const entry = dest ? await after(dest) : null;
@@ -141,7 +148,8 @@ export async function reviewProofs({ diff, store, shadowStore, links, evidence }
         && prior.frontmatter.type === entry.frontmatter.type;
       if (preserved) dependsOn = dest;
     }
-    proofs.push({ file, action, revision, kind: hasQuote ? 'citation' : preserved ? 'preserved' : 'missing',
+    proofs.push({ file, action, revision,
+      kind: hasQuote ? 'citation' : preserved ? 'preserved' : descriptionOnly ? 'description' : 'missing',
       ...(dependsOn && !hasQuote ? { dependsOn } : {}) });
   }
   return proofs;
