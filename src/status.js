@@ -998,7 +998,6 @@ export function createStatusService(runtime) {
       capabilities: {
         dreamPipeline: 'v2',
         dreamRuns: true,
-        claimMerge: true,
         explicitSaveLedger: true,
       },
       project: {

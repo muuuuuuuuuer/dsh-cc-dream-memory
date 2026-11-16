@@ -27,7 +27,7 @@
 │  │   ├─ tools.js       4 个 memory_* 工具                                  │   │
 │  │   ├─ commands.js    /memory、/remember 命令族                           │   │
 │  │   ├─ scheduler.js   session/event(turn/end) → auto dream 闸门            │   │
-│  │   ├─ dream.js       DreamEngine：校验→证据→备份→应用/回滚/undo            │   │
+│  │   ├─ dream.js       DreamEngine：shadow 切换/丢弃/undo 与切换记录         │   │
 │  │   ├─ dream-*.js     转写 / 收集 / 单元分析 / 宿主校验 / 逐条合并/运行记录 │   │
 │  │   ├─ recall.js      按用户消息附加相关记忆（agent/pre-step）              │   │
 │  │   ├─ rules.js      可编辑注入规则（project/global/default 优先级）        │   │
@@ -70,7 +70,7 @@
 | `src/tools.js` | 4 个 `memory_*` 工具（JSON Schema + output.render）；关闭态门控 | `registerTools` |
 | `src/commands.js` | `/memory` 子命令族、`/remember`；纯函数解析器；JSON 输出 | `registerCommands`, `parseCommandLine`, `parseRememberInput` |
 | `src/scheduler.js` | 监听 `session/event` 的 `turn/end`；auto dream 闸门（含退避）；auto-extract（写互斥 + 每 N 轮 + 5-turn 工具循环）；跳过 subagent 会话 | `registerScheduler` |
-| `src/dream.js` | 校验/应用/回滚/undo：计划校验→备份→应用→回滚→changelog→state；模型运行由 `dream-agent.js` 负责 | `DreamEngine`, `validateDreamPlan` |
+| `src/dream.js` | 人工收尾：把 shadow 副本切换进记忆（整目录备份 + 逐文件哈希）或丢弃，并从切换记录 undo；模型运行在 `dream-agent.js` | `DreamEngine`, `listSwitches` |
 | `src/dream-session-text.js` | 会话事件 → 带来源标签的转写：只保留用户消息、每条用户消息前的那一条助手回复、失败的工具调用及报错；过滤宿主注入、识别 `[user-pasted]`、日期标记、转义伪造的标签行、按字符切块 | `buildSessionTranscript`, `chunkTranscript`, `extractSessionText`, `isProbeSession` |
 | `src/dream-run.js` | 运行目录与单元记录：`runId`、`.dreams/<runId>/manifest.json`、状态/取消/续跑所需字段 | `newRunId`, `writeRunManifest`, `readRunManifest`, `summarizeRun` |
 | `src/dream-agent.js` | Dream 唯一路径：给模型 `MEMORY.md` 头部 + 元数据 + 候选 session id；模型用 `memory_index/read/search`、`session_search/read` 按需读，只写 shadow；结束时 diff + 人工 switch/discard/undo；记录证据 provenance | `DreamAgent` |
@@ -100,7 +100,7 @@
 - **项目身份按 projectRoot 归一**：runtime 先 `buildPaths()` 解析出 git 根，再用它作为缓存键；`repo/` 与 `repo/pkg` 拿到**同一个** store/state 实例（避免并发写同一索引）。
 - **`runtime.config` 是 getter**：返回「行配置 + 运行时 overrides」（冻结对象）。因此 `/memory plugin off`、UI 开关无需重载插件即可生效。
 - **store 的写路径全部串行 + 原子**（临时文件 + rename + Windows 瞬时 EPERM 重试）；读路径只走白名单文件名与路径包含校验。
-- **dream 的 LLM 调用只发生在 DreamEngine 内部**（`ctx.llm.stream`），工具/命令/UI 不会直接调模型。
+- **dream 的 LLM 调用只发生在 `DreamAgent` 的工具循环内部**（`src/dream-agent.js`，`ctx.llm.stream`），工具/命令/UI 不会直接调模型。
 
 ---
 
@@ -688,10 +688,10 @@ Dream 的 evidence 使用操作级引用；兼容旧 `{statement,quote}`，来�
 - **Dream 运行可观测、可续跑**：每次运行在 `.dreams/<runId>/` 先落 `manifest.json`（runId、项目、模型、输入会话与单元范围、计数、用量、错误、状态），每个单元通过解析与证据校验后写 `analysis/<session>/<unitId>.json`。同一项目同时只有一个 worker，锁由 runId 持有并在每个单元后续期；`/memory dream status|cancel|resume` 与 `POST /dream {action:'status'|'cancel'|'resume', runId}` 操作同一个运行。重启、取消或失败后 `resume` 只补齐缺失单元，已完成单元不再调用模型。
 - **输入按单元切分，不再静默截断**：v2 路径按 `unitChars`（24k）切分会话，分析调用次数、单会话字符上限与 claim/patch 上限不再截断输入；一次输出被 max-tokens 截断时把该单元对半拆开重试，拆不开才记为失败并保留范围与原因。
 - **默认由宿主合并逐条结论（0.12.2）**：默认路径不再调用终场 organizer（也不再有 organizer 可选）。`dream-merge.js` 用 analyzer 已核验的 claims/verify 直接构造页面：新事实追加一行带 `^[source#seq, date]` 的引用行；`contradicts` 命中唯一一行时替换它、写入 `STATUS: current` 并把旧值记入 `## History`；没有 verdict 但页面已有一行同对象不同值的唯一测量时，同样按纠正处理；同一事实跨会话去重成一行多引用；没有 claim 命中的页面完全不动。对象/量纲对不上、命中多行、行已消失或低置信的 claim 仍进 `plan.review` 不写盘，但**当页面里留着具体旧值时，冲突会以 `- CONFLICT: "<旧>" vs "<新>" — the sources disagree; a person has to pick one. ^[cite]` 写进页面**，让人看得见分歧（标记行不带 Claim、不参与证据校验，重复运行不会叠加）。索引是**扁平**列表（`- [名字](文件) — 说明`），与 Claude Code 的 `MEMORY.md` 一致；`Related:` 行由宿主追加。analyzer 可以要求 `retire: [{file, target}]`：目标必须是本轮存在的页面、该页本轮没被改写、且不能自己搬到自己，满足时宿主删除该页并在索引留 `- [名字](旧文件) — MOVED TO [[目标]]`，否则只进 review。整库重写、页面合并与 SKILL 已被移除：重复页面靠写入时去重或手动 `/memory merge`。
-- **应用前比对基线哈希**：claim 合并产出的 write 操作带 `baseHash`；`DreamEngine.executePlan` 在备份前重读每个目标文件，哈希不一致直接返回 `conflict`，运行记为失败（可 `resume`），不会覆盖审阅期间的用户编辑。
+- **应用前比对基线哈希（历史）**：claim 合并产出的 write 操作带 `baseHash`；`executePlan` 已随旧引擎删除，现在由 shadow diff 与切换时的逐文件哈希承担：切换期间记忆被人改过就整次返回 `conflict`，不会覆盖审阅期间的用户编辑。
 - **Wiki 构建不再静默截断（0.12.2）**：`splitPageBody` 按行/标题边界把超过 `wikiMaxPageChars` 的页面拆成 `x.md`/`x-2.md`…（`normalizeWikiWrites` 不再 `slice`）；organizer 超出 `wikiOrganizerMaxChars` 时在提示词中列出被略过的页面并写入 `manifest.warnings`，这些页面保持不变；extractor 丢弃的 claim 数也进警告。`POST /wiki {action:'build'}` 在正式发布成功后调用 `invalidateAllInjections('wiki-build')`，与命令路径一致；dry-run 与失败不刷新。
 - **宿主收口 Wiki 的主题、链接与冲突（0.12.3）**：发布前 `mergeWikiTopics` 把名字归一后相同的页面合成一页（逐行去重，保留每一行的引用与较全的描述），`repairWikiLinks` 把只能指向一页的悬空 `[[链接]]` 改到该页，无法唯一确定时保留并写入警告。同一句话在不同来源里出现不同数字时两条都保留，较旧的一条之后插入 `> 上一条数值已被较新的来源取代（<新日期>：<新值>）`（`markSupersededFacts`）；标记行不带引用、不参与证据校验。`manifest.pages.merged`、`manifest.links.repaired`、`manifest.superseded` 与 `manifest.conflicts` 记录本轮结果。查询侧 `validateWikiAnswer` 拒绝只引用被取代行的答案（要求同时说出新值与日期），`wikiQueryPrompt` 要求回答冲突时说明两条来源及哪条更新。
-- **构建标识与已挂载能力（0.12.3）**：`/status` 返回 `build`（`src/build-id.js` 对 package.json、index.js、client.js、cordis.patch.yml 及 status/http/inject/dream-run/wiki-build 九个文件取 sha256，汇总为 12 位 id，并附 `packageVersion`、安装路径与逐文件摘要）和 `capabilities`（`dreamPipeline`、`dreamRuns`、`claimMerge`、`wiki`、`explicitSaveLedger`）。面板显示构建 id；`UI_API` 升到 3，新面板连旧 Host 时给出升级提示。
+- **构建标识与已挂载能力（0.12.3）**：`/status` 返回 `build`（`src/build-id.js` 对 package.json、index.js、client.js、cordis.patch.yml 及 status/http/inject/dream-run/wiki-build 九个文件取 sha256，汇总为 12 位 id，并附 `packageVersion`、安装路径与逐文件摘要）和 `capabilities`（当时为 `dreamPipeline`、`dreamRuns`、`claimMerge`、`wiki`、`explicitSaveLedger`；`wiki` 已随知识库删除，`claimMerge` 已随 claim 流水线删除）。面板显示构建 id；`UI_API` 升到 3，新面板连旧 Host 时给出升级提示。
 - **长文档提取可以中断续做（0.12.3）**：`src/wiki-build.js` 在 extract 阶段把每份文档按 `wikiChunkChars` 分段，每段完成后将 `{digest, claims}` 写入当前代的 `.claims/<sourceId>.parts.json`（同目录，键为整份文档的 `sha256`）；重跑时只对摘要不匹配的分段调用 extractor，`manifest.stages[extract].partsReused` 记录复用段数。整份文档完成后再写 `.claims/<sourceId>.json`（供后续构建按整份摘要复用）并删除分段进度。失败的构建不会切换 GENERATION，已写入的分段进度留在当前代目录，下一次构建直接接上。
 
 ## 0.12.0 Dream v2

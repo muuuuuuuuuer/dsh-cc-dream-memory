@@ -250,7 +250,7 @@ API 端点：`GET /status`、`GET /file`、`GET /rules`、`GET /log`、`GET /bac
 
 ## 运行时行为
 
-- **运行时开关即时生效**：DreamEngine/MemoryStore 通过 live config provider 读取当前配置；`/memory on|off` 不再需要重载插件。
+- **运行时开关即时生效**：DreamAgent/MemoryStore 通过 live config provider 读取当前配置；`/memory on|off` 不再需要重载插件。
 - **写入不回执队列**：`memory_save`/`memory_update` 直接落盘并返回版本号；`DUPLICATE`/`CONFLICT` 是唯一两种停写。
 - **回滚不丢并发写**：失败回滚只处理 touched 文件且校验应用后哈希；未触碰/被并发修改的文件保留，冲突写入 `conflicts` 并留痕 `.dreams/<ts>-rollback/`。
 - **lastPlan 不再误清**：`applyLastPlan` 仅在 `applied:true` 时清计划；锁冲突返回 `{applied:false,error:'dream-locked'}` 并保留指针。

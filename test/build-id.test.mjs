@@ -26,7 +26,6 @@ test('status names the build and the capabilities this Host mounted', async (t) 
   assert.deepEqual(status.capabilities, {
     dreamPipeline: 'v2',
     dreamRuns: true,
-    claimMerge: true,
     explicitSaveLedger: true,
   });
 });

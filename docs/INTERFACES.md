@@ -199,14 +199,21 @@ export function registerTools(ctx, runtime): () => void
 export class DreamEngine {
   constructor({ runtime })
   // pctx 由 runtime 提供（含 paths/store/state/workspaceDir）
-  // 运行与状态见 src/dream-agent.js；分析结果写进副本，不直接改记忆
-  async pendingSwitch(pctx): Promise<null | { dir, createdAt, runId, summary, counts, files }>
-  async switchShadow({ pctx, agent }): Promise<{ ok: true, backupDir, counts } | { ok: false, error: 'conflict'|'no-changes'|'no-project', conflicts?: {file,reason}[] }>
-  async discardShadow({ pctx }): Promise<{ ok: boolean }>
-  async undoLastDream({ pctx, agent }): Promise<{ ok: true, batch, restored, trashed, backupDir } | { ok: false, error: 'no-project'|'no-undoable-batch'|'conflict', conflicts? }>
+  // 模型运行与运行状态见 src/dream-agent.js；这里只管副本的人工收尾
+  async pendingSwitch(pctx): Promise<null | { dir, createdAt, runId, summary, counts, files, base, links }>
+  async switchShadow({ pctx, agent, reject = [], defer = [], confirm = [], runId = '' }):
+    Promise<{ ok: true, backupDir, outputDir, counts, rejected, deferred, confirmedWithoutSource }
+           | { ok: true, discarded: true, decision: 'deferred', rejected, deferred }
+           | { ok: false, error: 'no-project'|'no-pending'|'stale-dream'|'evidence-required'|'conflict', conflicts?, files? }>
+  async discardShadow({ pctx, runId = '' }): Promise<{ ok: boolean, error?: 'no-project'|'no-pending'|'stale-dream' }>
+  async undoLastDream({ pctx, agent }):
+    Promise<{ ok: true, batch, restored, trashed, backupDir }
+           | { ok: false, error: 'no-project'|'no-undoable-batch'|'conflict'|'undo-partial', conflicts?, partial?, restored?, trashed?, failed?, backupDir? }>
 }
+export async function listSwitches(paths)
 ```
 职责：
+- **不含计划校验**：`validateDreamPlan` / `executePlan` 已随旧引擎删除；页面级改动由 `diffShadow` 给出，切换按 `pending.base` 求差。无证据的通过项须列在 `confirm` 里，否则整次返回 `evidence-required`。
 - **副本**：Dream 只写 `.dreams/shadow/`（当前记忆的完整副本），与真实记忆逐文件比对得出 `added/changed/removed`；副本存在期间不再跑新的 Dream。
 - **切换**：先把当前记忆目录整体备份到 `.dreams/<ts>/memory/`，再写回、把副本里没有的笔记移入回收站、把副本的 `MEMORY.md` 写到 live 后 `refreshIndex`（`MOVED TO` 退休桩会保留），写 `meta.json`（`kind:'dream-switch'`、`counts`、`files`、`rewritten`、`created`、`removed`、`hashes`、`verifiedFiles`、`backupDir`）与 changelog。运行期间有人改过笔记 → 整次返回 `conflict`，记忆不动。
 - **撤销**：由 `listSwitches(paths)` 读取切换记录。只还原 `rewritten` 并把 `created` 移入回收站；若切换后被改过则整次返回 `conflict`。旧格式批次跳过。
@@ -311,7 +318,7 @@ async function exec(line) {
 
 ## Lead 在 runtime 上提供的 dream 入口
 
-`MemoryRuntime` 直接使用 `DreamEngine` 与 `DreamPipeline`。后台启动统一经过 `startDream`。需要等待结果的调用方使用返回的 `done`。调度、执行和状态服务共用 `dreamReadiness`。
+`MemoryRuntime` 直接使用 `DreamAgent`（运行）与 `DreamEngine`（人工 switch/discard/undo）。后台启动统一经过 `startDream`。需要等待结果的调用方使用返回的 `done`。调度、执行和状态服务共用 `dreamReadiness`。
 ```js
 async startDream(pctx, options)
 async dream({ pctx, agent, force, trigger, reason, focus, inputId, inputRanges }): Promise<DreamRunResult>

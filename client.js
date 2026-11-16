@@ -1369,7 +1369,6 @@ function normalizeStatus(raw) {
                 dreamPipeline:
                   record.capabilities.dreamPipeline === 'v2' ? 'v2' : 'classic',
                 dreamRuns: record.capabilities.dreamRuns === true,
-                claimMerge: record.capabilities.claimMerge === true,
                 explicitSaveLedger: record.capabilities.explicitSaveLedger === true,
               }
             : null,

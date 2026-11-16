@@ -22,7 +22,6 @@ import {
   clearShadow,
   archiveShadow,
   diffShadow,
-  shadowDirOf,
   shadowPathsOf,
   switchShadow as commitShadow,
 } from './dream-shadow.js';
@@ -36,13 +35,6 @@ function hashText(value) {
 function errorMessage(error) {
   if (error && typeof error === 'object' && typeof error.message === 'string') return error.message;
   return String(error);
-}
-
-/** Collapse arbitrary text to one trimmed line of at most `max` characters. */
-function oneLine(value, max = 400) {
-  if (typeof value !== 'string') return '';
-  const flat = value.replace(/\s+/g, ' ').trim();
-  return flat.length > max ? `${flat.slice(0, Math.max(0, max - 1))}…` : flat;
 }
 
 /** Directory-name timestamp for one backup batch. */
@@ -522,20 +514,4 @@ export async function listSwitches(paths) {
     }
   }
   return metas.sort((left, right) => (Number(right.appliedAt) || 0) - (Number(left.appliedAt) || 0));
-}
-
-/** Where the pending copy lives, for diagnostics. */
-export function pendingShadowDir(paths) {
-  return shadowDirOf(paths);
-}
-
-/** One-line description of the pending copy for status output. */
-export function describePending(pending) {
-  if (!pending) return '';
-  const counts = pending.counts && typeof pending.counts === 'object' ? pending.counts : {};
-  const parts = [];
-  if (counts.added) parts.push(`+${counts.added}`);
-  if (counts.changed) parts.push(`~${counts.changed}`);
-  if (counts.removed) parts.push(`-${counts.removed}`);
-  return oneLine(`${parts.join(' ') || 'no file changes'}${pending.summary ? ` — ${pending.summary}` : ''}`, 200);
 }

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- **Classic-engine residue removed.** `pendingShadowDir` and `describePending` in `src/dream.js` had no callers and are gone, with the `oneLine` helper and the `shadowDirOf` import that only they used. `/status` no longer advertises `capabilities.claimMerge`, which described a claim-merge pipeline that no longer exists. `ARCHITECTURE.md`, `INTERFACES.md` and `manual.zh.md` no longer name `validateDreamPlan` or `DreamEngine.executePlan`, and the documented `DreamEngine` signature matches the code. The engine itself was already retired: `--maintenance`, `--pipeline`, `DreamEngine.run`/`estimate` and the prompt/map/organizer modules are gone. What remains in `dream.js` is the human switch/discard/undo over the shadow.
 - **Fixes from a hands-on DSH web session (2026-11-16).**
   - Dream compares memory pages with each other before reading sessions, and can cite another current page (`{memory_file, quote}`) as evidence. A page that another page says is retired can now be removed and applied, also in memories-only mode. The quote must be in the cited page's current text before and after the run.
   - The review card starts changes without a checked source as rejected and disables their pass button. A refused switch shows a localized message.
