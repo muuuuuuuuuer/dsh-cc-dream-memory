@@ -35,7 +35,7 @@ import {
 } from './secrets.js';
 import { MEMORY_TYPES, MemoryStore, entryVersion, normalizeScope } from './store.js';
 import { memoryHash } from './write-review.js';
-import { currentBody, HISTORY_HEADING_RE, isCurrentPage, stripVerification, SUPERSEDED_LINE_RE } from './memory-body.js';
+import { currentBody, HISTORY_HEADING_RE, isCurrentPage, memoryBodyLines, stripVerification, SUPERSEDED_LINE_RE } from './memory-body.js';
 import { applyProposals } from './auto-extract.js';
 import { listProposals, readProposal, removeProposal } from './inbox.js';
 import { matchesRecord, readLedger, recordVerifiedEntry } from './verification-ledger.js';
@@ -698,10 +698,11 @@ export function createStatusService(runtime) {
         const text = stripVerification(entry.body);
         if (isCurrentPage(text)) {
           sections.push(`${heading}\n\n${currentBody(text).trim()}`);
-          const lines = text.split(/\r?\n/u);
-          const index = lines.findIndex((line) => HISTORY_HEADING_RE.test(line.trim()));
+          const lines = [...memoryBodyLines(text)];
+          const index = lines.findIndex(({ line, fenced }) => !fenced && HISTORY_HEADING_RE.test(line.trim()));
           const older = index < 0 ? [] : lines.splice(index + 1);
-          const historyText = [...lines.filter((line) => SUPERSEDED_LINE_RE.test(line)), ...older].join('\n').trim();
+          const historyText = [...lines.filter(({ line, fenced }) => !fenced && SUPERSEDED_LINE_RE.test(line)), ...older]
+            .map(({ line }) => line).join('\n').trim();
           if (historyText) history.push(`### ${entry.frontmatter.name}\n\n${historyText}`);
         } else {
           history.push(`### ${entry.frontmatter.name}\n\n${text}`);
@@ -1045,6 +1046,19 @@ export function createStatusService(runtime) {
     };
   }
 
+  async function chipStatus(pctx) {
+    const config = pick(configOf(), ['enabled', 'autoMemoryEnabled', 'indexMaxLines']);
+    const store = requireStore(pctx);
+    const [index, entries] = await Promise.all([store.injectedIndex('project'), store.listEntries('project')]);
+    return {
+      ok: true,
+      config,
+      index: pick(index, ['lines', 'overflow']),
+      entryCount: entries.length,
+      needsReview: Boolean(pctx.state?.snapshot()?.pendingSwitch?.dir),
+    };
+  }
+
   /** Full contents of one memory file (provenance included in `frontmatter`). */
   async function file(pctx, file, scope) {
     const store = requireStore(pctx);
@@ -1342,6 +1356,7 @@ export function createStatusService(runtime) {
 
   return {
     status,
+    chipStatus,
     file,
     rules,
     saveRules,

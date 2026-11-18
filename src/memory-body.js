@@ -5,8 +5,7 @@
  * `- Superseded: … (until …)` line (Dream pipeline) or a `## History` section
  * (explicit corrections, see `write-review.js`). Those lines record what a fact
  * used to be, so automatic recall, the hot set and compaction must not treat
- * them as current content. Explicit `memory_read`/`memory_search` still return
- * the full body.
+ * them as current content. The memory tools also use this projection.
  *
  * The same module owns the verification stamp (`VERIFIED AGAINST: <hash>`): only
  * the host writes it, and it covers one exact content version, so an edited page
@@ -60,17 +59,19 @@ export function verificationHash(body) {
  * heading path. Only the bullet marker and surrounding whitespace are ignored.
  *
  * @param {string} body
- * @returns {{line:number,paragraphStart:number,heading:string,text:string}[]} Zero-based positions in `currentBody(body)`.
+ * @returns {{line:number,paragraphStart:number,sectionStart:number,fenced:boolean,heading:string,text:string}[]} Zero-based positions in `currentBody(body)`.
  */
 export function currentFactLines(body) {
   const headings = [];
   const facts = [];
   let paragraphStart = 0;
-  for (const [index, raw] of currentBody(body).split('\n').entries()) {
+  let sectionStart = 0;
+  for (const [index, { line: raw, fenced }] of [...memoryBodyLines(currentBody(body))].entries()) {
     const line = raw.trim();
-    const heading = /^(#{1,6})\s+(.*)$/u.exec(line);
+    const heading = fenced ? null : /^(#{1,6})\s+(.*)$/u.exec(line);
     if (heading) {
       paragraphStart = index + 1;
+      sectionStart = paragraphStart;
       const level = heading[1].length;
       while (headings.length > 0 && headings[headings.length - 1].level >= level) headings.pop();
       const text = heading[2].replace(/\s+#+\s*$/u, '').replace(/\s+/gu, ' ').trim();
@@ -81,10 +82,10 @@ export function currentFactLines(body) {
       paragraphStart = index + 1;
       continue;
     }
-    if (FACT_METADATA_RE.test(line) || LINK_ONLY_RE.test(line) || SUPERSEDED_LINE_RE.test(line)) continue;
+    if (!fenced && (FACT_METADATA_RE.test(line) || LINK_ONLY_RE.test(line) || SUPERSEDED_LINE_RE.test(line))) continue;
     const fact = line.replace(/^(?:[-*+]\s+|\d+[.)]\s+)/u, '');
     const path = headings.map((item) => item.text).join(' > ');
-    facts.push({ line: index, paragraphStart, heading: path, text: path === '' ? fact : `${path} » ${fact}` });
+    facts.push({ line: index, paragraphStart, sectionStart, fenced, heading: path, text: path === '' ? fact : `${path} » ${fact}` });
   }
   return facts;
 }
@@ -124,6 +125,25 @@ export const CONFLICT_LINE_RE = /^\s*[-*]\s+CONFLICT:/iu;
 /** Heading that starts a history section; everything after it is history. */
 export const HISTORY_HEADING_RE = /^##\s+history\s*$/iu;
 
+/** Standalone labels whose text qualifies the preceding recommendation. */
+export const MEMORY_CAVEAT_RE = /^\s*(?:(?:[-*+]|\d+[.)])\s+)?(?:\*\*)?(?:Applies when|How to apply|How to verify|Verify|Observed|Exception|适用条件|何时适用|如何应用|如何验证|验证|观察|例外|注意事项)\s*(?:\*\*)?[:：]/iu;
+
+/** Mark literal lines (including the delimiters) in fenced Markdown examples. */
+export function* memoryBodyLines(body) {
+  let fence = '';
+  for (const line of String(body ?? '').split(/\r\n?|\n/u)) {
+    const delimiter = /^ {0,3}(`{3,}|~{3,})(.*)$/u.exec(line);
+    if (fence) {
+      if (delimiter && delimiter[1][0] === fence[0]
+        && delimiter[1].length >= fence.length && delimiter[2].trim() === '') fence = '';
+      yield { line, fenced: true };
+    } else {
+      if (delimiter && (delimiter[1][0] === '~' || !delimiter[2].includes('`'))) fence = delimiter[1];
+      yield { line, fenced: fence !== '' };
+    }
+  }
+}
+
 /** The one status line that marks a page as the active value. */
 export const CURRENT_STATUS_LINE = 'STATUS: current';
 
@@ -135,7 +155,7 @@ export const CURRENT_STATUS_LINE = 'STATUS: current';
  */
 export function ensureCurrentStatus(content) {
   const text = String(content ?? '').replace(/\r\n?/g, '\n');
-  if (/^\s*status:\s*current\s*$/imu.test(text)) return text;
+  if ([...memoryBodyLines(text)].some(({ line, fenced }) => !fenced && /^\s*status:\s*current\s*$/iu.test(line))) return text;
   return `${CURRENT_STATUS_LINE}\n${text.replace(/^\n+/, '')}`;
 }
 
@@ -151,9 +171,9 @@ const LINK_ONLY_RE = /^(?:(?:Related|See also):\s*|[-*]\s*)?(?:\[\[[^\]\n]+\]\]\
  */
 export function currentBody(body) {
   const kept = [];
-  for (const line of String(body ?? '').split(/\r?\n/)) {
-    if (HISTORY_HEADING_RE.test(line.trim())) break;
-    if (SUPERSEDED_LINE_RE.test(line.trim())) continue;
+  for (const { line, fenced } of memoryBodyLines(body)) {
+    if (!fenced && HISTORY_HEADING_RE.test(line.trim())) break;
+    if (!fenced && SUPERSEDED_LINE_RE.test(line.trim())) continue;
     kept.push(line);
   }
   return kept.join('\n');
@@ -168,8 +188,12 @@ export const CURRENTNESS_EXCLUDED = ['stale', 'superseded', 'disputed', 'review-
  * @returns {string}
  */
 export function memoryStatusOf(body) {
-  const match = /^\s*STATUS:\s*([a-z-]+)/imu.exec(String(body ?? ''));
-  return match ? match[1].toLowerCase() : 'current';
+  for (const { line, fenced } of memoryBodyLines(body)) {
+    if (fenced) continue;
+    const match = /^\s*STATUS:\s*([a-z-]+)/iu.exec(line);
+    if (match) return match[1].toLowerCase();
+  }
+  return 'current';
 }
 
 /**

@@ -142,7 +142,7 @@ function fakeHeadless({ prompt, sessionId }) {
   const isJudge = prompt.startsWith('You are an independent evaluator');
   const isDream = prompt.includes('memory_eval_dream');
   const events = isDream
-    ? [{ type: 'tool_result', result: JSON.stringify({ ok: true, sessionsReviewed: /"sessions":\s*true/.test(prompt) ? 1 : 0 }) }]
+    ? [{ type: 'tool_result', result: JSON.stringify({ ok: true, ready: true, applied: true, sessionsReviewed: /"sessions":\s*true/.test(prompt) ? 1 : 0 }) }]
     : [];
   const finalText = isJudge
     ? JSON.stringify({ taskCompleted: true, formatViolation: false, providedForbiddenContent: [], fabricatedHistory: false, boundaryFailure: false, clarification: false, evidence: [] })
@@ -168,7 +168,7 @@ function readMemoryText(memoryRoot) {
 /** One headless run; returns parsed events + final text + session id. */
 async function runHeadless({ cwd, patch, prompt, sessionId, timeoutMs = CALL_TIMEOUT_MS, env = process.env }) {
   if (OPTIONS.fakeModel) return fakeHeadless({ prompt, sessionId });
-  const args = ['--profile', PROFILE, '--patch', patch, 'headless', '--json'];
+  const args = ['--profile', PROFILE, '--patch', patch, '--json'];
   if (sessionId) args.push('--session-id', sessionId);
   args.push(prompt);
   return await new Promise((resolve) => {
@@ -377,10 +377,12 @@ async function runScenario({ scenario, runRoot, runIndex }) {
     // C: one real Dream pass on the frozen checkpoint.
     const dreamPatch = conditionPatchPath(runRoot, scenario.id, 'C', 'dream', path.join(conditionDirs.C, 'memory-root'));
     const dreamInstruction = scenario.dreamSessions === true
-      ? 'Call the memory_eval_dream tool exactly once with {"dryRun": false, "sessions": true}. Then reply with the tool result summary.'
-      : 'Call the memory_eval_dream tool exactly once with dryRun:false. Then reply with the tool result summary.';
+      ? 'Call the memory_eval_dream tool exactly once with {"apply": true, "sessions": true}. Then reply with the tool result summary.'
+      : 'Call the memory_eval_dream tool exactly once with {"apply": true}. Then reply with the tool result summary.';
     const dream = await runHeadless({
-      cwd: workspaces.C,
+      // Transcript discovery is scoped by cwd. C has its own memory root but
+      // must read the identical persisted history replayed in B.
+      cwd: scenario.dreamSessions === true ? workspaces.B : workspaces.C,
       patch: dreamPatch,
       prompt: dreamInstruction,
       timeoutMs: Math.max(CALL_TIMEOUT_MS, 600000),
@@ -388,9 +390,10 @@ async function runScenario({ scenario, runRoot, runIndex }) {
     const dreamToolResult = dream.events
       .filter((event) => event.type === 'tool_result')
       .map((event) => { try { return typeof event.result === 'string' ? JSON.parse(event.result) : event.result; } catch { return null; } })
-      .find((value) => value && value.sessionsReviewed !== undefined && value.ok === true) ?? null;
+      .find((value) => value && value.sessionsReviewed !== undefined && typeof value.ok === 'boolean') ?? null;
     record.conditions.C = { ...(record.conditions.C ?? {}), history: [], dream: { ok: dream.ok, finalText: dream.finalText, tools: dream.toolCalls.map((call) => call.tool), usage: dream.usage, toolResult: dreamToolResult, sessionsReviewed: dreamToolResult?.sessionsReviewed ?? null, memoryEmptied: scenario.dreamSessions === true } };
     if (!dream.ok) record.errors.push({ stage: 'dream', error: dream.error ?? dream.code });
+    else if (dreamToolResult?.ok === false) record.errors.push({ stage: 'dream', error: dreamToolResult.error || 'failed' });
     const purityError = dreamPurityError(dreamToolResult, scenario);
     if (purityError) record.errors.push({ stage: 'dream-purity', error: purityError });
     const postCheckpoint = path.join(repeatDir, 'checkpoint-after-dream');
@@ -457,7 +460,7 @@ async function runScenario({ scenario, runRoot, runIndex }) {
           memoryText: readMemoryText(path.join(conditionDirs[condition], 'memory-root')),
         });
         const judgeMissing = !OPTIONS.noJudge && (judged === null || judged.parseError === true);
-        const dreamValid = condition !== 'C' || (record.conditions.C?.dream?.toolResult != null && purityError === null);
+        const dreamValid = condition !== 'C' || (dream.ok && dreamToolResult?.ok === true && purityError === null);
         if (objective && !objective.ok) {
           record.errors.push({ stage: `objective:${condition}:${testDef.id}`, error: `objective check failed (exit ${objective.exitCode}, testHashUnchanged=${objective.testHashUnchanged})` });
         }

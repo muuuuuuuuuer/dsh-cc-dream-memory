@@ -9,6 +9,7 @@ import { listSwitches } from '../src/dream.js';
 import { attachRecall } from '../src/recall.js';
 
 const finish = (kind) => ({ type: 'finish', reason: { kind } });
+const groundedDescription = 'Keep blue deployment.';
 const toolCall = (name, args) => ({
   type: 'block-end', block: { type: 'tool-call', id: randomUUID(), name, arguments: args },
 });
@@ -24,7 +25,7 @@ async function pendingDream(t, runId) {
     name: 'Deploy', type: 'project', description: 'Old deploy hook', content: 'Keep blue deployment.',
   });
   script(env, [[
-    toolCall('memory_write', { file: page.file, description: 'New deploy hook', body: 'Keep blue deployment.' }),
+    toolCall('memory_write', { file: page.file, description: groundedDescription, body: 'Keep blue deployment.' }),
     finish('tool-calls'),
   ]]);
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, memoryOnly: true, runId });
@@ -51,7 +52,7 @@ test('a failed switch state write rolls back pages and index and allows the same
   assert.equal(pctx.state.snapshot().shadowPending.runId, runId);
   assert.deepEqual(await listSwitches(pctx.paths), [], 'rolled-back writes must not become undoable switches');
   assert.equal((await runtime.switchDream({ pctx, runId })).ok, true);
-  assert.equal((await pctx.store.readEntry(page.file)).frontmatter.description, 'New deploy hook');
+  assert.equal((await pctx.store.readEntry(page.file)).frontmatter.description, groundedDescription);
   assert.equal(pctx.state.snapshot().shadowPending, null);
 });
 
@@ -67,7 +68,7 @@ test('undo restores the changed index hook while preserving unrelated index edit
   assert.equal((await pctx.store.readEntry(page.file)).frontmatter.description, 'Old deploy hook');
   const index = await pctx.store.indexText();
   assert.ok(index.includes('- [Deploy](project_deploy.md) — Old deploy hook'));
-  assert.ok(!index.includes('New deploy hook'));
+  assert.ok(!index.includes(groundedDescription));
   assert.ok(index.includes(`- [Other](${other.file}) — Human edited hook`));
 });
 
@@ -80,7 +81,7 @@ test('failed settlement also restores removed pages and removes newly created pa
   const beforeOld = (await pctx.store.readEntry(old.file)).raw;
   const beforePage = (await pctx.store.readEntry(page.file)).raw;
   script(env, [[
-    toolCall('memory_write', { file: page.file, description: 'New deploy hook', body: 'Keep blue deployment.' }),
+    toolCall('memory_write', { file: page.file, description: groundedDescription, body: 'Keep blue deployment.' }),
     toolCall('memory_write', { file: 'project_new.md', body: 'New durable fact.' }),
     toolCall('memory_delete', { file: old.file }),
     finish('tool-calls'),
@@ -126,7 +127,7 @@ test('undo can retry index restoration after its first index write fails', async
   assert.equal(result.ok, false);
   assert.equal((await runtime.undoLastDream(pctx)).ok, true);
   assert.ok((await pctx.store.indexText()).includes('Old deploy hook'));
-  assert.ok(!(await pctx.store.indexText()).includes('New deploy hook'));
+  assert.ok(!(await pctx.store.indexText()).includes(groundedDescription));
 });
 
 for (const ending of ['incomplete-stream', 'length', 'incomplete-tool-call']) {

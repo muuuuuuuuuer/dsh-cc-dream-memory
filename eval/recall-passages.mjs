@@ -28,7 +28,10 @@ const cases = [
     evidence: /use memory_read for the rest/, excluded: 'probe-normalize-v22' },
   { id: 'short-control', file: 'project_mirror.md', query: 'Which command handles MIRRORFLAG?', answer: 'mirror-verify-v88',
     body: 'Use mirror-verify-v88 for MIRRORFLAG.', evidence: /mirror-verify-v88/ },
+  { id: 'paraphrase', file: 'project_cache.md', query: 'CI builds hang waiting on a lock in the cache layer. What do I run?', answer: 'cache-purge-v57',
+    body: 'Run cache-purge-v57 to clear the CACHEJAM build lock.\nApplies when: CI runners.', evidence: /cache-purge-v57/ },
   { id: 'no-match', query: 'What command fixes ZZZQX9?', answer: 'UNKNOWN' },
+  { id: 'near-miss', query: 'What command fixes RELAYDROP in staging?', answer: 'UNKNOWN' },
 ];
 
 function baselineUrl(file, overrides = {}) {

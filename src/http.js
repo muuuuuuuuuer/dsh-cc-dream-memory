@@ -309,6 +309,9 @@ export function createHttpHandler({ runtime, token }) {
       if (route === '/status' && method === 'GET') {
         const projectContext = await resolveProject(url.searchParams.get('sessionId') ?? undefined);
         if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
+        if (url.searchParams.get('view') === 'chip') {
+          return sendJson(res, 200, await service.chipStatus(projectContext));
+        }
         return sendJson(
           res,
           200,

@@ -69,7 +69,7 @@ test('agent searches sessions, reads memory on demand, and writes only the shado
             file: 'project_deploy.md',
             name: 'Deploy',
             type: 'project',
-            description: 'Release process uses pnpm',
+            description: 'Use pnpm for installs.',
             body: 'Use pnpm for installs. ^[s1#7, 2026-11-15]',
             citations: [{ session_id: 's1', seq: 7, quote: TRANSITION }],
           },
@@ -150,7 +150,7 @@ test('Dream records human-readable evidence for a shadow write', async (t) => {
 test('agent with nothing to change leaves no pending shadow', async (t) => {
   const env = await dreamEnv(t);
   script(env, [{ tools: [], text: 'DONE' }]);
-  const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-agent-2' });
+  const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', noSessions: true, runId: 'run-agent-2' });
   assert.equal(result.ok, true);
   assert.equal(result.skipped, true);
   assert.equal(result.skipReason, 'nothing-new');

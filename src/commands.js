@@ -1747,6 +1747,7 @@ function formatDreamRunStatus(run) {
   const lines = [];
   lines.push(`dream run ${run.runId || '(unknown)'} — ${run.status || 'unknown'}${run.stage ? ` at ${run.stage}` : ''}`);
   lines.push(runProgressLine(run));
+  if (run.decision) lines.push(`review decision: ${run.decision}`);
   if (run.coverageComplete === true) lines.push('coverage: complete');
   if (run.coverageComplete === false) lines.push('coverage: incomplete — apply stays blocked until every unit finishes');
   if (run.planPath) lines.push(`plan: ${run.planPath}${run.status === 'review' ? ' (apply with /memory dream switch)' : ''}`);

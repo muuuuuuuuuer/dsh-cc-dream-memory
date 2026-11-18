@@ -463,7 +463,7 @@ export class DreamEngine {
     await store.refreshIndex('project');
     // The run consumed these sessions; an undo makes them eligible again so the
     // human can dream them once more.
-    await state.restoreDreamProcessed(Array.isArray(meta.sessions) ? meta.sessions : []);
+    await state.restoreDreamProcessed(Array.isArray(meta.sessions) ? meta.sessions : [], { runId: meta.runId });
     await saveUndoMeta({ undoRemoving: [...removing], undone: true, undoneAt: Date.now() });
     const batch = path.basename(path.dirname(backupDir));
     await recordDreamEvent(paths, { event: 'undone', ops: restored.length + trashed.length });

@@ -16,7 +16,7 @@
 ## 关键装置
 
 - **隔离**：记忆场景用 tool lock（禁用 fs/pwsh 等模型侧基础工具，只留 memory 工具）；开放工具编码场景（`eval/scenarios.coding.dev.json`）使用系统临时目录下的独立 git 工作区，不暴露插件仓库/rubric，并运行 `node --test` + 测试文件哈希检查；`--plan` 也会先校验覆盖所有场景文件的 frozen manifest。
-- **两个不可变快照**：`checkpoint-before-dream`（B 测试恢复）与 `checkpoint-after-dream`（C 测试恢复）；测试前校验 sha256，`restoredHashOk` 记录在结果中。
+- **两个不可变快照**：`checkpoint-before-dream` 用于 B，`checkpoint-after-dream` 用于 C。C 中如有 Dream 草稿，评测工具会先走正常的应用和证据检查。应用被阻止时，C 标记为不可比较，并记录失败原因。测试前校验 SHA-256，结果记录为 `restoredHashOk`。
 - **Dream**：记忆场景默认纯整理（`noSessions: true`，`sessionsReviewed=0`）；`eval/scenarios.dream-session.dev.json` 的 C 组用 `sessions:true`，并先清空 C 的记忆，所以写进去的内容只可能来自 transcript，要求 `sessionsReviewed>0`。
 - **冻结资产**：`node eval/freeze.mjs` 写入 `eval/frozen-manifest.json`，覆盖**所有** `scenarios*.json`、rubric、插件版本与 contract；runner 在 `--plan` 之前校验，任何场景文件不一致即拒跑。
 - **运行有效性**：每个条件记录 `validity`/`failureKind`。tool 发现失败、manifest 不匹配 → 拒跑；snapshot 哈希不符、Dream 结果缺失或 `sessionsReviewed≠0` → device-invalid，不参与比较；模型失败/超时 → task-failed；judge 缺失 → grading-missing（重评）。

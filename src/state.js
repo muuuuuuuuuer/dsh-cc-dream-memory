@@ -201,6 +201,13 @@ function recordRunOutcome(state, outcome) {
   state.dreamRunOutcomes = [...state.dreamRunOutcomes.filter((item) => item.runId !== outcome.runId), outcome].slice(-20);
 }
 
+function recordRunDecision(state, runId, decision) {
+  if (!runId) return;
+  const prior = state.dreamRunOutcomes.find((item) => item.runId === runId);
+  recordRunOutcome(state, { ...prior, runId, status: 'done', decision,
+    applied: decision === 'applied' || decision === 'partially-applied' });
+}
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class ProjectState {
@@ -369,12 +376,13 @@ export class ProjectState {
   }
 
   /** Undo restores session eligibility: remove processed watermarks from a batch. */
-  async restoreDreamProcessed(ids) {
+  async restoreDreamProcessed(ids, { runId } = {}) {
     const restore = new Set((ids ?? []).filter((id) => typeof id === 'string'));
-    if (restore.size === 0) return;
+    if (restore.size === 0 && !runId) return;
     await this._mutate((state) => {
       state.dreamProcessedSessions = (Array.isArray(state.dreamProcessedSessions) ? state.dreamProcessedSessions : [])
         .filter((entry) => !restore.has(entry.id));
+      recordRunDecision(state, runId, 'undone');
     });
   }
 
@@ -530,6 +538,7 @@ export class ProjectState {
       if (settled.length > 0) applyDreamCoverage(state, new Set(), settled);
       state.dreamRejected = [...new Set([...state.dreamRejected, ...rejected])].slice(-MAX_REJECTED);
       state.lastDreamDecision = { runId, decision, reads: settled, at: Date.now() };
+      recordRunDecision(state, runId, decision);
       state.shadowPending = null;
     });
   }

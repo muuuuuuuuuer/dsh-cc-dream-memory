@@ -17,6 +17,7 @@ import { DreamEngine } from './dream.js';
 import { DreamAgent } from './dream-agent.js';
 import { isDelegated } from './session-kind.js';
 import { ProjectState } from './state.js';
+import { withFileLock } from './lock.js';
 import { loadRules, saveRulesFile } from './rules.js';
 
 function warn(scope, error) {
@@ -74,6 +75,21 @@ const OVERRIDE_KEYS = [
   'autoDreamEnabled',
   'autoExtract',
 ];
+
+function readOverrides(file) {
+  let data;
+  try {
+    data = JSON.parse(fsSync.readFileSync(file, 'utf8'));
+  } catch (error) {
+    if (error.code === 'ENOENT') return {};
+    throw error;
+  }
+  const clean = {};
+  for (const key of OVERRIDE_KEYS) {
+    if (typeof data?.[key] === 'boolean') clean[key] = data[key];
+  }
+  return clean;
+}
 
 export class MemoryRuntime {
   #dreamEngine;
@@ -156,19 +172,11 @@ export class MemoryRuntime {
   overrides() {
     const now = Date.now();
     if (this._overrideCache && now - this._overrideCache.at < 1000) return this._overrideCache.data;
-    let data = {};
+    let clean;
     try {
-      const stat = fsSync.statSync(this.overrideFile);
-      if (stat.isFile()) {
-        const parsed = JSON.parse(fsSync.readFileSync(this.overrideFile, 'utf8'));
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) data = parsed;
-      }
+      clean = readOverrides(this.overrideFile);
     } catch {
-      data = {};
-    }
-    const clean = {};
-    for (const key of OVERRIDE_KEYS) {
-      if (typeof data[key] === 'boolean') clean[key] = data[key];
+      clean = {};
     }
     this._overrideCache = { at: now, data: clean };
     return clean;
@@ -180,15 +188,22 @@ export class MemoryRuntime {
    * @returns {Promise<object>} the persisted overrides.
    */
   async setOverrides(patch) {
-    const next = { ...this.overrides() };
-    for (const key of OVERRIDE_KEYS) {
-      if (patch && typeof patch[key] === 'boolean') next[key] = patch[key];
-    }
-    await fs.mkdir(path.dirname(this.overrideFile), { recursive: true });
-    const temporary = `${this.overrideFile}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-    await fs.writeFile(temporary, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
-    await fs.rename(temporary, this.overrideFile);
-    this._overrideCache = { at: Date.now(), data: next };
+    const next = await withFileLock(`${this.overrideFile}.lock`, async () => {
+      const updated = readOverrides(this.overrideFile);
+      for (const key of OVERRIDE_KEYS) {
+        if (typeof patch?.[key] === 'boolean') updated[key] = patch[key];
+      }
+      const temporary = `${this.overrideFile}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+      try {
+        await fs.writeFile(temporary, `${JSON.stringify(updated, null, 2)}\n`, 'utf8');
+        await fs.rename(temporary, this.overrideFile);
+      } catch (error) {
+        await fs.rm(temporary, { force: true }).catch(() => {});
+        throw error;
+      }
+      this._overrideCache = { at: Date.now(), data: updated };
+      return updated;
+    }, { strict: true });
     this.invalidateAllInjections("config");
     return next;
   }
@@ -386,7 +401,7 @@ export class MemoryRuntime {
       warn('workingDirectory', new Error('no working directory for this session; memory features are disabled for it'));
       return undefined;
     }
-    let projectContext = { ...(await this.storeFor(workspaceDir)), agent, sessionId: agent.id };
+    let projectContext = { ...(await this.storeFor(workspaceDir)), workspaceDir, agent, sessionId: agent.id };
     const agentMemoryName = this.agentMemoryName(agent);
     if (agentMemoryName) {
       try {
@@ -428,7 +443,7 @@ export class MemoryRuntime {
     }
     const cwd = cwdHint || (await this._persistedCwd(sessionId));
     if (!cwd) return undefined;
-    const projectContext = { ...(await this.storeFor(cwd)), sessionId };
+    const projectContext = { ...(await this.storeFor(cwd)), workspaceDir: cwd, sessionId };
     this.bySession.set(sessionId, projectContext);
     return projectContext;
   }

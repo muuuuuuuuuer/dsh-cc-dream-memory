@@ -63,12 +63,14 @@ export async function reconcileRunOutcomes(paths, state) {
   for (const outcome of state?.snapshot?.().dreamRunOutcomes ?? []) {
     if (!validRunId(outcome.runId)) continue;
     const dir = runDirOf(paths, outcome.runId);
-    if (!await fs.stat(checkpointFile(dir)).then((stat) => stat.isFile(), () => false)) continue;
+    const hasCheckpoint = await fs.stat(checkpointFile(dir)).then((stat) => stat.isFile(), () => false);
+    if (!outcome.decision && !hasCheckpoint) continue;
     const manifest = await readRunManifest(dir);
-    if (manifest && ['running', 'paused'].includes(manifest.status)) {
+    if (manifest && (['running', 'paused'].includes(manifest.status)
+      || (outcome.decision && manifest.decision !== outcome.decision))) {
       await writeRunManifest(dir, { ...manifest, ...outcome, stage: 'done' });
     }
-    await clearRunCheckpoint(dir);
+    if (hasCheckpoint) await clearRunCheckpoint(dir);
   }
 }
 
@@ -160,12 +162,19 @@ export function shapeManifest(base = {}) {
 }
 
 export function dreamRunOutcome(state, runId) {
-  return state?.snapshot?.().dreamRunOutcomes?.find((item) => item.runId === runId);
+  const snapshot = state?.snapshot?.();
+  const outcome = snapshot?.dreamRunOutcomes?.find((item) => item.runId === runId);
+  const last = snapshot?.lastDreamDecision;
+  if (outcome?.decision || last?.runId !== runId) return outcome;
+  return { ...outcome, runId, status: 'done', decision: last.decision,
+    applied: last.decision === 'applied' || last.decision === 'partially-applied' };
 }
 
 export function summarizeRun(manifest, { running = false, checkpoint = false, outcome } = {}) {
   if (!manifest) return null;
-  if (outcome && ['running', 'paused'].includes(manifest.status)) manifest = { ...manifest, ...outcome, stage: 'done' };
+  if (outcome && (outcome.decision || ['running', 'paused'].includes(manifest.status))) {
+    manifest = { ...manifest, ...outcome, stage: 'done' };
+  }
   // A paused run requires a readable checkpoint. Honor conflicts written by older versions.
   if (manifest.status === 'paused' && (!checkpoint || manifest.error === 'checkpoint-conflict')) {
     manifest = { ...manifest, status: 'failed',
@@ -197,6 +206,7 @@ export function summarizeRun(manifest, { running = false, checkpoint = false, ou
     coverageComplete: manifest.coverageComplete,
     planPath: manifest.planPath,
     applied: manifest.applied,
+    decision: manifest.decision,
     error: interrupted && !resumable && !manifest.error ? 'stopped before finishing (the host process ended); run Dream again' : manifest.error,
     blockedReason: manifest.blockedReason,
     skipReason: manifest.skipReason,

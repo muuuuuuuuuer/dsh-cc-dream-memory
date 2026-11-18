@@ -354,6 +354,17 @@ test('a selected long note attaches the matched passage with its own conditions'
   assert.ok(text.length <= 620);
 });
 
+test('recall keeps a localized exception with the matching paragraph', async (t) => {
+  const { env, agentCtx, file } = await modelRecallEnv(t, { autoRecallMaxChars: 620 });
+  await env.pctx.store.updateEntry(file, { content: [
+    '## Background', '', 'Administrative context. '.repeat(180), '',
+    '## Procedure', '', 'For EALIAS in shared mode run amber-bolt-76.', '',
+    '**例外：**On shared resolvers use violet-fan-93 instead.',
+  ].join('\n') });
+  const decision = await agentCtx.preStep([userMessage('EALIAS in shared mode')]);
+  assert.match(decision.messages[1]?.content[0].text ?? '', /amber-bolt-76[\s\S]*例外：[\s\S]*violet-fan-93/u);
+});
+
 test('recall can attach a different passage from a long note in the same session', async (t) => {
   const { env, agentCtx, calls, file } = await modelRecallEnv(t, { autoRecallMaxChars: 620 });
   await env.pctx.store.updateEntry(file, { content: [

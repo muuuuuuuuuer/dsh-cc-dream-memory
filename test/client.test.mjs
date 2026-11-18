@@ -109,6 +109,7 @@ function createSandbox({ apiBridge, fetchImpl } = {}) {
       fetchCalls.push(args);
       // The page learns {base, token} only from GET /api/cc-memory/bridge.
       if (String(args[0]) === '/api/cc-memory/bridge') {
+        if (typeof apiBridge === 'function') return apiBridge();
         if (apiBridge === undefined) return { ok: false, status: 404, json: async () => ({ ok: false }) };
         return { ok: true, status: 200, json: async () => ({ ok: true, ...apiBridge }) };
       }
@@ -441,6 +442,11 @@ test('client: a damaged checkpoint explains how to start a fresh Dream', async (
   assert.ok(findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Run again'));
 });
 
+test('client: a settled Dream displays its review decision', async () => {
+  const ui = await dreamTabHarness({ dreamRuns: [{ runId: 'run-reviewed', status: 'done', decision: 'applied' }] });
+  assert.match(collectText(ui.render().tree), /Applied/u);
+});
+
 
 
 // ---------------------------------------------------------------------------
@@ -551,7 +557,35 @@ test('client: an unavailable bridge leaves the Memory slots mounted without exec
   assert.equal(chip.id, 'cc-memory-status');
   assert.equal(chip.order, 50);
   assert.equal(chip.inject({}).memBackend.mode, 'none');
-  assert.deepEqual(client.fetchCalls.map(([url]) => url), ['/api/cc-memory/bridge']);
+  assert.ok(client.fetchCalls.every(([url]) => url === '/api/cc-memory/bridge'));
+});
+
+test('client: a failed bridge discovery can recover in the mounted panel and composer', async () => {
+  let discoveries = 0;
+  const client = await loadClient({
+    apiBridge: async () => {
+      discoveries += 1;
+      return discoveries === 1
+        ? { ok: false, status: 404 }
+        : { ok: true, json: async () => ({ ok: true, base: '/api/cc-memory', token: 'second' }) };
+    },
+    fetchImpl: async (url, options) => {
+      assert.equal(options.headers['x-cc-memory-token'], 'second');
+      return { ok: true, json: async () => ({ ...makeStatusPayload(), entryCount: 7, needsReview: true }) };
+    },
+  });
+  const { slotDefinitions } = await mountClient(client);
+  const view = findDefinition(slotDefinitions, 'conversation.view').inject({ sessionId: 'project-a' }).memBackend;
+  const chip = findDefinition(slotDefinitions, 'conversation.composer.dock').inject('project-b').memBackend;
+  assert.equal(chip.sessionId, 'project-b');
+  const [, summary] = await Promise.all([view.status(), chip.chipStatus()]);
+  assert.equal(discoveries, 2, 'mounted clients share one reconnection');
+  assert.equal(view.mode, 'api');
+  assert.equal(summary.entryCount, 7);
+  assert.equal(summary.needsReview, true);
+  const routes = client.fetchCalls.map(([url]) => url);
+  assert.ok(routes.includes('/api/cc-memory/status?sessionId=project-a'));
+  assert.ok(routes.includes('/api/cc-memory/status?sessionId=project-b&view=chip'));
 });
 
 test('client: discovers the API bridge via a credentialed same-origin request', async () => {
@@ -565,6 +599,26 @@ test('client: discovers the API bridge via a credentialed same-origin request', 
   assert.equal(options.credentials, 'include');
   const view = findDefinition(slotDefinitions, 'conversation.view');
   assert.equal(view.inject({ sessionId: 'session-bridge' }).memBackend.mode, 'api');
+});
+
+test('client: retry discovers a fresh bridge token after the host returns 401', async () => {
+  let discoveries = 0;
+  const client = await loadClient({
+    apiBridge: async () => {
+      const token = 'token-' + ++discoveries;
+      return { ok: true, json: async () => ({ ok: true, base: '/api/cc-memory', token }) };
+    },
+    fetchImpl: async (_url, options) => options.headers['x-cc-memory-token'] === 'token-1'
+      ? { ok: false, status: 401, json: async () => ({ ok: false, error: 'unauthorized' }) }
+      : { ok: true, json: async () => makeStatusPayload() },
+  });
+  const { slotDefinitions } = await mountClient(client);
+  const view = findDefinition(slotDefinitions, 'conversation.view').inject('project-a').memBackend;
+  await assert.rejects(view.status(), (error) => error.status === 401);
+  assert.equal(view.mode, 'none');
+  await view.status();
+  assert.equal(view.mode, 'api');
+  assert.equal(discoveries, 2);
 });
 
 test('client: silent API backend normalizes /status + /file and classifies 401 as token-expired', async () => {

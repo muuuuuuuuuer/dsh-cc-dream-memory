@@ -167,6 +167,18 @@ Look elsewhere if you need:
 - Before starting a run, use `/memory dream estimate`, or review the input estimate shown when starting Dream in the interface. Estimation reads the input without calling the model. Starting a run calls the model. Actual total usage can exceed the rough input estimate. `dreamMaxTotalTokens: 0` means unlimited; set an explicit budget and `dreamCostMode: block` if you need the existing cost guard.
 - Writes that match common key formats are refused. This is a heuristic and will not catch every secret. See [SECURITY.md](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/SECURITY.md).
 
+## 0.23.1 Project history and desktop reliability
+
+- Dream includes history from the repository root, its subdirectories, and linked Git worktrees. Unrelated repositories stay out of the transcript review.
+- The composer badge follows the current session and loads a compact summary. Use **Retry** in the Memory panel to reconnect when the service is unavailable.
+- Concurrent changes to different memory and Dream switches are preserved.
+
+## 0.23.0 Dream evidence and review
+
+Dream keeps applicability conditions bound to the facts they qualify. It checks descriptions against the note or its sources and gives the model feedback on unsupported claims before the review batch is ready. The run status shows incomplete review and the decision made after reviewing the draft.
+
+Two focused DSH runs successfully applied a Chinese fact from a transcript and a correction that kept the staging exception. Fresh sessions used the resulting notes. Broader runs still produced drafts that required evidence review. [Field test](eval/DSH-0.22.1-FIELD.md#0230-复测)
+
 ## 0.22.1 recall and Dream recovery
 
 Recall uses the latest user message and makes at most one selector request for that turn, including on concurrent steps. Timeout and cancellation release the turn, and truncated replies are discarded. The same long note can supply another paragraph on a later turn. Candidates flagged by the credential scanner are omitted from automatic recall.

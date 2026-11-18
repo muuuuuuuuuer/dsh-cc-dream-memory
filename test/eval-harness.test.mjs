@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { toolsEnv } from './v10-helpers.mjs';
 import {
   HARNESS_CONTRACT,
   assessToolDiscovery,
@@ -137,7 +138,29 @@ test('eval harness: dream purity depends on whether the scenario reads transcrip
   assert.match(dreamPurityError({ sessionsReviewed: 2 }, { dreamSessions: false }), /sessionsReviewed=2/);
   assert.equal(dreamPurityError({ sessionsReviewed: 2 }, { dreamSessions: true }), null);
   assert.match(dreamPurityError({ sessionsReviewed: 0 }, { dreamSessions: true }), /sessionsReviewed=0/);
+  assert.match(dreamPurityError({ sessionsRead: 2, sessionsReviewed: 0 }, { dreamSessions: true }), /sessionsReviewed=0/);
   assert.equal(dreamPurityError(null, { dreamSessions: true }), null, 'a missing result is reported elsewhere');
+  assert.match(dreamPurityError({ ready: true, applied: false, sessionsReviewed: 0 }, {}), /unapplied/i);
+  assert.equal(dreamPurityError({ ready: true, applied: true, sessionsReviewed: 0 }, {}), null);
+});
+
+test('evaluation Dream applies the exact proposed run and reports a rejected switch', async (t) => {
+  const { runtime, pctx, definitions } = await toolsEnv(t, { evalMode: true });
+  runtime.dream = async () => ({ ok: true, ready: true, runId: 'run-fixture', sessionsReviewed: 0 });
+  const agent = { id: 'eval-fixture' };
+  const execute = definitions.get('memory_eval_dream').execute;
+  let switches = 0;
+  runtime.switchDream = async (options) => {
+    switches++;
+    assert.equal(options.runId, 'run-fixture');
+    assert.equal(options.pctx, pctx);
+    return switches === 1 ? { ok: true } : { ok: false, error: 'evidence-required' };
+  };
+  runtime.forAgent = async () => pctx;
+  assert.equal((await execute({ apply: true, dryRun: true }, { agent })).applied, false);
+  assert.equal((await execute({ apply: true }, { agent })).applied, true);
+  const blocked = await execute({ apply: true }, { agent });
+  assert.deepEqual([blocked.ok, blocked.applied, blocked.error], [false, false, 'evidence-required']);
 });
 
 test('eval harness: clearing memory removes the notes and keeps the session state', async (t) => {

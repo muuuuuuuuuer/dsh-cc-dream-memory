@@ -87,4 +87,5 @@ test('a window with text keeps it and still reports the range', async (t) => {
   const seen = prompts[1];
   assert.match(seen, /\[window seq 11–14: 4 events, 3 without text; no more text in this session\]/u);
   assert.ok(seen.includes('we switched to pnpm'));
+  assert.match(seen, /work_done through_seq=14/u);
 });

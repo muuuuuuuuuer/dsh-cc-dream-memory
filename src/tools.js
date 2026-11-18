@@ -811,6 +811,7 @@ export function registerTools(ctx, runtime) {
         type: 'object',
         properties: {
           dryRun: { type: 'boolean', description: 'Only produce the plan; do not apply.' },
+          apply: { type: 'boolean', description: 'Apply the proposed batch in an evaluation workspace.' },
           sessions: { type: 'boolean', description: 'Read recent session transcripts (default false = pure consolidation).' },
           focus: { type: 'string', description: 'Optional topic to prioritize in this run.' },
         },
@@ -835,15 +836,20 @@ export function registerTools(ctx, runtime) {
             // so the gather/watermark path is evaluated too.
             noSessions: input?.sessions !== true,
           });
+          const switched = input?.apply === true && input?.dryRun !== true && result?.ok !== false && result?.ready === true
+            ? await runtime.switchDream({ agent, pctx: projectContext, runId: result.runId })
+            : null;
+          const applied = result?.applied === true || (switched?.ok === true && switched.discarded !== true);
+          const error = result?.error || (switched && !applied ? switched.error || 'switch-failed' : '');
           // Keep the result JSON-lossless and small: the tool layer rejects
           // nested plans/signals it cannot serialize losslessly.
           return {
-            ok: result?.ok !== false && !result?.error,
+            ok: result?.ok !== false && !error,
             ran: result?.ran === true,
             ready: result?.ready === true,
             runId: result?.runId ?? '',
-            ...(result?.error ? { error: result.error } : {}),
-            applied: result?.applied === true,
+            ...(error ? { error } : {}),
+            applied,
             skipped: result?.skipped === true,
             skipReason: typeof result?.skipReason === 'string' ? result.skipReason : '',
             ops: Number(result?.ops ?? result?.operations?.length ?? 0) || 0,

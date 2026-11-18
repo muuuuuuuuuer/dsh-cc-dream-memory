@@ -43,9 +43,9 @@ window.__ModuleLoader__.load({
   'about.version': 'Plugin version {v}',
   'banner.autoMemoryOff': 'Auto memory is off: new conversations don\'t load memory and the agent can\'t save memories.',
   'banner.backendStale': 'The memory plugin is still running older code than this page, so newer parts (trust marks, write details) fail. Quit DeepSeek Harness completely and open it again.',
-  'banner.noBackend': 'The memory service isn\'t available on this page. Reload the page; if it still fails, check that the plugin is installed.',
+  'banner.noBackend': 'The memory service is unavailable. Try connecting again.',
   'banner.pluginOff': 'Memory is turned off: nothing is loaded, saved or dreamed.',
-  'banner.tokenExpired': 'The connection to the memory service expired. Reload the page to reconnect.',
+  'banner.tokenExpired': 'The connection to the memory service expired. Retry to reconnect.',
   'btn.back': 'Back',
   'btn.cancel': 'Cancel',
   'btn.clear': 'Clear search',
@@ -57,7 +57,6 @@ window.__ModuleLoader__.load({
   'btn.edit': 'Edit',
   'btn.new': 'New',
   'btn.refresh': 'Refresh',
-  'btn.reload': 'Reload page',
   'btn.retry': 'Retry',
   'btn.review': 'Review',
   'btn.save': 'Save',
@@ -83,6 +82,7 @@ window.__ModuleLoader__.load({
   'detail.unverifiedIndex': 'Not verified by a Dream yet.',
   'detail.updated': 'Updated {time}',
   'detail.verified': 'Verified {date}: a Dream checked this exact text against the conversations it came from.',
+  'detail.userConfirmed': 'Confirmed by you on {date}.',
   'edit.conflict': 'Another window saved this note first. Your draft is still here; reload to see the newer version.',
   'edit.content': 'Details',
   'edit.contentPlaceholder': 'Markdown is supported. Ctrl+Enter saves.',
@@ -251,10 +251,16 @@ window.__ModuleLoader__.load({
   'tidy.runState.skipped': 'skipped',
   'tidy.runState.done': 'done',
   'tidy.runState.paused': 'paused',
+  'tidy.decision.applied': 'Applied',
+  'tidy.decision.partially-applied': 'Partially applied',
+  'tidy.decision.rejected': 'Rejected',
+  'tidy.decision.deferred': 'Deferred',
+  'tidy.decision.undone': 'Undone',
   'tidy.runNoChanges': 'Reviewed {sessions} of {offered} session(s) and found nothing to change. Used about {tokens} tokens.',
   'tidy.runSkipped': 'Skipped: {reason}',
   'tidy.runUnfinished': 'Stopped at the turn limit before proposing any change. Run Dream again to continue; it picks up the sessions it did not finish. Used about {tokens} tokens.',
   'tidy.runUnfinishedWrites': 'Some changes could not be written. Their sessions remain eligible for another run.',
+  'tidy.runIncompleteReview': 'Reviewed {sessions} of {offered} sessions before stopping. Run Dream again to review the rest.',
   'tidy.runCheckpointConflict': 'The saved analysis is out of date because its sources changed. Start a new Dream to use the latest sources.',
   'tidy.runCheckpointUnavailable': 'The saved checkpoint is missing or damaged. Start a new Dream.',
   'tidy.runTitle': 'This run',
@@ -296,9 +302,9 @@ const ZH = {
   'about.version': '插件版本 {v}',
   'banner.autoMemoryOff': '自动记忆已关闭：新会话不会载入记忆，智能体也不能保存记忆。',
   'banner.backendStale': '记忆插件的后台还在运行旧代码，和这个页面对不上：可信度标记、待处理详情等新功能会出错。请完全退出 DeepSeek Harness 再重新打开。',
-  'banner.noBackend': '此页面连不上记忆服务。请刷新页面；如仍失败，检查插件是否已安装。',
+  'banner.noBackend': '暂时连不上记忆服务，请重试。',
   'banner.pluginOff': '记忆功能已关闭：不会载入、保存或 Dream 记忆。',
-  'banner.tokenExpired': '与记忆服务的连接已失效，刷新页面即可重新连接。',
+  'banner.tokenExpired': '与记忆服务的连接已失效，请重试以重新连接。',
   'btn.back': '返回',
   'btn.cancel': '取消',
   'btn.clear': '清除搜索',
@@ -310,7 +316,6 @@ const ZH = {
   'btn.edit': '编辑',
   'btn.new': '新建',
   'btn.refresh': '刷新',
-  'btn.reload': '刷新页面',
   'btn.retry': '重试',
   'btn.review': '去审阅',
   'btn.save': '保存',
@@ -336,6 +341,7 @@ const ZH = {
   'detail.unverifiedIndex': '还没有经过 Dream 核实。',
   'detail.updated': '更新于 {time}',
   'detail.verified': '{date} 已核实：Dream 用来源对话逐字核对过这段内容。',
+  'detail.userConfirmed': '你已于 {date} 确认此版本。',
   'edit.conflict': '另一个窗口先保存了这条笔记。你的草稿还在；刷新后可以看到较新的版本。',
   'edit.content': '详细内容',
   'edit.contentPlaceholder': '支持 Markdown。Ctrl+Enter 保存。',
@@ -504,10 +510,16 @@ const ZH = {
   'tidy.runState.skipped': '已跳过',
   'tidy.runState.done': '完成',
   'tidy.runState.paused': '已暂停',
+  'tidy.decision.applied': '已应用',
+  'tidy.decision.partially-applied': '部分应用',
+  'tidy.decision.rejected': '未通过',
+  'tidy.decision.deferred': '已暂缓',
+  'tidy.decision.undone': '已撤销',
   'tidy.runNoChanges': '复查了 {offered} 个会话中的 {sessions} 个，没有需要修改的地方。用了约 {tokens} token。',
   'tidy.runSkipped': '跳过：{reason}',
   'tidy.runUnfinished': '到轮数上限时还没做完，这次没有提出改动。再运行一次会接着复查没做完的会话。用了约 {tokens} token。',
   'tidy.runUnfinishedWrites': '部分改动写入失败，相关会话会留待下次处理。',
+  'tidy.runIncompleteReview': '停止时只复查了 {sessions}/{offered} 个会话。再次运行 Dream 可继续复查。',
   'tidy.runCheckpointConflict': '来源已变化，保存的分析已过时。请重新运行 Dream 以读取最新来源。',
   'tidy.runCheckpointUnavailable': '保存的检查点缺失或已损坏。请重新运行 Dream。',
   'tidy.runTitle': '本次运行',
@@ -1422,6 +1434,7 @@ function normalizeStatus(raw) {
               .map((run) => ({
                 runId: typeof run.runId === 'string' ? run.runId : '',
                 status: typeof run.status === 'string' ? run.status : '',
+                decision: typeof run.decision === 'string' ? run.decision : '',
                 error: typeof run.error === 'string' ? run.error : '',
                 skipReason: typeof run.skipReason === 'string' ? run.skipReason : '',
                 resumable: run.resumable === true,
@@ -1769,20 +1782,36 @@ function normalizeStatus(raw) {
       return undefined;
     }
 
-    function createBackend({ api, sessionId }) {
+    function createBackend({ api, sessionId, connection }) {
       const sid = typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined;
-      const mode = api !== null ? 'api' : 'none';
-      const get = (endpoint, query = {}) => {
-        if (api === null) throw new Error('the memory service is unavailable');
-        return apiRequest(api, 'GET', endpoint, { query: { sessionId: sid, ...query } });
+      const request = async (method, endpoint, options) => {
+        const current = connection ? await connection.get() : api;
+        if (!current) {
+          throw Object.assign(new Error('the memory service is unavailable'), { code: 'no-backend' });
+        }
+        try {
+          return await apiRequest(current, method, endpoint, options);
+        } catch (error) {
+          if (error.status === 401) connection?.invalidate(current);
+          throw error;
+        }
       };
-      const post = (endpoint, body = {}) => {
-        if (api === null) throw new Error('the memory service is unavailable');
-        return apiRequest(api, 'POST', endpoint, { body: { sessionId: sid, ...body } });
-      };
+      const get = (endpoint, query = {}) => request('GET', endpoint, { query: { sessionId: sid, ...query } });
+      const post = (endpoint, body = {}) => request('POST', endpoint, { body: { sessionId: sid, ...body } });
 
       async function status() {
         return normalizeStatus(await get('/status'));
+      }
+
+      async function chipStatus() {
+        const data = await get('/status', { view: 'chip' });
+        const status = normalizeStatus(data);
+        return {
+          config: status.config,
+          index: status.index,
+          entryCount: asNumber(data.entryCount, status.entries.length),
+          needsReview: typeof data.needsReview === 'boolean' ? data.needsReview : planWaiting(status),
+        };
       }
 
       async function file(name) {
@@ -1893,9 +1922,10 @@ function normalizeStatus(raw) {
       }
 
       return {
-        mode,
+        get mode() { return (connection ? connection.current : api) ? 'api' : 'none'; },
         sessionId: sid,
         status,
+        chipStatus,
         fileHistory,
         file,
         saveRules,
@@ -2623,24 +2653,6 @@ function normalizeStatus(raw) {
       );
     }
 
-    function reloadButton(t) {
-      return h(
-        'button',
-        {
-          type: 'button',
-          className: 'ccm-btn ccm-btn-sm',
-          onClick: () => {
-            try {
-              window.location.reload();
-            } catch {
-              /* nothing else to do */
-            }
-          },
-        },
-        t('btn.reload'),
-      );
-    }
-
     // -----------------------------------------------------------------------
     // Memories tab: filters, one list, and a reader that shows trust.
     // -----------------------------------------------------------------------
@@ -2666,7 +2678,8 @@ function normalizeStatus(raw) {
         const name = STATUS_NAMES.includes(entry.status) ? t('status.' + entry.status) : t('trust.stale');
         text = t('detail.stale', { status: name });
       } else if (trust === 'verified') {
-        text = t('detail.verified', { date: entry.verified.date || '—' });
+        text = t(entry.verified.source === 'user-explicit' ? 'detail.userConfirmed' : 'detail.verified',
+          { date: entry.verified.date || '—' });
       } else if (trust === 'changed') {
         text = t('detail.changed');
       } else {
@@ -3415,8 +3428,9 @@ function normalizeStatus(raw) {
       // A background run reports its own progress; /status only carries a log.
       const runs = Array.isArray(status.dreamRuns) ? status.dreamRuns : [];
       const activeRun = (item) => item?.status === 'running' || item?.status === 'cancelling';
-      const shownRun = (activeRun(live) ? live : null) || runs.find(activeRun)
-        || (live?.resumable ? live : null) || runs.find((item) => item.resumable) || live || runs[0] || null;
+      const currentLive = (live && runs.find((item) => item.runId === live.runId && item.decision)) || live;
+      const shownRun = (activeRun(currentLive) ? currentLive : null) || runs.find(activeRun)
+        || (currentLive?.resumable ? currentLive : null) || runs.find((item) => item.resumable) || currentLive || runs[0] || null;
       const running = Boolean(shownRun && (shownRun.status === 'running' || shownRun.status === 'cancelling'));
       const showRun = backend.mode === 'api' && shownRun !== null &&
         (shownRun.status === 'running' || shownRun.status === 'cancelling' || shownRun.status === 'failed' ||
@@ -3593,7 +3607,7 @@ function normalizeStatus(raw) {
               'div',
               { className: 'ccm-card-head' },
               h('span', { className: 'ccm-card-title' }, t('tidy.runTitle')),
-              h('span', { className: 'ccm-pill' + runTone }, t('tidy.runState.' + runStatus)),
+              h('span', { className: 'ccm-pill' + runTone }, t(shownRun.decision ? 'tidy.decision.' + shownRun.decision : 'tidy.runState.' + runStatus)),
             ),
             // The internal stage name (agent/done) means nothing to a reader; say the outcome.
             runStatus === 'done' && shownRun.skipReason === 'nothing-new'
@@ -3604,6 +3618,10 @@ function normalizeStatus(raw) {
               }))
               : runStatus === 'done' && shownRun.skipReason === 'unfinished'
                 ? h('p', { className: 'ccm-card-text' }, t('tidy.runUnfinished', { tokens: asNumber(shownRun.usage?.totalTokens, 0).toLocaleString() }))
+              : runStatus === 'done' && shownRun.skipReason === 'incomplete-review'
+                ? h('p', { className: 'ccm-card-text' }, t('tidy.runIncompleteReview', {
+                  sessions: asNumber(shownRun.sessionsReviewed, 0), offered: asNumber(shownRun.sessionsOffered, 0),
+                }))
               : runStatus === 'skipped' && shownRun.skipReason
                 ? h('p', { className: 'ccm-card-text' }, t('tidy.runSkipped', { reason: shownRun.skipReason }))
                 : null,
@@ -4202,7 +4220,7 @@ function normalizeStatus(raw) {
     // MemoryView (conversation.view)
     // -----------------------------------------------------------------------
     function MemoryViewReady(props) {
-      return h(ViewBoundary, null, h(MemoryView, props));
+      return h(ViewBoundary, { key: props.memSessionId }, h(MemoryView, props));
     }
 
     function MemoryView(props) {
@@ -4240,8 +4258,8 @@ function normalizeStatus(raw) {
       const refreshSeq = React.useRef(0);
       const refreshInFlight = React.useRef(null);
       const refresh = React.useCallback(async () => {
-        if (backend === null || backend.mode === 'none') {
-          if (alive.current) setLoad({ phase: 'error', status: null, error: new Error('no-backend') });
+        if (backend === null) {
+          if (alive.current) setLoad({ phase: 'error', status: null, error: { code: 'no-backend' } });
           return null;
         }
         // One poll at a time: a burst of clicks (or a timer tick landing on a
@@ -4407,11 +4425,17 @@ function normalizeStatus(raw) {
 
       // ---- banners -------------------------------------------------------------
       const banners = [];
-      if (backend === null || backend.mode === 'none') {
-        banners.push(h(Banner, { key: 'nb', tone: 'error', text: t('banner.noBackend'), action: reloadButton(t) }));
+      if (load.error?.code === 'no-backend') {
+        banners.push(h(Banner, { key: 'nb', tone: 'error', text: t('banner.noBackend') }));
       }
       if (tokenExpired) {
-        banners.push(h(Banner, { key: 'tk', tone: 'error', text: t('banner.tokenExpired'), action: reloadButton(t) }));
+        banners.push(h(Banner, {
+          key: 'tk', tone: 'error', text: t('banner.tokenExpired'),
+          action: status ? h('button', {
+            type: 'button', className: 'ccm-btn ccm-btn-sm', disabled: busy !== '',
+            onClick: () => run('refresh', refresh, { refresh: false }),
+          }, t('btn.retry')) : null,
+        }));
       }
       // The host keeps imported backend modules until it restarts, so a page
       // can be newer than the code answering it; say so once, up front.
@@ -4463,7 +4487,7 @@ function normalizeStatus(raw) {
           title: t('error.load'),
           text: errorText(load.error, t),
           action:
-            backend && backend.mode !== 'none'
+            backend
               ? h('button', { type: 'button', className: 'ccm-btn', disabled: busy !== '', onClick: () => run('refresh', () => refresh(), { refresh: false }) }, t('btn.retry'))
               : null,
         });
@@ -4525,7 +4549,7 @@ function normalizeStatus(raw) {
     // Status chip (conversation.composer.dock)
     // -----------------------------------------------------------------------
     function MemoryStatusChipReady(props) {
-      return h(ViewBoundary, null, h(MemoryStatusChip, props));
+      return h(ViewBoundary, { key: props.memBackend?.sessionId }, h(MemoryStatusChip, props));
     }
 
     function MemoryStatusChip(props) {
@@ -4535,11 +4559,11 @@ function normalizeStatus(raw) {
       const [hidden, setHidden] = React.useState(false);
 
       React.useEffect(() => {
-        if (backend === null || backend.mode === 'none') return undefined;
+        if (!backend?.sessionId) return undefined;
         let alive = true;
         const tick = async () => {
           try {
-            const next = await backend.status();
+            const next = await backend.chipStatus();
             if (!alive) return;
             setStatus(next);
             setHidden(false);
@@ -4557,7 +4581,6 @@ function normalizeStatus(raw) {
 
       if (hidden || status === null) return null;
       const on = status.config.enabled !== false && status.config.autoMemoryEnabled !== false;
-      const attention = attentionCount(status);
       const summary = loadSummary(status, t);
       return h(
         React.Fragment,
@@ -4567,13 +4590,13 @@ function normalizeStatus(raw) {
           'div',
           {
             className: 'ccm-chip-dock',
-            title: summary ? summary.text : status.project.memoryDir || t('chip.title'),
+            title: summary?.text || t('chip.title'),
             'data-cc-memory-chip': '1',
           },
           h('span', { className: 'ccm-chip-dot', 'data-on': on ? 'true' : 'false' }),
           h('span', null, t('chip.label')),
-          h('span', { className: 'ccm-chip-count' }, String(status.entries.length)),
-          attention > 0 ? h('span', { className: 'ccm-chip-alert' }, '· ' + t('chip.attention', { n: attention })) : null,
+          h('span', { className: 'ccm-chip-count' }, String(status.entryCount)),
+          status.needsReview ? h('span', { className: 'ccm-chip-alert' }, '· ' + t('chip.attention', { n: 1 })) : null,
         ),
       );
     }
@@ -4650,8 +4673,23 @@ function normalizeStatus(raw) {
 
       // The silent HTTP API is the only data path; page data never touches the
       // session log.
-      const api = await discoverBridge();
-      backendFactory = (sessionId) => createBackend({ api, sessionId });
+      let api = await discoverBridge();
+      let discovery;
+      const connection = {
+        get current() { return api; },
+        get() {
+          if (api) return api;
+          discovery ??= discoverBridge().then((next) => {
+            api = next;
+            return next;
+          }).finally(() => { discovery = undefined; });
+          return discovery;
+        },
+        invalidate(previous) {
+          if (api === previous) api = null;
+        },
+      };
+      backendFactory = (sessionId) => createBackend({ connection, sessionId });
       const backendFor = backendFactory;
       const labelT = boundT;
 
@@ -4695,7 +4733,7 @@ function normalizeStatus(raw) {
               name: 'conversation.composer.dock',
               id: 'cc-memory-status',
               order: 50,
-              inject: () => ({ memBackend: backendFor(undefined), memT: fallbackT }),
+              inject: (owner) => ({ memBackend: backendFor(sessionIdOf(owner)), memT: fallbackT }),
             },
             MemoryStatusChipReady,
           ),

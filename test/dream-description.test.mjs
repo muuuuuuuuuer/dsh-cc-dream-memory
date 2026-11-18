@@ -1,9 +1,4 @@
-/**
- * A rewritten description is a retrieval change, not a knowledge change: the
- * facts stay put, so no citation can exist for the rewording. It must reach the
- * reviewer as its own kind, and a description edited in the same write as a
- * fact change must still carry a source.
- */
+/** Descriptions used in recall must agree with the current note. */
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { reviewProofs } from '../src/dream-evidence.js';
@@ -31,7 +26,7 @@ const proofFor = (prior, next) => reviewProofs({
 test('a rewritten description over unchanged facts is its own kind', async () => {
   const proof = await proofFor(
     page(file, 'How to report results', first),
-    page(file, 'How to report test results and failures', first),
+    page(file, first, first),
   );
   assert.equal(proof.kind, 'description');
 });
@@ -58,4 +53,13 @@ test('a description rewrite that adds a fact still needs a source', async () => 
     page(file, 'How to report test results', `${first}\n${second}`),
   );
   assert.equal(proof.kind, 'missing');
+});
+
+test('a factual description that contradicts an unchanged body requires review', async () => {
+  const proof = await proofFor(
+    page(file, 'Deployment platform', 'Deploy to GCP.'),
+    page(file, 'Deploy to AWS.', 'Deploy to GCP.'),
+  );
+  assert.equal(proof.kind, 'missing');
+  assert.ok(proof.unsupportedClaims.includes('Description: Deploy to AWS.'));
 });

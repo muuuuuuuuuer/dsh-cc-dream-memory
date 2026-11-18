@@ -22,7 +22,7 @@ function arg(name) { const i = process.argv.indexOf(name); return i >= 0 ? proce
 
 async function runHeadless({ cwd, patch, prompt, timeoutMs = 240000 }) {
   return await new Promise((resolve) => {
-    const child = spawn(EXE, ['--expose-internals', CLI, '--profile', PROFILE, '--patch', patch, 'headless', '--json', prompt], {
+    const child = spawn(EXE, ['--expose-internals', CLI, '--profile', PROFILE, '--patch', patch, '--json', prompt], {
       cwd,
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
       shell: false,

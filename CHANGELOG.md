@@ -1,5 +1,19 @@
 # Changelog — dsh-cc-dream-memory
 
+## 0.23.1
+
+- Dream finds sessions from the repository root, its subdirectories and linked worktrees in either open order. A profile-wide memory directory override does not bring unrelated repositories into the transcript review.
+- The composer badge follows the active conversation and requests a compact project summary. The Memory panel can reconnect without reloading DSH.
+- Concurrent edits of different runtime switches now survive together on disk.
+- The recall selector is told that the agent already sees the memory index and that an empty selection is the usual answer. In a live check with DeepSeek Flash, seven queries run twice, unrelated messages pulled in 2 notes instead of 11, and every target note was still selected. `eval/recall-selector.mjs` reruns it.
+
+## 0.23.0
+
+- Dream checks which recommendation each applicability condition belongs to. New descriptions require support from the current page or a checked source.
+- Dream binds quotes that span multiple sentences and reports unsupported claims while the model can still revise the draft. Review rechecks the final bytes before applying.
+- Runs that stop with unread sessions report incomplete review. Run status records application, deferral, rejection and undo. The panel identifies memory versions confirmed through manual saves.
+- Recall keeps Chinese exceptions with clipped passages and preserves literal Markdown examples. The evaluation harness passes the original prompt and requires a successful switch for any Dream draft before scoring the Dream condition.
+
 ## 0.22.1
 
 - Recall uses the latest user message for ranking and selection. Concurrent steps for that turn use one selector request. A truncated reply is discarded, and timeout or cancellation releases the turn even if the provider stalls.

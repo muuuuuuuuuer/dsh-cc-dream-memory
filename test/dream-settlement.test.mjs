@@ -18,15 +18,21 @@ async function setup(t, options = {}, sourceFacts = facts) {
   };
   const run = (calls, runId) => {
     let turn = 0;
-    env.host.services.llm.stream = () => streamOf(turn++ === 0 ? [
-      ...calls.map(([name, args], i) => ({
-        type: 'block-end', block: { type: 'tool-call', id: `call-${i}`, name, arguments: args },
-      })),
-      { type: 'finish', reason: { kind: 'tool-calls' } },
-    ] : [{ type: 'text-delta', text: 'DONE' }, { type: 'finish', reason: { kind: 'stop' } }]);
+    env.host.services.llm.stream = ({ messages }) => {
+      if (turn++ > 0) {
+        env.assertFeedback?.(messages);
+        return streamOf([{ type: 'text-delta', text: 'DONE' }, { type: 'finish', reason: { kind: 'stop' } }]);
+      }
+      return streamOf([
+        ...calls.map(([name, args], i) => ({
+          type: 'block-end', block: { type: 'tool-call', id: `call-${i}`, name, arguments: args },
+        })),
+        { type: 'finish', reason: { kind: 'tool-calls' } },
+      ]);
+    };
     return env.runtime.dream({ pctx: env.pctx, force: true, runId });
   };
-  return { ...env, run };
+  return Object.assign(env, { run });
 }
 
 const citations = (session_id) => [{ session_id, seq: 1, quote: facts[session_id] }];
@@ -34,10 +40,65 @@ const read = (session_id) => ['session_read', { session_id, seq: 1 }];
 const review = (session_id) => ['work_done', { session_id, through_seq: 1, summary: facts[session_id] }];
 const write = (file, id, body = facts[id]) => ['memory_write', { file, body, citations: citations(id) }];
 
+test('swapping adjacent environment conditions cannot pass as preservation', async (t) => {
+  const { pctx, runtime, run } = await setup(t);
+  const before = 'Run amber-bolt-76.\nCheck the exit code.\n适用条件：Windows。\n\nRun violet-fan-93.\nCheck the exit code.\n适用条件：Linux。';
+  const after = 'Run amber-bolt-76.\nCheck the exit code.\n适用条件：Linux。\n\nRun violet-fan-93.\nCheck the exit code.\n适用条件：Windows。';
+  await pctx.store.writeRawEntry(release, { type: 'project', body: before });
+  const result = await run([['memory_write', { file: release, body: after }]], 'run-condition-swap');
+  assert.equal(result.ready, true);
+  assert.equal((await runtime.switchDream({ pctx, runId: result.runId })).error, 'evidence-required');
+  assert.equal((await pctx.store.readEntry(release)).body, before);
+});
+
+test('a cross-sentence citation supports its original Chinese conclusions under a grounded heading', async (t) => {
+  const first = '这个项目的内部代号是 Aurora。';
+  const second = 'Aurora 只在内部沟通使用。';
+  const quote = first + second;
+  const { pctx, runtime, run } = await setup(t, {}, { s1: quote });
+  const body = '## Aurora\n\n' + first + '\n' + second;
+  const result = await run([read('s1'), ['memory_write', { file: release, body, citations: [{ session_id: 's1', seq: 1, quote }] }]], 'run-chinese-span');
+  assert.equal(result.ready, true);
+  assert.equal((await runtime.switchDream({ pctx, runId: result.runId })).ok, true);
+  const applied = await runtime.dreamRun(pctx, result.runId);
+  assert.deepEqual([applied.status, applied.decision, applied.applied], ['done', 'applied', true]);
+  assert.equal((await pctx.store.readEntry(release)).body, body);
+});
+
+test('a multi-sentence quote cannot move a command to another environment', async (t) => {
+  const quote = 'Production service reads deployment configuration. Staging service deploys with amber-bolt-76.';
+  const { pctx, runtime, run } = await setup(t, {}, { s1: quote });
+  const result = await run([['memory_write', {
+    file: release, body: 'Production service deploys with amber-bolt-76.',
+    citations: [{ session_id: 's1', seq: 1, quote }],
+  }]], 'run-cross-sentence-scope');
+  assert.equal((await runtime.switchDream({ pctx, runId: result.runId })).error, 'evidence-required');
+});
+
+test('a sourced correction updates the command and retains its separate staging exception', async (t) => {
+  const quote = 'Replace use make release with use pnpm release.';
+  const { pctx, runtime, definitions, run } = await setup(t, {}, { s1: quote });
+  const exception = '## Staging\n\nStaging still uses npm release.';
+  await pctx.store.writeRawEntry(release, { type: 'project', body: 'Use make release.\n\n' + exception });
+  const body = 'Use pnpm release.\n\n' + exception + '\n\n## History\n\n- Superseded: Use make release.';
+  const result = await run([read('s1'), ['memory_write', { file: release, body, citations: [{ session_id: 's1', seq: 1, quote }] }]], 'run-sourced-correction');
+  assert.equal((await runtime.switchDream({ pctx, runId: result.runId })).ok, true);
+  const readBack = await definitions.get('memory_read').execute({ file: release }, { agent: { id: 'fresh-session' } });
+  assert.match(readBack.body, /Use pnpm release/u);
+  assert.match(readBack.body, /Staging still uses npm release/u);
+  assert.doesNotMatch(readBack.body, /make release/u);
+});
+
 test('a checked quote leaves an unrelated sentence on the same line for direct confirmation', async (t) => {
-  const { pctx, runtime, mods, run } = await setup(t);
+  const env = await setup(t);
+  const { pctx, runtime, mods, run } = env;
   const runId = 'run-mixed-evidence';
   const unsupported = 'Every deployment requires a production restart.';
+  env.assertFeedback = (messages) => {
+    const feedback = messages.findLast(({ role }) => role === 'tool').content[0].text;
+    assert.match(feedback, /Unsupported claims/u);
+    assert.match(feedback, /Every deployment requires a production restart/u);
+  };
   assert.equal((await run([write(release, 's1', `${facts.s1} ${unsupported}`)], runId)).ready, true);
   const service = mods.status.createStatusService(runtime);
   const blocked = await runtime.switchDream({ pctx, runId });
@@ -138,5 +199,7 @@ test('undo reopens the applied session and leaves an independently rejected sess
   assert.equal((await runtime.switchDream({ pctx, runId: result.runId, reject: [release] })).ok, true);
   assert.deepEqual(pctx.state.snapshot().dreamProcessedSessions.map(({ id }) => id), ['s1', 's2']);
   assert.equal((await runtime.undoLastDream(pctx)).ok, true);
+  const undone = await runtime.dreamRun(pctx, result.runId);
+  assert.deepEqual([undone.status, undone.decision, undone.applied], ['done', 'undone', false]);
   assert.deepEqual(pctx.state.snapshot().dreamProcessedSessions.map(({ id }) => id), ['s1']);
 });

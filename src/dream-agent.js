@@ -19,6 +19,8 @@ import { memoryHash } from './write-review.js';
 import { currentBody } from './memory-body.js';
 import { resolveModel, describeLlmError } from './llm-call.js';
 import { scanSecrets } from './secrets.js';
+import { resolveIdentity } from './identity.js';
+import { resolveProjectRoot } from './paths.js';
 import {
   prepareShadow,
   diffShadow,
@@ -72,7 +74,6 @@ Your job:
    - When two current pages contradict each other, keep the value that another page or a session explicitly states supersedes the other (for example "X is retired"). When the two hold under different conditions, keep both lines and give each its condition; do not average them into one. If neither is clear, change nothing.
    - When a page you keep says the other page's value is retired or replaced, that page is the evidence: delete or correct the other page now and cite it as {memory_file, quote}. Do not wait for a session to repeat it.
    - Remove clearly stale or wrong pages only when the evidence is in a session you read or in another current page that you keep.
-   - Add source annotations like ^[session#seq, YYYY-MM-DD] to new fact lines when you can.
    - Put each new or changed claim on its own line and cite a short source passage for each claim. Keep the original terms and conditions from the passage.
    - Keep MEMORY.md index lines one line each, under ~150 chars.
 5. Reply DONE when finished. If nothing durable changed, reply DONE without writing.
@@ -81,12 +82,13 @@ Rules:
 - Only durable facts that cannot be read from the repository: user preferences, corrections, decisions, external references, and what a session observed that the files do not — the symptom, what was tried, the result that followed, and when it applies. State the observation; mark a cause you only infer as unconfirmed.
 - Never save secrets, one-off task details, code patterns, file paths, or project structure.
 - When a fact holds only under a condition, put \`Applies when: <condition>\` on its own line under it, and keep one canonical line per condition instead of one line that averages them.
-- Rewrite a description that does not say which questions the page answers: recall shows the first ~160 characters of the description and nothing else. Rewrite it in the same write as any fact change — a later write drops the earlier write's citations — and a write that only changes the description needs no citation.
+- Keep the description short and grounded in the current note. An exact sentence from the note or an empty description is fine. Include citations again when revising a draft.
 - Use absolute dates.
 - Do not write to the live store; you only have shadow tools.
 - Prefer updating an existing page over creating a near-duplicate.
 - Cite each new or changed fact and any deletion that loses information. In the write/delete tool call pass citations: [{session_id, seq, quote}] with quotes copied verbatim from session_read, or [{memory_file, quote}] with a quote copied verbatim from the current text of another page that stays (from memory_read). Without a matched quote on the final page version, only fact-preserving changes can be applied. If a citation fails, correct it before finishing.
-- Do not invent quotes. If uncertain, leave it for review.`;
+- For facts from sessions, copy the useful source sentences as plain body lines in the original language. Omit headings, inline citations, and explanations from those new notes. Put the quotes in the citations field. For user decisions or preferences, use original user messages and skip assistant restatements. Leave the description empty unless it can quote the body directly.
+- If a write reports unsupported claims, make one focused revision using the original wording or removing the unsupported addition. Never invent quotes. Before DONE, call work_done for each session whose unread text you finished, even if it produced no note.`;
 
 function warn(scope, error) {
   try {
@@ -184,21 +186,36 @@ async function sessionBounds(sessionQuery, id) {
   }
 }
 
-async function candidatesOf({ ctx, pctx, config, metadataOnly = false, signal, sessionIds }) {
+async function candidatesOf({ ctx, pctx, config, metadataOnly = false, signal, sessionIds, excludeSessionId }) {
   const sessionQuery = ctx?.get?.('sessionQuery');
   if (typeof sessionQuery?.filterSessions !== 'function') return [];
-  const records = await sessionQuery.filterSessions([{ kind: 'cwd', values: [pctx.workspaceDir] }], signal);
+  const wanted = sessionIds ? new Set(sessionIds) : null;
+  const records = await sessionQuery.filterSessions(wanted ? [{ kind: 'id', values: [...wanted] }] : [], signal);
+  // The storage directory can be shared by worktrees, or overridden for the
+  // whole profile. Only related project roots contribute transcripts.
+  const scopes = new Map();
+  const scopeOf = (cwd) => {
+    if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) return undefined;
+    if (!scopes.has(cwd)) {
+      const identity = resolveIdentity({ workspaceDir: cwd, config });
+      const root = identity.source === 'marker' ? resolveProjectRoot(identity.projectRoot) : identity.projectRoot;
+      scopes.set(cwd, JSON.stringify([root, identity.projectId]));
+    }
+    return scopes.get(cwd);
+  };
+  const projectScope = scopeOf(pctx.workspaceDir);
+  if (projectScope === undefined) return [];
   const processed = candidateState(pctx.state);
   const active = new Set((pctx.state.snapshot?.().sessionsSince ?? []).map((item) => item.id));
-  const wanted = sessionIds ? new Set(sessionIds) : null;
   const candidates = [];
   for (const record of Array.isArray(records) ? records : []) {
     const header = record?.header ?? record?.session ?? record;
     const id = textOf(header?.id);
-    if (!id || header?.parentSession || header?.origin === 'subagent') continue;
+    if (!id || id === excludeSessionId || header?.parentSession || header?.origin === 'subagent') continue;
     if (wanted && !wanted.has(id)) continue;
     const mark = processed.get(id);
     if (mark && !mark.partial && !active.has(id)) continue;
+    if (scopeOf(header.cwd) !== projectScope) continue;
     candidates.push({ id, createdAt: Number(header?.createdAt) || 0, readSeq: mark?.seq ?? null, checkedAt: mark?.at ?? 0 });
   }
   candidates.sort((a, b) => a.checkedAt - b.checkedAt || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
@@ -255,13 +272,13 @@ function reviewProgress(candidate, reads) {
   if (!candidate.bounds) return null;
   const required = candidate.bounds.required.filter((seq) => seq > (candidate.readSeq ?? -1));
   const next = required.findIndex((seq) => !reads?.has(seq));
-  if (next === -1) return { seq: candidate.bounds.lastSeq, missing: [] };
+  if (next === -1) return { seq: required.at(-1) ?? candidate.readSeq, missing: [] };
   const seq = next > 0 ? required[next - 1] : candidate.readSeq;
   return { seq, missing: required.slice(next).filter((seq) => !reads?.has(seq)).slice(0, 8) };
 }
 
 /** One tool surface, bound to the shadow store and the host session query. */
-function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSession: onSessionRead, onWrite, onEvidence, onLink, reads, seenSessions, signal, work, onWorkDone, onPageRead }) {
+function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSession: onSessionRead, onWrite, onEvidence, onReview, onLink, reads, seenSessions, signal, work, onWorkDone, onPageRead }) {
   const recordEvidence = typeof onEvidence === 'function' ? onEvidence : () => {};
   const sessionQuery = ctx?.get?.('sessionQuery');
   const citationSchema = {
@@ -472,7 +489,8 @@ function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSessi
             if (from !== '' && from !== result.file && typeof onLink === 'function') onLink(from, result.file);
           }
           const revision = memoryHash((await shadowStore.readEntry(result.file)).raw);
-          return 'WROTE ' + result.file + await checkCitations(args.citations, result.file, revision);
+          const citationStatus = await checkCitations(args.citations, result.file, revision);
+          return 'WROTE ' + result.file + citationStatus + await onReview(result.file, 'changed');
         } catch (error) {
           return `ERROR: ${error?.message ?? error}`;
         }
@@ -486,7 +504,8 @@ function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSessi
           onWrite(file, 'delete');
           const into = textOf(args.moved_to);
           if (into !== '' && into !== file && typeof onLink === 'function') onLink(file, into);
-          return 'DELETED ' + file + await checkCitations(args.citations, file, 'removed');
+          const citationStatus = await checkCitations(args.citations, file, 'removed');
+          return 'DELETED ' + file + citationStatus + await onReview(file, 'removed');
         } catch (error) {
           return `ERROR: ${error?.message ?? error}`;
         }
@@ -565,20 +584,26 @@ function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSessi
           }
           if (lines.length > 0) seenSessions.add(sessionId);
           const body = lines.join('\n');
-          if (paged) return body ? clip(body) : 'No visible text in this window.';
+          const item = candidates.find((candidate) => candidate.id === sessionId);
+          const progress = reviewProgress(item, reads.get(sessionId));
+          const checkpointed = work?.get(sessionId)?.seq ?? item.readSeq ?? -1;
+          const ready = (progress?.seq ?? -1) > checkpointed
+            ? 'After analysis, call work_done through_seq=' + progress.seq + '.' : '';
+          const remaining = progress?.missing.length ? 'Unread text seqs: ' + progress.missing.join(', ') + '.' : '';
+          const hint = [ready, remaining].filter(Boolean).join(' ');
+          if (paged) return clip([hint, body || 'No visible text in this window.'].filter(Boolean).join('\n'));
           // A window can land inside a long run of tool calls and come back
           // empty. Naming the range it covered and where the next text is keeps
           // the agent from re-reading the same seq with other widths until its
           // turns run out.
           const first = covered.length > 0 ? Math.min(...covered) : seq;
           const last = covered.length > 0 ? Math.max(...covered) : seq;
-          const item = candidates.find((candidate) => candidate.id === sessionId);
           const upcoming = (item?.bounds?.required ?? []).filter((at) => at > last).slice(0, 3);
           const footer = '[window seq ' + first + '–' + last + ': ' + covered.length + ' events, ' + hidden
             + ' without text; '
             + (upcoming.length > 0 ? 'next text at seq ' + upcoming.join(', ') : 'no more text in this session')
             + ']';
-          return clip([footer, ...(body ? [body] : [])].join('\n'));
+          return clip([footer, hint, body].filter(Boolean).join('\n'));
         } catch (error) {
           return `ERROR: ${error?.message ?? error}`;
         }
@@ -878,7 +903,10 @@ export class DreamAgent {
         await writeRunManifest(runDir, manifest);
         await state.markDreamStart?.();
         const capturedAt = Date.now();
-        const candidates = noSessions ? [] : await candidatesOf({ ctx: this.ctx, pctx, config, signal: loopSignal, sessionIds: checkpoint?.sessionIds });
+        const candidates = noSessions ? [] : await candidatesOf({
+          ctx: this.ctx, pctx, config, signal: loopSignal, sessionIds: checkpoint?.sessionIds,
+          excludeSessionId: reason === 'eval' && config.evalMode ? pctx.sessionId : undefined,
+        });
         const work = new Map((checkpoint?.work ?? []).map((record) => [record.id, record]));
         if (checkpoint && (candidates.length !== checkpoint.sessionIds.length || [...work.values()].some((record) => {
           const item = candidates.find(({ id }) => id === record.id);
@@ -990,6 +1018,15 @@ export class DreamAgent {
           onReadSession,
           onWrite,
           onEvidence,
+          onReview: async (file, action) => {
+            const [proof] = await reviewProofs({ diff: { files: [{ file, action }] }, store, shadowStore, links, evidence });
+            const bound = new Set(proof.bindings.flatMap(({ claims }) => claims)).size;
+            const missing = proof.unsupportedClaims.map((claim) => '- ' + oneLine(claim, 280)).slice(0, 8);
+            if (proof.kind !== 'missing') return '\nReview check: ' + proof.kind + (bound ? ', ' + bound + ' bound claim(s)' : '');
+            return '\nReview check: ' + bound + ' bound claim(s). ' + (missing.length > 0
+              ? 'Unsupported claims:\n' + missing.join('\n')
+              : 'The proposed change needs review.');
+          },
           onPageRead: (file) => readFiles.add(file),
           work,
           onWorkDone: async (candidate, seq, summary) => {
@@ -1180,7 +1217,10 @@ export class DreamAgent {
         if (diff.files.length === 0) {
           // Running out of turns is not the same answer as "nothing to change".
           const unfinished = loop.stopped === 'max-turns' || loop.stopped === 'budget';
-          const outcome = unfinished ? 'unfinished' : 'nothing-new';
+          const incomplete = coverage.sessionsReviewed < coverage.sessionsOffered;
+          const outcome = unfinished ? 'unfinished' : incomplete ? 'incomplete-review' : 'nothing-new';
+          const noChangeSummary = unfinished ? 'stopped at the turn or cost limit before proposing changes'
+            : incomplete ? 'stopped before finishing session review' : 'nothing to change';
           await clearShadow(paths);
           if (failedWrites.size > 0) {
             await state.completeDreamRun({ runId, status: 'failed', skipReason: '', error: 'unfinished-writes', finishedAt: Date.now() }, records);
@@ -1194,7 +1234,7 @@ export class DreamAgent {
             sessions: coverage.sessionsReviewed,
             ops: 0,
             files: 0,
-            summary: unfinished ? 'Dream agent: stopped at the turn limit before proposing changes' : 'Dream agent: nothing to change',
+            summary: 'Dream agent: ' + noChangeSummary,
             mode: 'shadow',
             durationMs: Date.now() - startedAt,
             inputChars: prompt.length,
@@ -1211,7 +1251,7 @@ export class DreamAgent {
             ok: true,
             skipped: true,
             skipReason: outcome,
-            summary: unfinished ? 'stopped at the turn limit before proposing changes' : 'nothing to change',
+            summary: noChangeSummary,
             runId,
           });
         }
