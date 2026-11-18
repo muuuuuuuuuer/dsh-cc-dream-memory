@@ -59,7 +59,7 @@ $DSH_HOME/cc-memory/
 | 维度 | 官方（2026-11） | 本插件（v23） |
 |---|---|---|
 | 写入时机 | 每轮 query loop 后 forked agent 自动抽取，主 agent 已写则跳过，5-turn 预算 | `autoExtract` 默认开：主线 `turn/end`、本 turn 主 agent 写过则跳过、默认每 3 个 turn 一次、进程内 5-turn 工具循环，只读游标之后的转写；写入直接过 `memory_save` 门 |
-| 召回 | 每轮一次 Sonnet selector，最多自动附 5 个主题文件 | `recallMode:'model'`（唯一）：廉价 selector + 元数据 manifest + recentTools，候选 ≤5、附加受 `autoRecallMaxFiles`（默认 3）限制；超时/失败静默空，无词面回退 |
+| 召回 | 每轮一次 Sonnet selector，最多自动附 5 个主题文件 | `recallMode:'model'`：按标题、简介和当前正文搜候选，再由模型从清单最多选 5 篇，实际附加受 `autoRecallMaxFiles`（默认 3）限制。超时或失败时跳过本轮召回。 |
 | 系统提示 | 完整 auto-memory 段：类型+scope、保存/不保存清单、Why/How、漂移核验 | 19 行紧凑手册：四类型、保存/不保存、Why/How、绝对日期、推荐前核验；无 team |
 | 子代理记忆 | 子代理可用 frontmatter `memory` 拥有 user/project/local 目录，快照合并 | 单一 `subagentMemory`：`off` 不注入/不可写，`shared` 项目库读写，`own` 用 `agents/<preset>/memory`（`agentMemoryPresets` 可限制）；无快照合并 |
 | 团队记忆 | `team/` + 服务器同步 + secret scanner | 无 |
@@ -149,7 +149,7 @@ $DSH_HOME/cc-memory/
 
 **数据通道是静默 HTTP API**：`GET/POST /api/cc-memory/*`；loopback + `x-cc-memory-token`（token 持久化在 `~/.dsh/cc-memory/.api-token`，插件重载不再失效）+ 只接受 loopback 来源 + POST 校验 Origin；写 rules 会追加审计到 `<projectDir>/.memory-rules.log`（scope/source/bytes/sha256）。页面拿不到 API（加载早于插件安装/重载）时显示明确 banner 和「刷新页面」按钮，不再静默降级为命令模式；`enabled:false` 时除 `/status`、`/toggle` 外一律返回 `plugin-disabled`。
 
-API 端点：`GET /status`、`GET /file`、`GET /rules`、`GET /log`、`GET /backups`、`GET /trash`、`GET /inbox`、`POST /rules`、`POST /toggle`、`POST /inbox`、`POST /dream`（`run|start|status|cancel|switch|discard|estimate|undo`）、`POST /delete`、`POST /restore`。
+API 端点：`GET /status`、`GET /file`、`GET /rules`、`GET /log`、`GET /backups`、`GET /trash`、`GET /inbox`、`POST /rules`、`POST /toggle`、`POST /inbox`、`POST /dream`（`run|start|status|cancel|resume|switch|discard|estimate|undo`）、`POST /delete`、`POST /restore`。
 
 ## Dream（后台整理）
 
@@ -173,7 +173,7 @@ API 端点：`GET /status`、`GET /file`、`GET /rules`、`GET /log`、`GET /bac
 
 **水位线**：每个会话读到哪一步（`seq`）、是否读完，都记在 state 里，**只有切换成功才推进**。没切换、失败都不移动水位线；撤销一次切换会把那批会话放回待处理，下一轮重新覆盖；只读了一部分的长会话下一轮从断点继续；已读完的会话有新内容时只读新增部分。
 
-开始前可以用 `POST /dream {action:'estimate'}`（UI 的 Estimate 按钮）取一次估算，它会返回 `inputId` 与 `ranges`；带这两个字段启动时，若期间会话变了，运行会以 `stale-input` 跳过并让你重新估算，而不是悄悄分析一份你没看过的范围。
+开始前可以用 `POST /dream {action:'estimate'}`（界面的估算按钮）查看粗略的输入 token 用量。启动时会选择当时可用的会话。Dream 用 `work_done` 保存已经分析的连续会话片段及草稿。运行暂停且检查点有效时，可以用 `/memory dream resume <runId>` 继续。来源变动导致检查点失效时，需启动一轮新的 Dream。
 
 安全默认：自动 dream 关闭；删除默认开启但只做软删除（进 `.trash/`，可恢复）；每次改动有备份与 changelog；记忆只是背景上下文（注入文本明确「可能过时，不覆盖 AGENTS.md/CLAUDE.md 等指令」）。
 

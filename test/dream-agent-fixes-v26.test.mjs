@@ -80,7 +80,7 @@ test('a run with nothing to change does not mark unread sessions reviewed', asyn
   const first = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-review-1' });
   assert.equal(first.skipReason, 'nothing-new');
   const mark = env.pctx.state.snapshot().dreamProcessedSessions.find((item) => item.id === 's1');
-  assert.equal(mark, undefined, 'no session_done means the session stays unread');
+  assert.equal(mark, undefined, 'without work_done the session stays unread');
 
   // Still a candidate on the next run.
   const prompts = script(env, [[]]);

@@ -548,11 +548,7 @@ export class MemoryRuntime {
     return () => this.listeners.delete(listener);
   }
 
-  /**
-   * Start a Dream run and return its id immediately. A run is one agent loop
-   * with no partial state to continue: a stopped or failed run is started
-   * again, not resumed.
-   */
+  /** Start a fresh Dream or continue an identified checkpoint in the background. */
   async startDream(pctx, options = {}) {
     return this.#dreamAgent.start({ pctx, ...options });
   }

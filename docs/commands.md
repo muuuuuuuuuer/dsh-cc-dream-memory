@@ -31,7 +31,7 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 | `/memory dream undo` | Undo the most recent switch (only the notes that switch touched) |
 | `/memory dream history` | List past Dreams |
 | `/memory dream status` | Show what a Dream would read and whether one is ready |
-| `/memory dream estimate [--focus "<topic>"]` | Estimate input tokens without calling the model or changing memory; actual total can be higher |
+| `/memory dream estimate [--memory-only]` | Estimate input tokens without calling the model or changing memory. Actual total usage can be higher. |
 | `/memory dream on` | Turn on automatic Dreams. They are off by default |
 | `/memory dream off` | Turn automatic Dreams off |
 

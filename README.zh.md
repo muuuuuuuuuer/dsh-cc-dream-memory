@@ -122,7 +122,7 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.20.0
    /memory dream status <runId>
    ```
 
-   Dream 是一次 agent 运行：自己搜还没复查过的会话，只读需要的记忆页。`/memory dream cancel` 停止运行并丢弃副本，之后重新运行即可。`/memory dream run --wait` 等待运行结束。
+   Dream 会搜索尚未复查的会话，并读取需要的记忆页。运行暂停且已有检查点时，可以点 **继续本次运行**，或运行 `/memory dream resume <runId>` 接着处理。`/memory dream cancel` 丢弃正在处理的草稿。给 `run` 或 `resume` 加上 `--wait` 可以等待本次结果。
 
 4. 审阅后切换到副本，需要时可以撤销。
 
@@ -148,7 +148,7 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.20.0
 | 整理方式 | 插件校验并生成副本，支持切换、丢弃和撤销 |
 | Dream 写入的新事实 | 必须引用会话原文 |
 | 自动 Dream | 默认关闭 |
-| 召回 | 模型根据笔记元数据选择候选 |
+| 召回 | 按标题、简介和当前正文生成候选，模型每轮选择一次，默认最多附加 3 篇 |
 | 子代理 | 默认不注入记忆 |
 
 ## 适合你吗
@@ -157,16 +157,37 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.20.0
 
 这些情况可以看看别的插件：
 
-- **需要向量检索或托管的记忆服务。** 本插件都没有。模型按笔记元数据选择候选，可能漏召回。`@openviking/dsh-memory-plugin`、`@honcho-ai/dsh-honcho` 和 `dsh-tdai-memory` 走的是其他路线。
+- **需要向量检索或托管的记忆服务。** 本插件使用本地 Markdown 和词法候选排序。如果查询与笔记措辞差异较大，仍可能漏召回。`@openviking/dsh-memory-plugin`、`@honcho-ai/dsh-honcho` 和 `dsh-tdai-memory` 走的是其他路线。
 - **每次写入都要审批。** 自动抽取和普通记忆写入一样直接经过重复/冲突/密钥检查；Inbox 只保留人工暂存提案与 Dream 结果。
 
 ## 你的数据
 
 - 记忆保存在你自己的机器上，位于 `$DSH_HOME/cc-memory/`。插件没有遥测。
-- 记忆内容会随正常提示词发给你的模型服务。
+- 召回模型会收到候选简介和短命中片段。选中的笔记会作为回答上下文发给模型服务。
 - Dream 会把会话文本和记忆发给你配置的模型服务。虚构的三个短会话演示用了 6,500 到 11,000 tokens；一次真实项目批次记录为 **149,984 总 tokens、约 263 秒**，随后应用了两次记忆写入和一次索引更新。两者工作量不同，不能当作典型成本。见[脱敏汇总](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/REAL-WORKSPACE-OBSERVATIONS-2026-11-09.md)。
 - 运行 Dream 会调用模型。启动前可用 `/memory dream estimate`，或查看界面启动 Dream 时显示的输入估算；单独估算不调用模型。实际总用量可能高于粗略输入估算。`dreamMaxTotalTokens: 0` 表示不限；需要成本保护时，请配置明确的预算和 `dreamCostMode: block`。
 - 符合常见密钥格式的写入会被拒绝。这是启发式检查，不能保证拦住所有密钥。详见 [SECURITY.md](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/SECURITY.md)。
+
+## 0.21.0 改动与测试
+
+- **自动召回检索笔记的当前正文。** 标题、简介和正文共同决定候选。错误码、命令或适用条件即使只写在正文里，也能让较早的笔记进入候选。正文命中时，选择模型会看到短片段，且只能从已展示的文件里选。历史段落和退役笔记不参与正文匹配。每个用户轮次最多调用一次选择模型。
+- **Dream 可以从已保存的检查点续跑。** 已分析的会话范围与草稿可以在宿主重启后恢复。来源变更使检查点失效时，界面会提示重新运行。审阅可查看具体结论对应的依据，选择性接受、暂缓和撤销均有回归覆盖，包括切换写入失败时的回滚。
+- **记忆维护修复。** 编辑检查文件版本并保留历史，索引保住长标题的链接并排除已替代条目。总读取和会话首次读取合并为一次写入。此次也移除了退役的 Wiki 模块和旧 Dream 启动参数。
+
+其余改动与修复见更新日志。 [0.21.0 更新日志](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/CHANGELOG.md#0210)
+
+用 DeepSeek Flash 对同一批 4 个合成场景做了配对验证，以提交 `4c0acd3` 为对照，每个版本在每个场景各运行一次。 [配对评测记录](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/RECALL-0.21.0.md)
+
+| 结果 | 改动前 | 0.21.0 |
+|---|---:|---:|
+| 有目标时，目标页进入候选 | 0/3 | 3/3 |
+| 有目标时，目标页实际附加 | 0/3 | 3/3 |
+| 回答符合预期 | 1/4 | 4/4 |
+| 选择请求平均总 token | 2,771 | 2,802 |
+
+无相关记忆的场景，两版都没有附加笔记。新版在纠正场景采用了新值，在条件场景选中了对应环境的笔记。配对通过插件召回钩子和 DeepSeek API 执行，反映的是这 4 个场景的结果。0.21.0 的 DSH 桌面端到端验证仍待完成。
+
+`npm run verify` 在 75 个测试文件中通过 594 项断言。`node eval/validate.mjs` 可校验冻结的评测资产，`node eval/run.mjs --fake-model --only dev-02-correction --runs 1` 可在不调用模型的情况下验证评测流程。 [评测方法](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/README.md)
 
 ## 现状
 

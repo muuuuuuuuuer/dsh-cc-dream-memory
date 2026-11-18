@@ -3,7 +3,7 @@
  *
  * One JSON document per project (`paths.metricsFile`, `.metrics.json` beside
  * the memory directory) records how often memory is injected, which files are
- * actually read (and newly adopted per session), how much is written, how
+ * read (including first reads per session), how much is written, how
  * searches perform, what a dream cost and how good its plans were.
  *
  * Concurrency and robustness:
@@ -493,15 +493,29 @@ export async function recordRecall(paths, fileCount) {
   });
 }
 
-/** Count one read of one memory file. */
-export async function recordRead(paths, file) {
+/** Count a read, including first reads when the caller has a session id. */
+export async function recordRead(paths, file, sessionId) {
   if (typeof file !== 'string' || file === '') return readMetrics(paths);
   return mutate(paths, (metrics) => {
     const now = Date.now();
     const entry = entryOf(metrics, file);
     entry.reads += 1;
     entry.lastReadAt = now;
-    ensureDay(metrics, now).reads += 1;
+    const day = ensureDay(metrics, now);
+    day.reads += 1;
+    if (typeof sessionId !== 'string' || sessionId === '') return metrics;
+    const sessionKey = sessionId.slice(0, 200);
+    const firstReads = metrics.adoptions;
+    const files = Array.isArray(firstReads.sessions[sessionKey]) ? firstReads.sessions[sessionKey] : [];
+    if (files.includes(file)) return metrics;
+    firstReads.sessions[sessionKey] = [...files, file].slice(-ADOPTION_FILES_PER_SESSION);
+    const sessionIds = Object.keys(firstReads.sessions);
+    for (const id of sessionIds.slice(0, Math.max(0, sessionIds.length - ADOPTION_SESSION_LIMIT))) {
+      delete firstReads.sessions[id];
+    }
+    firstReads.count += 1;
+    firstReads.lastAt = now;
+    day.adopted += 1;
     return metrics;
   });
 }
@@ -515,41 +529,6 @@ export async function recordWrite(paths, file) {
     entry.writes += 1;
     entry.lastWriteAt = now;
     ensureDay(metrics, now).writes += 1;
-    return metrics;
-  });
-}
-
-/**
- * Record one adoption: the first read of a file inside one session. Repeated
- * reads of the same file in the same session do not count again.
- * @param {object} paths
- * @param {string} file memory file name
- * @param {string} [sessionId]
- * @returns {Promise<object>}
- */
-export async function recordAdoption(paths, file, sessionId) {
-  if (typeof file !== 'string' || file === '') return readMetrics(paths);
-  const sessionKey = typeof sessionId === 'string' && sessionId !== '' ? sessionId.slice(0, 200) : '';
-  return mutate(paths, (metrics) => {
-    if (!metrics.adoptions || typeof metrics.adoptions !== 'object') {
-      metrics.adoptions = { count: 0, lastAt: 0, sessions: {} };
-    }
-    const adoptions = metrics.adoptions;
-    if (!adoptions.sessions || typeof adoptions.sessions !== 'object') adoptions.sessions = {};
-    const files = Array.isArray(adoptions.sessions[sessionKey]) ? adoptions.sessions[sessionKey] : [];
-    if (files.includes(file)) return metrics;
-    files.push(file);
-    adoptions.sessions[sessionKey] = files.slice(-ADOPTION_FILES_PER_SESSION);
-    const sessionIds = Object.keys(adoptions.sessions);
-    if (sessionIds.length > ADOPTION_SESSION_LIMIT) {
-      for (const key of sessionIds.slice(0, sessionIds.length - ADOPTION_SESSION_LIMIT)) {
-        delete adoptions.sessions[key];
-      }
-    }
-    const now = Date.now();
-    adoptions.count = nonNegativeInt(adoptions.count, 0) + 1;
-    adoptions.lastAt = now;
-    ensureDay(metrics, now).adopted += 1;
     return metrics;
   });
 }

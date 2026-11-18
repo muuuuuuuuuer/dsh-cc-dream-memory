@@ -26,7 +26,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseFrontmatter, stringifyFrontmatter } from './frontmatter.js';
-import { currentBody, isCurrentPage } from './memory-body.js';
+import { currentBody, currentFactsInContext, isCurrentPage } from './memory-body.js';
+import { tokenize } from './policy.js';
 import { bodyHashOf } from './verification-ledger.js';
 import { withFileLock } from './lock.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -301,7 +302,10 @@ function indexLine(meta) {
   const prefix = `- [${meta.name}](${meta.file}) — `;
   const room = INDEX_LINE_MAX_CHARS - prefix.length - 1;
   if (room >= 16) return `${prefix}${description.slice(0, room).trimEnd()}…`;
-  return `${line.slice(0, INDEX_LINE_MAX_CHARS - 1)}…`;
+  // Drop the description instead of cutting the line: a truncated link reads as
+  // prose, so the page stops being indexed and every save appends another
+  // orphan line beside the broken one.
+  return `- [${meta.name}](${meta.file})`;
 }
 
 /** A retired page's index line: the name still leads somewhere. */
@@ -574,7 +578,6 @@ export class MemoryStore {
     if (transaction?.store === this && transaction.active) {
       return Promise.resolve().then(operation).finally(() => {
         this._contentCache.clear();
-        this._metaCache.clear();
       });
     }
     const locked = async () => {
@@ -582,7 +585,6 @@ export class MemoryStore {
         return await this._withWriteLock(operation);
       } finally {
         this._contentCache.clear();
-        this._metaCache.clear();
       }
     };
     const next = this._tail.then(locked, locked);
@@ -694,17 +696,17 @@ export class MemoryStore {
   }
 
   /**
-   * Metadata for one topic file, validated by stat. A cache hit costs one stat;
-   * a miss reads only the frontmatter head. Full bodies are read by
-   * `readEntry()` and cached separately.
+   * Metadata for one topic file, validated by stat. Default listings need the
+   * frontmatter head. Recall listings cache searchable facts for that revision.
    * @param {string} name topic file name.
    * @param {string} target absolute path.
+   * @param {boolean} currentOnly exclude empty or inactive pages.
    * @returns {Promise<ReturnType<MemoryStore['_entryMeta']>|undefined>}
    */
-  async _loadMeta(name, target) {
+  async _loadMeta(name, target, currentOnly) {
     let info;
     try {
-      info = await fs.stat(target);
+      info = currentOnly ? await fs.lstat(target) : await fs.stat(target);
     } catch (error) {
       if (isMissing(error)) {
         this._metaCache.delete(name);
@@ -712,22 +714,34 @@ export class MemoryStore {
       }
       throw error;
     }
+    if (!info.isFile()) return undefined;
     const revision = fileRevision(info);
     const cached = this._metaCache.get(name);
-    if (cached?.revision === revision) return cached.meta;
-    let raw = await this._readHead(target);
+    if (cached?.revision === revision && (!currentOnly || cached.recall !== undefined)) {
+      return currentOnly ? cached.recall : cached.meta;
+    }
+    let raw = currentOnly ? await this._readContent(target) : await this._readHead(target);
     if (raw === undefined) {
       this._metaCache.delete(name);
       return undefined;
     }
-    if (!hasCompleteFrontmatter(raw) && info.size > raw.length) {
+    if (!currentOnly && !hasCompleteFrontmatter(raw) && info.size > raw.length) {
       raw = (await this._readContent(target)) ?? raw;
     }
-    const meta = this._entryMeta(name, parseFrontmatter(raw), raw);
+    const parsed = parseFrontmatter(raw);
+    const meta = this._entryMeta(name, parsed, raw);
     meta.bytes = info.size;
     meta.revision = revision;
-    this._metaCache.set(name, { revision, meta });
-    return meta;
+    let recall;
+    if (currentOnly) {
+      recall = null;
+      if (parsed.body.trim() !== '' && isCurrentPage(parsed.body)) {
+        const facts = scanSecrets(parsed.body).matches.length === 0 ? currentFactsInContext(parsed.body) : [];
+        recall = { ...meta, facts, bodyTerms: tokenize(facts.join('\n')) };
+      }
+    }
+    this._metaCache.set(name, { revision, meta, recall });
+    return currentOnly ? recall : meta;
   }
 
   /** Whether a path exists (without following a final symbolic link). */
@@ -836,11 +850,12 @@ export class MemoryStore {
     const existing = (await this._readText(indexFile)) ?? '';
     const lines = splitLines(existing);
     const line = indexLine(meta);
-    const needle = `](${meta.file})`;
     const next = [];
     let replaced = false;
     for (const candidate of lines) {
-      if (candidate.includes(needle)) {
+      // Match the line's own link target, not a `](file)` substring: a
+      // description that links another page must not take that page's line.
+      if (referencedFile(candidate) === meta.file) {
         if (!replaced) {
           next.push(line);
           replaced = true;
@@ -858,8 +873,7 @@ export class MemoryStore {
   async _removeIndexLine(scope, file) {
     const indexFile = this._indexFile(scope);
     const existing = (await this._readText(indexFile)) ?? '';
-    const needle = `](${file})`;
-    const lines = splitLines(existing).filter((line) => !line.includes(needle));
+    const lines = splitLines(existing).filter((line) => referencedFile(line) !== file);
     const text = lines.length > 0 ? `${lines.join('\n')}\n` : '';
     return this._writeIndexLocked(scope, text);
   }
@@ -930,26 +944,34 @@ export class MemoryStore {
   /**
    * Every topic file in one scope, sorted by file name.
    * @param {'project'} [scope]
+   * @param {{currentOnly?:boolean}} [options] list active pages with recall facts and terms.
    * @returns {Promise<Array<{file:string,name:string,description:string,type:string,
    *   modified:string,bytes:number,lines:number}>>}
    */
-  async listEntries(scope = 'project') {
+  async listEntries(scope = 'project', { currentOnly = false } = {}) {
     normalizeScope(scope);
     const dir = this._scopeDir();
     let names;
     try {
       names = await fs.readdir(dir);
     } catch (error) {
-      if (isMissing(error)) return [];
+      if (isMissing(error)) {
+        this._metaCache.clear();
+        return [];
+      }
       throw error;
     }
     const indexName = this._indexName();
+    const noteNames = new Set(names.sort().filter((name) => MEMORY_FILE_RE.test(name) && name !== indexName && !RESERVED_FILES.has(name)));
+    // Each remaining entry is checked against its own file revision below.
+    for (const name of this._metaCache.keys()) {
+      if (!noteNames.has(name)) this._metaCache.delete(name);
+    }
     const entries = [];
-    for (const name of names.sort()) {
-      if (!MEMORY_FILE_RE.test(name) || name === indexName || RESERVED_FILES.has(name)) continue;
+    for (const name of noteNames) {
       let meta;
       try {
-        meta = await this._loadMeta(name, path.join(dir, name));
+        meta = await this._loadMeta(name, path.join(dir, name), currentOnly);
       } catch (error) {
         if (isMissing(error)) continue;
         continue;
@@ -1734,6 +1756,16 @@ export class MemoryStore {
       const appended = [];
       for (const meta of missing) {
         if (entryLines >= maxLines) break;
+        // `audit.missing` is computed before the prune above, so a page whose
+        // line was just dropped would be appended back on the next refresh,
+        // flipping MEMORY.md every time. Ask the page, not the audit.
+        let current = true;
+        try {
+          current = isCurrentPage((await this.readEntry(meta.file, normalized)).body);
+        } catch {
+          current = false;
+        }
+        if (!current) continue;
         kept.push(indexLine(meta));
         appended.push(meta.file);
         entryLines += 1;

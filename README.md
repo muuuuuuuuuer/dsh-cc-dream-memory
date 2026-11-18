@@ -120,7 +120,7 @@ Run these in a session.
    /memory dream status <runId>
    ```
 
-   Dream is one agent run: it searches the sessions it has not reviewed and reads only the memory pages it needs. `/memory dream cancel` stops a run and throws its copy away; run Dream again to start over. `/memory dream run --wait` waits for the run to finish.
+   Dream searches the sessions it has not reviewed and reads the memory pages it needs. If the run pauses with saved analysis, use **Continue this run** or `/memory dream resume <runId>` to continue from its checkpoint. `/memory dream cancel` discards the running draft. Add `--wait` to `run` or `resume` to wait for the result.
 
 4. Review the result in Memory and switch to it when ready. Undo the switch if you change your mind.
 
@@ -146,7 +146,7 @@ What is different here:
 | Consolidation | A validated copy you can switch to or discard, with backups and undo |
 | New facts from Dream | Must quote the transcript |
 | Automatic Dream | Off by default |
-| Recall | A cheap model selector picks at most 5 candidates per turn; autoRecallMaxFiles (default 3) still caps what is attached. There is no lexical fallback |
+| Recall | Titles, descriptions, and current note text rank candidates. One model call per turn selects up to 5 files, and `autoRecallMaxFiles` caps attachments (default 3). |
 | Auto-extract | On by default. After the mainline turn ends, a bounded 5-turn in-process tool loop reads only events after the stored cursor and writes through `memory_save` (duplicate/conflict/secret gates still apply) |
 | Subagents | One `subagentMemory` policy: `off` (default), `shared`, or `own` per-agent directories |
 
@@ -156,16 +156,37 @@ This plugin suits you if you want to read and correct what your agent remembers,
 
 Look elsewhere if you need:
 
-- **Vector search or a hosted memory service.** This plugin has neither. Recall is a cheap model selector over note names and descriptions, so a rephrased question can still miss. `@openviking/dsh-memory-plugin`, `@honcho-ai/dsh-honcho` and `dsh-tdai-memory` take other approaches.
+- **Vector search or a hosted memory service.** This plugin uses local Markdown and lexical candidate ranking. Queries phrased very differently from the notes can still miss. `@openviking/dsh-memory-plugin`, `@honcho-ai/dsh-honcho` and `dsh-tdai-memory` take other approaches.
 - **Approval for every write.** Auto-extraction writes directly, like ordinary saves; both still pass duplicate/conflict/secret checks. The Inbox only holds manually staged proposals and Dream results.
 
 ## Your data
 
 - Memories stay on your machine, under `$DSH_HOME/cc-memory/`. The plugin has no telemetry.
-- Memory text goes to your model provider as part of normal prompts.
+- The recall model receives candidate descriptions and short matching excerpts. Selected notes go to your model provider as context for the answer.
 - Dream sends session text and memories to the provider you configured. The synthetic three-short-session demo used 6,500 to 11,000 tokens. One real-project batch used **149,984 reported total tokens and about 263 seconds**, then applied two memory writes and one index update. These are different workloads, not a typical-use estimate. See the [aggregate observations](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/REAL-WORKSPACE-OBSERVATIONS-2026-11-09.md).
 - Before starting a run, use `/memory dream estimate`, or review the input estimate shown when starting Dream in the interface. Estimation reads the input without calling the model. Starting a run calls the model. Actual total usage can exceed the rough input estimate. `dreamMaxTotalTokens: 0` means unlimited; set an explicit budget and `dreamCostMode: block` if you need the existing cost guard.
 - Writes that match common key formats are refused. This is a heuristic and will not catch every secret. See [SECURITY.md](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/SECURITY.md).
+
+## 0.21.0 changes and tests
+
+- **Recall searches current note text.** Titles, descriptions, and body terms share the candidate budget. An older note can reach the selector through an error code, command, or condition recorded only in its body. The selector gets a short excerpt when the body matches and can choose only from the files it was offered. History and retired notes stay out of body matching. Recall makes at most one selector request per user turn.
+- **Dream can resume from a saved checkpoint.** It saves reviewed session ranges and drafts. It can resume after a host restart, or request a new run if a source changes. Proposed changes show claim-level evidence for review. Selective acceptance, deferral, and undo have regression coverage, including failed writes during a switch.
+- **Memory maintenance fixes.** Editing preserves history and checks the revision. Index updates preserve long-name links and keep superseded entries out. Read totals and first reads per session are written together. The retired Wiki module and old Dream launch fields were removed.
+
+The changelog lists the remaining changes and fixes. [0.21.0 changelog](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/CHANGELOG.md#0210)
+
+DeepSeek Flash ran once per version in each of four synthetic scenarios, using `4c0acd3` as the baseline. [Evaluation record](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/RECALL-0.21.0.md)
+
+| Result | Baseline | 0.21.0 |
+|---|---:|---:|
+| Relevant note reached the candidate list | 0/3 | 3/3 |
+| Relevant note was attached | 0/3 | 3/3 |
+| Answer matched the expected result | 1/4 | 4/4 |
+| Average total tokens per selector request | 2,771 | 2,802 |
+
+Both versions attached nothing for the unrelated query. The upgraded version attached the corrected value and selected the note for the applicable environment. The run exercised the plugin's recall hook through the DeepSeek API. This sample measured four scenarios under controlled conditions. The 0.21.0 DSH desktop end-to-end check is still pending.
+
+`npm run verify` passed 594 assertions across 75 test files. Run `node eval/validate.mjs` to check the frozen evaluation assets, or `node eval/run.mjs --fake-model --only dev-02-correction --runs 1` to exercise the evaluation flow without model calls. [Evaluation setup](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/README.md)
 
 ## Status
 

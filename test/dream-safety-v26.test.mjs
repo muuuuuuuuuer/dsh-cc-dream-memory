@@ -10,9 +10,10 @@ import { toolsEnv, commandEnv, exists } from './v10-helpers.mjs';
 const now = Date.parse('2026-11-15T10:00:00Z');
 const AWS_KEY = `AKIA${'ABCDEFGHIJKLMNOP'}`;
 const QUOTE = 'We moved to pnpm for installs';
-const correction = [{ session_id: 's1', seq: 7, quote: QUOTE }];
+const RELEASE = 'Replace make release with pnpm release.';
+const correction = [{ session_id: 's1', seq: 7, quote: RELEASE }];
 const ciSource = [{ session_id: 's1', seq: 8, quote: 'CI runs on every push.' }];
-const deletion = [{ session_id: 's1', seq: 9, quote: 'Remove the old project note, it is obsolete.' }];
+const deletion = [{ session_id: 's1', seq: 9, quote: 'Remove project_old.md because it is obsolete.' }];
 
 function toolCall(id, name, args) {
   return { type: 'block-end', block: { type: 'tool-call', id, name, arguments: args } };
@@ -57,7 +58,7 @@ async function dreamEnv(t, overrides = {}, make = toolsEnv) {
     filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir, createdAt: now - 1000, lastSeq: 9 } }],
     searchEvents: async () => ({ items: [{ seq: 7, snippet: QUOTE }] }),
     readEvent: async ({ seq }) => ({
-      events: seq === 7 ? [{ seq: 7, type: 'user/message', data: { content: [{ type: 'text', text: `${QUOTE} last week.` }] } }] : [{ seq, type: 'user/message', data: { content: [{ type: 'text', text: seq === 8 ? ciSource[0].quote : deletion[0].quote }] } }],
+      events: seq === 7 ? [{ seq: 7, type: 'user/message', data: { content: [{ type: 'text', text: `${QUOTE} last week. ${RELEASE}` }] } }] : [{ seq, type: 'user/message', data: { content: [{ type: 'text', text: seq === 8 ? ciSource[0].quote : deletion[0].quote }] } }],
     }),
   };
   return env;
@@ -74,7 +75,7 @@ test('a Dream write carrying a secret is refused and never reaches the copy', as
   ]);
   const result = await dream(env, 'run-secret');
   assert.match(toolResults(replies).join('\n'), /^ERROR: .*secret/imu);
-  assert.equal(result.skipReason, 'nothing-new');
+  assert.equal(result.error, 'unfinished-writes');
   assert.equal(env.pctx.state.snapshot().shadowPending, null);
   assert.equal(await exists(file(env, 'reference_aws.md')), false);
 });
@@ -188,7 +189,7 @@ test('block mode does not call the model when the first prompt is already over t
   assert.equal(calls(), 0);
 });
 
-test('/memory dream cancel stops a running Dream and resume is gone', async (t) => {
+test('/memory dream cancel discards the run and prevents resume', async (t) => {
   const env = await dreamEnv(t, {}, commandEnv);
   let release;
   const gate = new Promise((resolve) => { release = resolve; });
@@ -199,5 +200,6 @@ test('/memory dream cancel stops a running Dream and resume is gone', async (t) 
   assert.match(cancelled.message ?? cancelled.text ?? '', /is stopping/u);
   const result = await started.done;
   assert.equal(result.error, 'cancelled');
-  assert.equal(typeof env.runtime.resumeDreamRun, 'undefined');
+  const resumed = await env.invokeMemory('dream resume run-cancel');
+  assert.match(resumed.message ?? resumed.text ?? '', /not-resumable/u);
 });

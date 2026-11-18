@@ -21,7 +21,7 @@ import { VERSION, buildHealth } from './meta.js';
 import { buildIdentity } from './build-id.js';
 import { dreamReadiness, memoryHealth } from './readiness.js';
 import { exportClaudeMemory, importClaudeMemory } from './import-export.js';
-import { listRunManifests, summarizeRun } from './dream-run.js';
+import { dreamRunOutcome, listRunManifests, summarizeRun } from './dream-run.js';
 import { listSwitches } from './dream.js';
 import { bodyLineChanges } from './dream-evidence.js';
 import { shadowPathsOf } from './dream-shadow.js';
@@ -133,6 +133,17 @@ function coded(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+function evidenceForFile(evidence, file) {
+  return (Array.isArray(evidence) ? evidence : [])
+    .filter((item) => item?.file === file && (typeof item.sessionId === 'string' || typeof item.memoryFile === 'string'))
+    .slice(0, 100)
+    .map(({ memoryFile, sessionId, seq, quote, source, verified, claims, eventType }) => ({
+      ...(typeof memoryFile === 'string' ? { memoryFile } : { sessionId, seq, eventType }),
+      file, quote, source, verified: verified === true,
+      claims: Array.isArray(claims) ? claims.filter((claim) => typeof claim === 'string') : [],
+    }));
 }
 
 function pick(source, fields) {
@@ -780,7 +791,11 @@ export function createStatusService(runtime) {
     }
     const planRefs = (await listSwitches(pctx.paths))
       .filter((meta) => Array.isArray(meta.files) && meta.files.includes(target))
-      .map((meta) => ({ type: 'dream', id: meta.batch, appliedAt: Number(meta.appliedAt) || 0, ops: meta.files.length }));
+      .map((meta) => ({
+        type: 'dream', id: meta.batch, appliedAt: Number(meta.appliedAt) || 0, ops: meta.files.length,
+        evidence: evidenceForFile(meta.evidence, target),
+        confirmedWithoutSource: Array.isArray(meta.confirmedWithoutSource) && meta.confirmedWithoutSource.includes(target),
+      }));
     return { ok: true, file: target, provenance, changelog: changelog.slice(-20), planRefs };
   }
 
@@ -802,20 +817,9 @@ export function createStatusService(runtime) {
     if (pctx.state.snapshot().shadowPending?.runId !== runId) {
       throw coded('stale-dream', 'The pending Dream changed. Refresh the Memory page.');
     }
-    const evidence = (Array.isArray(pending.evidence) ? pending.evidence : [])
-      .filter((item) => item && (typeof item.sessionId === 'string' || typeof item.memoryFile === 'string')
-        && (!item.file || item.file === file))
-      .slice(0, 100)
-      .map((item) => ({
-        ...(typeof item.memoryFile === 'string'
-          ? { memoryFile: item.memoryFile }
-          : { sessionId: item.sessionId, seq: Number(item.seq) || 0 }),
-        quote: typeof item.quote === 'string' ? item.quote : '',
-        source: typeof item.source === 'string' ? item.source : 'citation',
-        verified: item.verified === true,
-        ...(typeof item.file === 'string' ? { file: item.file } : {}),
-      }));
-    return { before, after, evidence, ...bodyLineChanges(before, after) };
+    const proof = (pending.proofs ?? []).find((item) => item.file === file);
+    return { before, after, evidence: evidenceForFile(pending.evidence, file),
+      unsupportedClaims: proof?.unsupportedClaims ?? [], ...bodyLineChanges(before, after) };
   }
 
   /**
@@ -985,7 +989,9 @@ export function createStatusService(runtime) {
     try {
       const manifests = await listRunManifests(pctx?.paths, 5);
       const live = new Set(await rt.liveDreamRunIds());
-      dreamRuns = manifests.map((entry) => summarizeRun(entry.manifest, { running: live.has(entry.manifest?.runId) }));
+      dreamRuns = manifests.map((entry) => summarizeRun(entry.manifest, {
+        running: live.has(entry.runId), checkpoint: entry.checkpoint, outcome: dreamRunOutcome(pctx.state, entry.runId),
+      }));
     } catch {
       dreamRuns = [];
     }
@@ -1106,7 +1112,7 @@ export function createStatusService(runtime) {
    * @param {object} pctx
    * @param {{agent?:object,sessionId?:string,action?:string,runId?:string,
    *   trigger?:string,reason?:string,focus?:string,noSessions?:boolean,
-   *   inputId?:string,inputRanges?:Array,reject?:string[]}} [options]
+   *   reject?:string[]}} [options]
    */
   async function dream(pctx, options = {}) {
     const action = String(options.action ?? 'start').toLowerCase();
@@ -1120,20 +1126,21 @@ export function createStatusService(runtime) {
       reason: options.reason || '',
       focus: typeof options.focus === 'string' ? options.focus : '',
       noSessions: options.noSessions === true,
-      // v23: an estimate hands back an id and the ranges it priced; starting
-      // with them keeps the confirmed scope even if sessions move meanwhile.
-      inputId: typeof options.inputId === 'string' ? options.inputId : '',
-      inputRanges: Array.isArray(options.inputRanges) ? options.inputRanges : null,
     };
     /** A started run's `done` promise stays in-process. */
     const launched = ({ done, ...info }) => ({ ok: true, result: lossless(info) });
     switch (action) {
       case 'estimate':
-        return { ok: true, result: lossless(await rt.estimateDream(pctx, { focus: launch.focus, noSessions: launch.noSessions })) };
+        return { ok: true, result: lossless(await rt.estimateDream(pctx, { noSessions: launch.noSessions })) };
       case 'start':
       case 'run': {
         const started = await rt.startDream(pctx, launch);
         if (action === 'run' && started.done) return { ok: true, result: lossless(await started.done) };
+        return launched(started);
+      }
+      case 'resume': {
+        const started = await rt.startDream(pctx, { agent, runId, resume: true, force: true });
+        if (options.wait === true && started.done) return { ok: true, result: lossless(await started.done) };
         return launched(started);
       }
       case 'status':
@@ -1245,6 +1252,10 @@ export function createStatusService(runtime) {
       const source = path.join(sourceDir, name);
       const target = path.join(memoryDir, name);
       if (path.dirname(target) !== path.resolve(memoryDir)) continue;
+      // Restore writes the file directly, so keep the page it is about to
+      // replace where undo already looks for it.
+      const previous = await fs.readFile(target, 'utf8').catch(() => '');
+      await store._recordHistory?.(name, previous);
       if (kind === 'trash') {
         try {
           await fs.rename(source, target);

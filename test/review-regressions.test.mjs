@@ -73,11 +73,14 @@ test('rejecting the destination protects every source in a merge chain', async (
 
 test('undo can retry after an added page has already been removed', async (t) => {
   const env = await toolsEnv(t);
-  const a = await save(env, 'A', 'Original.');
-  const [citeA, citeB] = cite(env, "Rename A to the new strategy.", "Create B to track the new decision.");
+  const oldA = 'Original release strategy.';
+  const a = await save(env, 'A', oldA);
+  const newA = 'Use the new release strategy.';
+  const newB = 'Track the new testing decision.';
+  const [citeA, citeB] = cite(env, 'Replace the original release strategy with the new release strategy.', newB);
   model(env, [[
-    ['memory_write', { file: a.file, body: 'New A.', citations: citeA }],
-    ['memory_write', { file: 'project_b.md', body: 'New B.', type: 'project', citations: citeB }],
+    ['memory_write', { file: a.file, body: newA, citations: citeA }],
+    ['memory_write', { file: 'project_b.md', body: newB, type: 'project', citations: citeB }],
   ]]);
   assert.equal((await dream(env)).ready, true);
   const switched = await env.runtime.switchDream({ pctx: env.pctx });
@@ -88,7 +91,7 @@ test('undo can retry after an added page has already been removed', async (t) =>
   assert.equal((await env.runtime.undoLastDream(env.pctx)).error, 'undo-partial');
   await fs.rename(held, original);
   assert.equal((await env.runtime.undoLastDream(env.pctx)).ok, true);
-  assert.equal(await body(env, a.file), 'Original.');
+  assert.equal(await body(env, a.file), oldA);
   await assert.rejects(env.pctx.store.readEntry('project_b.md'), { code: 'NOT_FOUND' });
 });
 
@@ -185,8 +188,9 @@ test('a blind replacement must read the page first and cannot use memory_save as
 test('HTTP Dream actions bind to the reviewed batch', async (t) => {
   const { httpEnv, callHttp } = await import('./v10-helpers.mjs');
   const env = await httpEnv(t);
-  const [citations] = cite(env, 'Keep this new durable draft on file.');
-  model(env, [[['memory_write', { file: 'project_draft.md', type: 'project', body: 'Unreviewed batch.', citations }]]]);
+  const statement = 'Keep this new durable draft on file.';
+  const [citations] = cite(env, statement);
+  model(env, [[['memory_write', { file: 'project_draft.md', type: 'project', body: statement, citations }]]]);
   const pending = await dream(env);
   assert.equal(pending.ready, true);
   const act = async (action, runId) => (await callHttp(env, {
@@ -241,7 +245,7 @@ test('Dream estimate loads no logs and ending a search does not cover unread eve
   await env.runtime.estimateDream(env.pctx);
   assert.equal(loads, 0);
   model(env, [[['session_search', { session_id: 's0', query: 'Message 20' }],
-    ['session_done', { session_id: 's0' }]]]);
+    ['work_done', { session_id: 's0', through_seq: 20, summary: 'Reviewed message 20.' }]]]);
   await dream(env);
   assert.equal(loads, 8);
   assert.ok(!env.pctx.state.snapshot().dreamProcessedSessions.some(x => x.id === 's0' && !x.partial));
@@ -253,7 +257,7 @@ test('Dream cannot complete a session whose log could not be loaded', async (t) 
     filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir } }],
     listEvents: async () => { throw new Error('temporary read failure'); },
   };
-  model(env, [[['session_done', { session_id: 's1' }]]]);
+  model(env, [[['work_done', { session_id: 's1', through_seq: 1, summary: 'Reviewed the session.' }]]]);
   await dream(env);
   assert.ok(!env.pctx.state.snapshot().dreamProcessedSessions.some(x => x.id === 's1' && !x.partial));
 });
@@ -279,17 +283,18 @@ test('Dream completes a long event only after it sees every page', async (t) => 
     listEvents: async () => [event],
     readEvent: async () => ({ events: [event] }),
   };
+  const checkpoint = ['work_done', { session_id: 's1', through_seq: 7, summary: 'Reviewed the long event.' }];
   const requests = model(env, [
-    [['session_read', { session_id: 's1', seq: 7, offset: 8000 }], ['session_done', { session_id: 's1' }]],
-    [['session_read', { session_id: 's1', seq: 7, offset: 0 }], ['session_done', { session_id: 's1' }]],
-    [['session_read', { session_id: 's1', seq: 7, offset: 8000 }], ['session_done', { session_id: 's1' }]],
+    [['session_read', { session_id: 's1', seq: 7, offset: 8000 }], checkpoint],
+    [['session_read', { session_id: 's1', seq: 7, offset: 0 }], checkpoint],
+    [['session_read', { session_id: 's1', seq: 7, offset: 8000 }], checkpoint],
   ]);
   const result = await dream(env);
   const outputs = requests.at(-1).messages.filter(m => m.role === 'tool').map(m => m.content[0].text);
-  assert.deepEqual(outputs.filter(s => s.startsWith('INCOMPLETE')), [
-    'INCOMPLETE s1: next unread seqs 7', 'INCOMPLETE s1: next unread seqs 7',
+  assert.deepEqual(outputs.filter(s => s.startsWith('ERROR')), [
+    'ERROR: next unread seqs 7', 'ERROR: next unread seqs 7',
   ]);
-  assert.equal(outputs.at(-1), 'DONE s1');
+  assert.equal(outputs.at(-1), 'CHECKPOINTED s1 through seq 7');
   assert.equal(result.ran, true);
   assert.equal(result.sessionsRead, 1);
   assert.equal(result.sessionsReviewed, 1);
@@ -336,8 +341,8 @@ test('deferring a sourced Dream keeps the reviewed session eligible without reje
   };
   model(env, [[
     ['session_read', { session_id: 's1', seq: 4 }],
-    ['session_done', { session_id: 's1' }],
     ['memory_write', { file: 'project_release.md', body: quote, citations: [{ session_id: 's1', seq: 4, quote }] }],
+    ['work_done', { session_id: 's1', through_seq: 4, summary: 'Reviewed the release date.' }],
   ]]);
   const first = await dream(env);
   assert.equal(first.ready, true);

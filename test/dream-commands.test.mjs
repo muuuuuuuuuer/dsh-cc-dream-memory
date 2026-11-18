@@ -47,3 +47,16 @@ test('dream switch --reject and dream run --memory-only reach the runtime', asyn
   await e.invokeMemory('dream run');
   assert.deepEqual(starts, [true, false]);
 });
+
+test('dream resume --wait continues the named run and reports its result', async (t) => {
+  const env = await commandEnv(t);
+  const runId = '2026-11-17T08-00-00-aaaaaa';
+  env.runtime.dreamRun = async () => ({ ok: true, status: 'paused', resumable: true, runId, checkpointed: 1 });
+  assert.match(messageOf(await env.invokeMemory(`dream status ${runId}`)), new RegExp(`dream resume ${runId}`));
+  env.runtime.startDream = async (_pctx, options) => {
+    assert.equal(options.runId, runId);
+    assert.equal(options.resume, true);
+    return { started: true, runId, done: Promise.resolve({ ran: true, summary: 'Draft restored' }) };
+  };
+  assert.match(messageOf(await env.invokeMemory(`dream resume ${runId} --wait`)), /Draft restored/u);
+});

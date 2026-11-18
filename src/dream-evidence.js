@@ -9,12 +9,56 @@
  */
 
 import { currentBody, currentFactsInContext, memoryStatusOf } from './memory-body.js';
+import { contradictsClaim, supportConflict, supportsStatement, supportTokens } from './support.js';
 import { memoryHash } from './write-review.js';
 
 /** Below this many significant characters a quote proves nothing. */
-const MIN_QUOTE_CHARS = 6;
 const TRANSCRIPT_TAG = /^\[(user|user-pasted|assistant|tool-call|tool-result|tool-error)\] ?/;
 const DATE_MARKER = /^--- (\d{4}-\d{2}-\d{2}) ---$/;
+const RETIREMENT = /\b(?:remove|delete|retir(?:e|ed)|obsolete|deprecated|replac(?:e|ed)|superseded)\b|删除|移除|废弃|停用|淘汰|已替换/iu;
+const UNCERTAIN_RETIREMENT = /[?？]|\b(?:not|never|don't|if|unless|should|could|may|might)\b|不要|不可|尚未|未被|如果|是否/iu;
+const MODALITY = /\b(?:must|should|may|can|will|always|never|required|optional)\b/giu;
+const REPLACEMENT = /^(?:please\s+)?replace (.+?) with (.+)$/iu;
+
+const normalizePassage = (value) => String(value ?? '').replace(/\s+/gu, ' ').trim().toLowerCase();
+const splitPassages = (text) => text.split(/\r?\n|(?<=[.!?])\s+|(?<=[。！？；])\s*|;\s+/u)
+  .map((part) => part.trim()).filter(Boolean);
+
+/** Check the enclosing passage so a clipped quote cannot omit negation or conditions. */
+export function sourcePassages(text, quote) {
+  const wanted = normalizePassage(quote).replace(/…+$/u, '');
+  return wanted ? splitPassages(text).filter((part) => normalizePassage(part).includes(wanted)) : [];
+}
+
+function supportsClaim(claim, passage) {
+  if (normalizePassage(claim) === normalizePassage(passage)) return true;
+  const replacement = REPLACEMENT.exec(passage);
+  const source = replacement && !UNCERTAIN_RETIREMENT.test(passage) ? replacement[2] : passage;
+  if (source === passage && RETIREMENT.test(passage) && !RETIREMENT.test(claim)) return false;
+  if (!supportsStatement(claim, source, { minRatio: 1 })) return false;
+  if (String(claim.match(MODALITY) ?? '').toLowerCase() !== String(source.match(MODALITY) ?? '').toLowerCase()) return false;
+  const words = (value) => (value.match(/[a-z0-9][a-z0-9_+#.-]*|[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/giu) ?? [])
+    .flatMap((word) => [...supportTokens(word)]);
+  const tokens = words(source);
+  let offset = -1;
+  return words(claim).every((token) => {
+    offset = tokens.indexOf(token, offset + 1);
+    return offset !== -1;
+  });
+}
+
+function supportsRemoval(claim, passage, file) {
+  if (!RETIREMENT.test(passage)) {
+    return ['negation', 'quantity'].includes(supportConflict(claim, passage)) && contradictsClaim(claim, passage);
+  }
+  if (UNCERTAIN_RETIREMENT.test(passage)) return false;
+  const words = supportTokens(REPLACEMENT.exec(passage)?.[1] ?? passage);
+  if (words.has(file.toLowerCase())) return true;
+  const tokens = [...supportTokens(claim)];
+  const matches = tokens.filter((token) => words.has(token));
+  return (matches.length >= 2 && matches.length === tokens.length)
+    || matches.some((token) => /\d|[-_.]/u.test(token));
+}
 
 /** Compare text ignoring case, whitespace, markdown and punctuation. */
 export function normalizeForMatch(value) {
@@ -49,13 +93,6 @@ export function parseTranscriptBlocks(text) {
   return blocks.map((block) => ({ tag: block.tag, date: block.date, text: normalizeForMatch(block.raw) }));
 }
 
-/** The first block containing a quote, so its true source and date can be used. */
-export function locateQuote(quote, blocks) {
-  const needle = normalizeForMatch(quote);
-  if (needle.length < MIN_QUOTE_CHARS) return null;
-  return blocks.find((block) => block.text.includes(needle)) ?? null;
-}
-
 /** Content-line inventory, preserving indentation, duplicates and line numbers. */
 export function bodyLineChanges(before, after) {
   const lines = value => String(value ?? '').replace(/\r\n?/g, '\n').split('\n');
@@ -86,6 +123,12 @@ export async function reviewProofs({ diff, store, shadowStore, links, evidence }
   // Facts are compared with the headings above them: renaming "Likes" to
   // "Dislikes" changes every line below it even when those lines are equal.
   const facts = (entry) => currentFactsInContext(entry?.body);
+  const claims = (lines) => lines.flatMap((line) => {
+    const at = line.lastIndexOf(' » ');
+    const context = at === -1 ? '' : line.slice(0, at + 3);
+    const text = line.slice(context.length).replace(/\^\[[^\]]*\]/gu, '');
+    return splitPassages(text).map((part) => context + part);
+  });
   const contains = (all, subset) => subset.every((line) => all.includes(line));
   const endOfMove = (file) => {
     const visited = new Set();
@@ -98,33 +141,40 @@ export async function reviewProofs({ diff, store, shadowStore, links, evidence }
   };
   // A page quote must still be in the current text of that page in the copy
   // being applied, so a change cannot rest on a page it also removes or rewrites.
-  const pageStillSays = async (item) => {
-    if (item.source !== 'memory') return true;
-    const page = await after(item.memoryFile);
-    if (!page || page.file === item.file) return false;
-    const wanted = normalizeForMatch(item.quote);
-    return wanted.length >= MIN_QUOTE_CHARS && normalizeForMatch(currentBody(page.body)).includes(wanted);
+  const passagesOf = async (item) => {
+    if (item.source !== 'memory') return item.passages ?? [];
+    const [original, page] = await Promise.all([before(item.memoryFile), after(item.memoryFile)]);
+    if (!original || !page || page.file === item.file) return [];
+    const originalPassages = sourcePassages(currentBody(original.body), item.quote);
+    const shadowPassages = sourcePassages(currentBody(page.body), item.quote);
+    const originals = new Set(originalPassages.map(normalizePassage));
+    return shadowPassages.length > 0 && shadowPassages.every((part) => originals.has(normalizePassage(part)))
+      ? [...originalPassages, ...shadowPassages] : [];
   };
   const proofs = [];
   for (const { file, action } of diff.files) {
     const prior = await before(file);
     const next = action === 'removed' ? null : await after(file);
     const revision = next ? memoryHash(next.raw) : 'removed';
-    let hasQuote = false;
-    for (const item of evidence) {
+    const checked = [];
+    for (const [index, item] of evidence.entries()) {
       if (item.file !== file || item.revision !== revision || item.verified !== true) continue;
-      if (await pageStillSays(item)) {
-        hasQuote = true;
-        break;
-      }
+      const passages = await passagesOf(item);
+      if (passages.length > 0) checked.push({ index, passages: [item.quote, ...passages], claims: [] });
     }
     let preserved = false;
     let descriptionOnly = false;
     let dependsOn;
+    let added = [];
+    let removed = claims(facts(prior));
     if (next) {
       const moved = await Promise.all(Object.keys(links).filter((source) => endOfMove(source) === file).map(before));
       const priorFacts = facts(prior);
       const nextFacts = facts(next);
+      const oldClaims = new Set(claims([...priorFacts, ...moved.flatMap(facts)]));
+      const newClaims = new Set(claims(nextFacts));
+      added = [...newClaims].filter((claim) => !oldClaims.has(claim));
+      removed = removed.filter((claim) => !newClaims.has(claim));
       const sameFacts = Boolean(prior || moved.some(Boolean))
         && contains(nextFacts, priorFacts)
         && contains([...priorFacts, ...moved.flatMap(facts)], nextFacts)
@@ -148,22 +198,20 @@ export async function reviewProofs({ diff, store, shadowStore, links, evidence }
         && prior.frontmatter.type === entry.frontmatter.type;
       if (preserved) dependsOn = dest;
     }
-    proofs.push({ file, action, revision,
-      kind: hasQuote ? 'citation' : preserved ? 'preserved' : descriptionOnly ? 'description' : 'missing',
-      ...(dependsOn && !hasQuote ? { dependsOn } : {}) });
+    const changes = [...new Set([...added, ...removed])];
+    for (const item of checked) {
+      item.claims = [
+        ...added.filter((claim) => item.passages.every((passage) => supportsClaim(claim, passage))),
+        ...removed.filter((claim) => item.passages.every((passage) => supportsRemoval(claim, passage, next ? '' : file))),
+      ];
+    }
+    const covered = new Set(checked.flatMap((item) => item.claims));
+    const unsupportedClaims = preserved || descriptionOnly ? [] : changes.filter((claim) => !covered.has(claim));
+    const hasSupport = unsupportedClaims.length === 0 && changes.length > 0;
+    proofs.push({ file, action, revision, unsupportedClaims,
+      kind: preserved ? 'preserved' : descriptionOnly ? 'description' : hasSupport ? 'citation' : 'missing',
+      bindings: checked.map(({ index, claims }) => ({ index, claims })),
+      ...(dependsOn ? { dependsOn } : {}) });
   }
   return proofs;
-}
-
-/** Without explicit model dependencies, a failed write invalidates destructive follow-ups. */
-export function dropDestructiveDependents(original, accepted) {
-  const rejectedWrite = (original ?? []).filter(op => op?.op === 'write').length
-    > (accepted ?? []).filter(op => op?.op === 'write').length;
-  const dropped = [];
-  const operations = (accepted ?? []).filter(op => {
-    if (!rejectedWrite || (op.op !== 'delete' && op.op !== 'index')) return true;
-    dropped.push(`${op.op}${op.file ? ` ${op.file}` : ''}: dropped dependency because a write was rejected; regenerate the plan`);
-    return false;
-  });
-  return { operations, dropped };
 }

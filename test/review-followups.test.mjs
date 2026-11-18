@@ -87,7 +87,7 @@ test('a relevant old page reaches the capped recall manifest ahead of newer ones
   });
   rankForQuery(entries, 'Which database do we use for billing?');
   assert.equal(entries[0].file, 'project_database_choice.md');
-  assert.match(recallManifest(entries, { maxCandidates: 200 }), /project_database_choice\.md/);
+  assert.match(recallManifest(entries, { maxCandidates: 200 }).text, /project_database_choice\.md/);
 });
 
 test('a rejection records the exact change and is shown with the next proposal on that page', async (t) => {

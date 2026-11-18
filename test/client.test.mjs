@@ -415,6 +415,25 @@ test('client: a running dream shows its progress and can be stopped or run again
   assert.deepEqual(failed.actions, ['start'], 'run again starts a fresh run');
 });
 
+test('client: a paused Dream continues the saved run by ID', async () => {
+  const runId = '2026-11-17T09-00-00-abcdef';
+  const ui = await dreamTabHarness({ dreamRuns: [{ runId: 'newer-run', status: 'done' }, { runId, status: 'paused', resumable: true, checkpointed: 1 }] });
+  const tree = ui.render().tree;
+  assert.match(collectText(tree), /Sessions with saved analysis: 1/u);
+  const resume = findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Continue this run');
+  assert.ok(resume);
+  await resume.props.onClick();
+  assert.deepEqual(ui.bodies, [{ sessionId: 'cost-preview-session', action: 'resume', runId }]);
+});
+
+test('client: a checkpoint conflict explains why a new Dream is needed', async () => {
+  const ui = await dreamTabHarness({ dreamRuns: [{ runId: 'run-9', status: 'failed', error: 'checkpoint-conflict' }] });
+  const { tree } = ui.render();
+  assert.match(collectText(tree), /saved analysis.*out of date/i);
+  assert.ok(findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Run again'));
+  assert.equal(findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Continue this run'), undefined);
+});
+
 
 
 // ---------------------------------------------------------------------------
@@ -598,6 +617,32 @@ test('client: silent API backend normalizes /status + /file and classifies 401 a
 // ---------------------------------------------------------------------------
 // Pure helpers exposed through window.__CC_MEMORY_INTERNALS__
 // ---------------------------------------------------------------------------
+
+test('client: rules warnings from the server reach the panel', async (t) => {
+  const client = await loadClient();
+  const internals = internalsOrSkip(t, client);
+  const warned = internals.normalizeStatus({
+    ok: true,
+    rules: { text: '- RULE', source: 'project', maxChars: 8000, warnings: ['rule 2 looks like a token', 7] },
+  });
+  assert.deepEqual([...warned.rules.warnings], ['rule 2 looks like a token'], 'only string warnings are kept');
+  const clean = internals.normalizeStatus({ ok: true, rules: { text: '- RULE', source: 'project', maxChars: 8000 } });
+  assert.equal(clean.rules.warnings.length, 0, 'a clean save has nothing to report');
+});
+
+test('client: a failure is matched by the code the host actually sends', async (t) => {
+  const client = await loadClient();
+  const internals = internalsOrSkip(t, client);
+  if (!internals) return;
+  // The host sends SCREAMING_SNAKE codes (src/lock.js: 'LOCK_BUSY'); the panel
+  // used to look for `dream-locked` and never showed the locked sentence.
+  assert.equal(internals.errorKey('LOCK_BUSY', ''), 'locked');
+  assert.equal(internals.errorKey('stale-dream', 'The pending Dream changed.'), 'stale');
+  assert.equal(internals.errorKey('', 'dream-locked'), 'locked');
+  assert.equal(internals.errorKey('STALE_PLAN', ''), 'stale');
+  assert.equal(internals.errorKey('DELETE_DISABLED', ''), 'deleteDisabled');
+  assert.equal(internals.errorKey('NOT_FOUND', 'no such file'), '', 'unknown codes keep their message');
+});
 
 test('client: exposes window.__CC_MEMORY_INTERNALS__ with the documented pure helpers', async (t) => {
   const client = await loadClient();

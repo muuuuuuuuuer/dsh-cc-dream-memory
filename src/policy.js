@@ -164,7 +164,10 @@ function normalizeCandidate(candidate) {
     name: typeof value.name === 'string' ? value.name : '',
     type: typeof value.type === 'string' ? value.type : '',
     description: typeof value.description === 'string' ? value.description : '',
-    content: body,
+    // `entrySimilarity` weights this text as `body`; callers may send it as
+    // `content`. Emitting only `content` made the 0.30 term vanish from every
+    // comparison, so two pages sharing a name and a description scored 1.
+    body,
     confidence: value.confidence === 'low' ? 'low' : 'high',
   };
 }

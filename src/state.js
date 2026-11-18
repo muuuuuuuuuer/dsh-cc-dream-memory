@@ -49,6 +49,7 @@ function emptyState() {
     // The pending memory copy a finished dream produced. `null` means no
     // switch is waiting; the human either switches to the copy or discards it.
     shadowPending: null,
+    dreamRunOutcomes: [],
     lastDreamDecision: null,
     // Keys of Dream proposals the human did not pass (claim keys and
     // `retire:<file>`). Merge skips them, so they are never proposed again.
@@ -164,6 +165,9 @@ function normalize(raw) {
     && typeof raw.shadowPending.dir === 'string' && raw.shadowPending.dir !== ''
     ? { ...raw.shadowPending }
     : null;
+  state.dreamRunOutcomes = Array.isArray(raw.dreamRunOutcomes)
+    ? raw.dreamRunOutcomes.filter((item) => typeof item?.runId === 'string' && ['ready', 'done', 'failed'].includes(item.status)).slice(-20)
+    : [];
   return state;
 }
 
@@ -191,6 +195,10 @@ function applyDreamCoverage(state, drop, reads) {
   state.dreamProcessedSessions = processed.slice(-MAX_SESSIONS);
   state.sessionsSince = state.sessionsSince.filter((entry) =>
     !drop.has(entry.id) || (captured.has(entry.id) && (entry.lastActivityAt || entry.at) >= captured.get(entry.id)));
+}
+
+function recordRunOutcome(state, outcome) {
+  state.dreamRunOutcomes = [...state.dreamRunOutcomes.filter((item) => item.runId !== outcome.runId), outcome].slice(-20);
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -275,7 +283,7 @@ export class ProjectState {
     }
     try {
       const fresh = normalize(await this._readForMutation());
-      mutator(fresh);
+      await mutator(fresh);
       await this._writeState(fresh);
       this.state = fresh;
       return fresh;
@@ -484,12 +492,21 @@ export class ProjectState {
    * Record the pending copy produced by a finished run: its directory, the
    * baseline hashes it was built from, and the file-level diff the panel shows.
    */
-  async setShadowPending(pending = null) {
+  async setShadowPending(pending = null, outcome) {
     await this._mutate((state) => {
       state.shadowPending = pending && typeof pending === 'object' && typeof pending.dir === 'string'
         ? { ...pending }
         : null;
       if (state.shadowPending) state.lastDreamMode = 'shadow';
+      if (state.shadowPending && outcome) recordRunOutcome(state, outcome);
+    });
+  }
+
+  /** Publish a terminal result and its covered input in the same state write. */
+  async completeDreamRun(outcome, reads) {
+    await this._mutate((state) => {
+      if (reads.length > 0) applyDreamCoverage(state, new Set(), reads);
+      recordRunOutcome(state, outcome);
     });
   }
 
@@ -504,14 +521,15 @@ export class ProjectState {
   }
 
   /** Save the human decision and any accepted progress in one state write. */
-  async settleShadowPending(runId, decision, rejected = []) {
+  async settleShadowPending(runId, decision, rejected = [], { reads } = {}) {
     await this._mutate((state) => {
       const pending = state.shadowPending;
       if (!pending || pending.runId !== runId) throw new Error('pending Dream changed before settlement');
-      const reads = Array.isArray(pending.reviewRecords) ? pending.reviewRecords : [];
-      if (decision === 'applied' || decision === 'rejected') applyDreamCoverage(state, new Set(), reads);
+      const settleAll = ['applied', 'rejected'].includes(decision) && Array.isArray(pending.reviewRecords);
+      const settled = reads ?? (settleAll ? pending.reviewRecords : []);
+      if (settled.length > 0) applyDreamCoverage(state, new Set(), settled);
       state.dreamRejected = [...new Set([...state.dreamRejected, ...rejected])].slice(-MAX_REJECTED);
-      state.lastDreamDecision = { runId, decision, reads, at: Date.now() };
+      state.lastDreamDecision = { runId, decision, reads: settled, at: Date.now() };
       state.shadowPending = null;
     });
   }
@@ -520,6 +538,39 @@ export class ProjectState {
     await this._mutate((state) => {
       state.shadowPending = null;
     });
+  }
+
+  /**
+   * Drop a pending record whose copy is gone. `dreamReadiness` trusts the
+   * record, so a deleted directory would otherwise block every automatic run
+   * forever; the run that could repair it is the one readiness refuses to
+   * start. Returns true when a stale record was cleared.
+   * @returns {Promise<boolean>}
+   */
+  async dropStaleShadowPending() {
+    const pending = this.snapshot?.().shadowPending;
+    if (!pending || typeof pending.dir !== 'string' || pending.dir === '') return false;
+    try {
+      await fs.stat(pending.dir);
+      return false;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return false;
+    }
+    let dropped = false;
+    await this._mutate(async (state) => {
+      const current = state.shadowPending;
+      if (current?.runId !== pending.runId || current?.dir !== pending.dir || current?.createdAt !== pending.createdAt) return;
+      // Another run can reuse the directory while this instance waits for the
+      // state lock. Check both the record and the directory under that lock.
+      try {
+        await fs.stat(current.dir);
+      } catch (error) {
+        if (error?.code !== 'ENOENT') return;
+        state.shadowPending = null;
+        dropped = true;
+      }
+    });
+    return dropped;
   }
 
   async noteScan() {

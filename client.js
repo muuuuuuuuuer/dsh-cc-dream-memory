@@ -72,6 +72,7 @@ window.__ModuleLoader__.load({
   'detail.emptyBody': 'This memory has no details.',
   'detail.history': 'Change history',
   'detail.historyDream': 'Dream · {n} changes',
+  'detail.historyConfirmed': 'Reviewer confirmed changes without a checked source.',
   'detail.historyEmpty': 'No recorded changes yet.',
   'detail.historyPending': 'Waiting in the inbox',
   'detail.loading': 'Loading…',
@@ -231,12 +232,15 @@ window.__ModuleLoader__.load({
   'tidy.rejectedBefore': 'You rejected on this page before',
   'tidy.rejectHint': 'Rejected changes are recorded separately from deferred runs.',
   'tidy.evidenceTitle': 'Evidence used for this change',
+  'tidy.unsupportedClaims': 'Changes that need your confirmation',
   'tidy.quoteUnchecked': 'quote not found in the session',
   'tidy.resultCounts': '{added} added, {changed} changed, {removed} removed',
   'tidy.resultTitle': 'A dream result is waiting for your review',
   'tidy.runAlready': 'A dream is already running for this project.',
   'tidy.runCancel': 'Stop',
   'tidy.runAgain': 'Run again',
+  'tidy.runResume': 'Continue this run',
+  'tidy.runCheckpoint': 'Sessions with saved analysis: {n}.',
   'tidy.runStarted': 'Dream started. You can keep working; the new copy appears when the run finishes.',
   'tidy.runState.blocked': 'blocked',
   'tidy.runState.cancelled': 'cancelled',
@@ -246,9 +250,12 @@ window.__ModuleLoader__.load({
   'tidy.runState.running': 'running',
   'tidy.runState.skipped': 'skipped',
   'tidy.runState.done': 'done',
+  'tidy.runState.paused': 'paused',
   'tidy.runNoChanges': 'Reviewed {sessions} of {offered} session(s) and found nothing to change. Used about {tokens} tokens.',
   'tidy.runSkipped': 'Skipped: {reason}',
   'tidy.runUnfinished': 'Stopped at the turn limit before proposing any change. Run Dream again to continue; it picks up the sessions it did not finish. Used about {tokens} tokens.',
+  'tidy.runUnfinishedWrites': 'Some changes could not be written. Their sessions remain eligible for another run.',
+  'tidy.runCheckpointConflict': 'The saved analysis is out of date because its sources changed. Start a new Dream to use the latest sources.',
   'tidy.runTitle': 'This run',
   'tidy.start': 'Start the dream run',
   'tidy.switchConflict': 'memory changed while the dream ran: {files}',
@@ -317,6 +324,7 @@ const ZH = {
   'detail.emptyBody': '这条记忆没有正文。',
   'detail.history': '修改记录',
   'detail.historyDream': 'Dream · {n} 项改动',
+  'detail.historyConfirmed': '审阅者确认了缺少可核对依据的改动。',
   'detail.historyEmpty': '还没有修改记录。',
   'detail.historyPending': '在待处理里等你确认',
   'detail.loading': '加载中…',
@@ -476,12 +484,15 @@ const ZH = {
   'tidy.rejectedBefore': '这一页上次被你拒绝过的改动',
   'tidy.rejectHint': '明确拒绝的改动会记录。暂缓会保留会话供以后复查。',
   'tidy.evidenceTitle': '这次改动引用的证据',
+  'tidy.unsupportedClaims': '需要你确认的改动',
   'tidy.quoteUnchecked': '会话里找不到这段引用',
   'tidy.resultCounts': '新增 {added}，修改 {changed}，删除 {removed}',
   'tidy.resultTitle': 'Dream 结果等你审核',
   'tidy.runAlready': '这个项目已经有一次 Dream 在运行。',
   'tidy.runCancel': '停止',
   'tidy.runAgain': '重新运行',
+  'tidy.runResume': '继续本次运行',
+  'tidy.runCheckpoint': '已保存 {n} 个会话的分析，可以继续本次运行。',
   'tidy.runStarted': 'Dream 已开始。你可以继续工作，运行结束后会出现新的副本。',
   'tidy.runState.blocked': '被阻断',
   'tidy.runState.cancelled': '已取消',
@@ -491,9 +502,12 @@ const ZH = {
   'tidy.runState.running': '运行中',
   'tidy.runState.skipped': '已跳过',
   'tidy.runState.done': '完成',
+  'tidy.runState.paused': '已暂停',
   'tidy.runNoChanges': '复查了 {offered} 个会话中的 {sessions} 个，没有需要修改的地方。用了约 {tokens} token。',
   'tidy.runSkipped': '跳过：{reason}',
   'tidy.runUnfinished': '到轮数上限时还没做完，这次没有提出改动。再运行一次会接着复查没做完的会话。用了约 {tokens} token。',
+  'tidy.runUnfinishedWrites': '部分改动写入失败，相关会话会留待下次处理。',
+  'tidy.runCheckpointConflict': '来源已变化，保存的分析已过时。请重新运行 Dream 以读取最新来源。',
   'tidy.runTitle': '本次运行',
   'tidy.start': '开始整理',
   'tidy.switchConflict': 'Dream 运行期间记忆被改动：{files}',
@@ -1117,6 +1131,9 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
         projectPath: typeof record.projectPath === 'string' ? record.projectPath : '',
         globalPath: typeof record.globalPath === 'string' ? record.globalPath : '',
         maxChars: asNumber(record.maxChars, 0),
+        // `warn`-level secret matches come back with the saved rules. Dropping
+        // them here made a warned save look clean in the panel.
+        warnings: Array.isArray(record.warnings) ? record.warnings.filter((item) => typeof item === 'string') : [],
       };
     }
 
@@ -1275,7 +1292,8 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 function normalizePendingSwitch(raw) {
   if (!raw || typeof raw !== 'object' || typeof raw.dir !== 'string' || raw.dir === '') return null;
   const unsupported = Array.isArray(raw.proofs)
-    ? raw.proofs.filter((item) => item?.kind === 'missing').map((item) => item.file) : [];
+    ? raw.proofs.filter((item) => item?.kind === 'missing'
+      || (item?.kind === 'citation' && item.unsupportedClaims?.length !== 0)).map((item) => item.file) : [];
   const files = Array.isArray(raw.files)
     ? raw.files
         .filter((item) => item && typeof item.file === 'string' && item.file !== '')
@@ -1328,6 +1346,29 @@ function normalizePendingSwitch(raw) {
   };
 }
 
+/**
+ * Key of the localised sentence a failed request shows. The host sends codes
+ * in SCREAMING_SNAKE (`LOCK_BUSY`), so both parts are normalised before
+ * matching and the older hyphenated spellings keep working.
+ * @param {string} [code]
+ * @param {string} [message]
+ * @returns {'locked'|'stale'|'deleteDisabled'|'pluginOff'|'autoMemoryOff'|'backendStale'|''}
+ */
+function errorKey(code = '', message = '') {
+  const probe = `${code} ${message}`.toLowerCase().replace(/_/gu, '-');
+  if (probe.includes('lock-busy') || probe.includes('dream-locked')) return 'locked';
+  if (probe.includes('stale-dream') || probe.includes('stale-plan')) return 'stale';
+  if (probe.includes('delete-disabled')) return 'deleteDisabled';
+  if (probe.includes('plugin-disabled')) return 'pluginOff';
+  if (probe.includes('auto-memory-disabled')) return 'autoMemoryOff';
+  // A backend loaded before this page was updated: unknown routes/actions, or
+  // a module graph mixing old and new files.
+  if (probe.includes('unknown-action') || probe.includes('does not provide an export named')) {
+    return 'backendStale';
+  }
+  return '';
+}
+
 function normalizeStatus(raw) {
       const record = raw && typeof raw === 'object' ? raw : {};
       const config = record.config && typeof record.config === 'object' ? record.config : {};
@@ -1372,28 +1413,20 @@ function normalizeStatus(raw) {
                 explicitSaveLedger: record.capabilities.explicitSaveLedger === true,
               }
             : null,
-        // Resumable Dream runs (newest first). The panel needs the run id, the
-        // part counts and the failure text to offer stop/continue.
+        // Dream runs (newest first) with the progress and actions shown in the panel.
         dreamRuns: Array.isArray(record.dreamRuns)
           ? record.dreamRuns
               .filter((run) => run && typeof run === 'object')
               .map((run) => ({
                 runId: typeof run.runId === 'string' ? run.runId : '',
                 status: typeof run.status === 'string' ? run.status : '',
-                stage: typeof run.stage === 'string' ? run.stage : '',
                 error: typeof run.error === 'string' ? run.error : '',
                 skipReason: typeof run.skipReason === 'string' ? run.skipReason : '',
+                resumable: run.resumable === true,
+                checkpointed: asNumber(run.checkpointed, 0),
                 sessionsReviewed: asNumber(run.sessionsReviewed, 0),
                 sessionsOffered: Array.isArray(run.input?.sessions) ? run.input.sessions.length : asNumber(run.sessionsOffered, 0),
                 usage: run.usage && typeof run.usage === 'object' ? run.usage : {},
-                blockedReason: typeof run.blockedReason === 'string' ? run.blockedReason : '',
-                planPath: typeof run.planPath === 'string' ? run.planPath : '',
-                counts: {
-                  done: asNumber(run.counts?.done, 0),
-                  failed: asNumber(run.counts?.failed, 0),
-                  pending: asNumber(run.counts?.pending, 0),
-                },
-                input: { expectedUnits: asNumber(run.input?.expectedUnits, 0) },
               }))
           : [],
         injection: (() => {
@@ -1599,9 +1632,20 @@ function normalizeStatus(raw) {
             id: typeof item.id === 'string' ? item.id : '',
             at: asNumber(item.appliedAt ?? item.createdAt, 0),
             ops: asNumber(item.ops, 0),
+             confirmedWithoutSource: item.confirmedWithoutSource === true,
+             evidence: Array.isArray(item.evidence) ? item.evidence : [],
           }))
           .slice(0, 20),
       };
+    }
+
+    function dreamEvidenceRows(items, t) {
+      return items.map((item, index) => h('div', { key: index, className: 'ccm-evidence-row' },
+        h('code', null, item.memoryFile || `${item.sessionId} #${item.seq}${item.eventType ? ` (${item.eventType})` : ''}`),
+        item.quote ? h('span', null, ' — ' + item.quote) : null,
+        item.verified === true ? null : h('span', { className: 'ccm-note-error' }, ` (${t('tidy.quoteUnchecked')})`),
+        Array.isArray(item.claims) && item.claims.length > 0
+          ? h('ul', null, ...item.claims.map((claim) => h('li', { key: claim }, claim))) : null));
     }
 
     /** Normalize a `/backups` or `/trash` response into `[{id,at,files[]}]`. */
@@ -1763,15 +1807,13 @@ function normalizeStatus(raw) {
         };
       }
 
-      /** POST /dream: estimate, start, status, cancel, switch, discard, undo. */
+      /** POST /dream: estimate, start, resume, status, cancel, switch, discard, undo. */
       async function dream(action, options = {}) {
         const body = { action };
         const focus = typeof options.focus === 'string' ? options.focus.trim() : '';
         if (focus !== '') body.focus = focus;
         if (typeof options.runId === 'string' && options.runId !== '') body.runId = options.runId;
         // v23: a confirmed run is pinned to the range it was priced for.
-        if (typeof options.inputId === 'string' && options.inputId !== '') body.inputId = options.inputId;
-        if (Array.isArray(options.inputRanges) && options.inputRanges.length > 0) body.inputRanges = options.inputRanges;
         if (Array.isArray(options.reject) && options.reject.length > 0) body.reject = options.reject;
         if (Array.isArray(options.defer) && options.defer.length > 0) body.defer = options.defer;
         if (Array.isArray(options.confirm) && options.confirm.length > 0) body.confirm = options.confirm;
@@ -2374,17 +2416,13 @@ function normalizeStatus(raw) {
     function errorText(error, t) {
       const code = error && typeof error === 'object' && typeof error.code === 'string' ? error.code : '';
       const message = formatError(error);
-      const probe = (code + ' ' + message).toLowerCase();
-      if (probe.includes('dream-locked')) return t('err.locked');
-      if (probe.includes('stale-plan')) return t('err.stale');
-      if (probe.includes('delete-disabled')) return t('err.deleteDisabled');
-      if (probe.includes('plugin-disabled')) return t('banner.pluginOff');
-      if (probe.includes('auto-memory-disabled')) return t('banner.autoMemoryOff');
-      // A backend loaded before this page was updated: unknown routes/actions,
-      // or a module graph mixing old and new files.
-      if (probe.includes('unknown-action') || probe.includes('does not provide an export named')) {
-        return t('err.backendStale');
-      }
+      const key = errorKey(code, message);
+      if (key === 'locked') return t('err.locked');
+      if (key === 'stale') return t('err.stale');
+      if (key === 'deleteDisabled') return t('err.deleteDisabled');
+      if (key === 'pluginOff') return t('banner.pluginOff');
+      if (key === 'autoMemoryOff') return t('banner.autoMemoryOff');
+      if (key === 'backendStale') return t('err.backendStale');
       return message;
     }
 
@@ -2806,6 +2844,18 @@ function normalizeStatus(raw) {
         });
       };
       const patchEditor = (patch) => setEditor((current) => (current ? { ...current, ...patch } : current));
+      // A conflict reloads the page. Adopt the hash it came back with, or every
+      // retry resends the same stale baseline and fails the same way.
+      React.useEffect(() => {
+        const fresh =
+          doc.phase === 'ready' && doc.file && typeof doc.file.expectedHash === 'string' ? doc.file.expectedHash : '';
+        if (fresh === '' || !doc.file) return;
+        setEditor((current) => (
+          current && current.mode === 'edit' && current.file === doc.file.file && current.expectedHash !== fresh
+            ? { ...current, expectedHash: fresh }
+            : current
+        ));
+      }, [doc]);
       const saveEditor = async () => {
         if (!editor || !idle) return;
         if (editor.name.trim() === '') {
@@ -2827,7 +2877,12 @@ function normalizeStatus(raw) {
           try {
             return await backend.saveFile(payload);
           } catch (error) {
-            if (error && error.code === 'stale-write') {
+            // The server sends `STALE_WRITE` from the store and `stale-write`
+            // from the status helpers; compare on one spelling.
+            const code = error && typeof error.code === 'string'
+              ? error.code.toLowerCase().replace(/_/gu, '-')
+              : '';
+            if (code === 'stale-write') {
               // Keep the draft on screen and show the page as it is now.
               conflict = t('edit.conflict');
               setReloadKey((key) => key + 1);
@@ -3160,7 +3215,9 @@ function normalizeStatus(raw) {
                   'li',
                   { key: ref.type + ref.id },
                   h('time', null, formatTime(ref.at) || ref.id),
-                  h('span', null, t('detail.historyDream', { n: ref.ops })),
+                  h('div', null, t('detail.historyDream', { n: ref.ops }),
+                    ref.confirmedWithoutSource ? h('div', { className: 'ccm-help' }, t('detail.historyConfirmed')) : null,
+                    ...dreamEvidenceRows(ref.evidence, t)),
                 ),
               );
               if (rows.length === 0 && history.data.changelog.length === 0) {
@@ -3355,12 +3412,14 @@ function normalizeStatus(raw) {
       const canRun = !readOnly && config.enabled && config.autoMemoryEnabled;
       // A background run reports its own progress; /status only carries a log.
       const runs = Array.isArray(status.dreamRuns) ? status.dreamRuns : [];
-      const shownRun = live || runs[0] || null;
+      const activeRun = (item) => item?.status === 'running' || item?.status === 'cancelling';
+      const shownRun = (activeRun(live) ? live : null) || runs.find(activeRun)
+        || (live?.resumable ? live : null) || runs.find((item) => item.resumable) || live || runs[0] || null;
       const running = Boolean(shownRun && (shownRun.status === 'running' || shownRun.status === 'cancelling'));
       const showRun = backend.mode === 'api' && shownRun !== null &&
         (shownRun.status === 'running' || shownRun.status === 'cancelling' || shownRun.status === 'failed' ||
           shownRun.status === 'cancelled' || shownRun.status === 'blocked' || shownRun.status === 'skipped' ||
-          shownRun.status === 'done');
+          shownRun.status === 'done' || shownRun.status === 'paused' || (shownRun.status === 'ready' && shownRun.skipReason === 'unfinished-writes'));
 
       React.useEffect(() => {
         if (!showRun || !running || readOnly) return undefined;
@@ -3410,7 +3469,7 @@ function normalizeStatus(raw) {
       const generate = async () => {
         setEstimate(null);
         const done = await run('estimate', async () => {
-          const result = await backend.dream('estimate', { focus, noSessions: memoryOnly });
+          const result = await backend.dream('estimate', { noSessions: memoryOnly });
           if (!result || result.rough !== true || !Number.isFinite(result.estimatedTokens) ||
               result.estimatedTokens < 0 || !Number.isFinite(result.limit) || result.limit < 0) {
             throw new Error(t('tidy.estimateUnavailable'));
@@ -3444,7 +3503,7 @@ function normalizeStatus(raw) {
         });
         if (!done) return;
         const value = done.value || {};
-        setLive({ ...(shownRun || {}), ...value, status: action === 'cancel' ? 'cancelling' : 'cancelled' });
+        setLive({ ...shownRun, ...value, status: action === 'cancel' ? 'cancelling' : value.status || 'running' });
       };
 
       /** A retired page and the page its facts moved into go together. */
@@ -3471,8 +3530,11 @@ function normalizeStatus(raw) {
       const rejectedFiles = ofRun(rejected);
       const deferredFiles = blockedFiles.filter((name) => !confirmedFiles.includes(name) && !rejectedFiles.includes(name));
       const decisionOf = (name) => (rejectedFiles.includes(name) ? 'rejected' : deferredFiles.includes(name) ? 'deferred' : 'passed');
+      const canConfirm = (target) => [...withLinked([target])].every((file) =>
+        !pending.unsupported.includes(file) || viewedFiles.includes(file));
       /** Pass or reject one file together with its linked page. */
       const decide = (target, pass) => {
+        if (pass && !canConfirm(target)) return;
         const together = withLinked([target]);
         setRejected({ runId: pending.runId, files: pass
           ? rejectedFiles.filter((name) => !together.has(name))
@@ -3486,7 +3548,8 @@ function normalizeStatus(raw) {
       const switchTo = (rejectAll = false) =>
         run('switch', () => backend.dream('switch', rejectAll
           ? { runId: pending?.runId, reject: pending.files.map((item) => item.file) }
-          : { runId: pending?.runId, reject: rejectedFiles, defer: deferredFiles, confirm: confirmedFiles }), {
+          : { runId: pending?.runId, reject: rejectedFiles, defer: deferredFiles,
+            confirm: confirmedFiles.filter((file) => pending.unsupported.includes(file)) }), {
           check: (result) => {
             if (!result || result.ok === true) return '';
             if (result.error === 'conflict' && Array.isArray(result.conflicts)) {
@@ -3542,15 +3605,22 @@ function normalizeStatus(raw) {
               : runStatus === 'skipped' && shownRun.skipReason
                 ? h('p', { className: 'ccm-card-text' }, t('tidy.runSkipped', { reason: shownRun.skipReason }))
                 : null,
-            shownRun.error ? h('p', { className: 'ccm-card-text ccm-note-error' }, String(shownRun.error)) : null,
+            shownRun.error === 'unfinished-writes' || shownRun.skipReason === 'unfinished-writes'
+              ? h('p', { className: 'ccm-card-text ccm-note-error' }, t('tidy.runUnfinishedWrites'))
+              : shownRun.error === 'checkpoint-conflict'
+                ? h('p', { className: 'ccm-card-text ccm-note-error' }, t('tidy.runCheckpointConflict'))
+                : shownRun.error ? h('p', { className: 'ccm-card-text ccm-note-error' }, String(shownRun.error)) : null,
+            shownRun.resumable ? h('p', { className: 'ccm-card-text' }, t('tidy.runCheckpoint', { n: shownRun.checkpointed || 0 })) : null,
             running ? h('div', { className: 'ccm-card-body' }, h('div', { className: 'ccm-progress' })) : null,
-            running || runStatus === 'cancelled' || runStatus === 'failed'
+            running || shownRun.resumable || runStatus === 'cancelled' || runStatus === 'failed'
               ? h(
                   'div',
                   { className: 'ccm-foot' },
                   running
                     ? h('button', { type: 'button', className: 'ccm-btn', disabled: !idle || readOnly || runStatus === 'cancelling', onClick: () => runAction('cancel', 'cancel') }, t('tidy.runCancel'))
-                    : h('button', { type: 'button', className: 'ccm-btn', disabled: !idle || readOnly, onClick: startDream }, icon('refresh', 14), t('tidy.runAgain')),
+                    : shownRun.resumable
+                      ? h('button', { type: 'button', className: 'ccm-btn', disabled: !idle || !canRun || Boolean(pending), onClick: () => runAction('resume', 'resume') }, icon('refresh', 14), t('tidy.runResume'))
+                      : h('button', { type: 'button', className: 'ccm-btn', disabled: !idle || readOnly, onClick: startDream }, icon('refresh', 14), t('tidy.runAgain')),
                 )
               : null,
           )
@@ -3612,7 +3682,7 @@ function normalizeStatus(raw) {
               const isRejected = decision === 'rejected';
               const unsourced = blockedFiles.includes(item.file);
               // An unsourced change can only be passed after its diff was read.
-              const canPass = !unsourced || viewedFiles.includes(item.file);
+              const canPass = !unsourced || canConfirm(item.file);
               const linked = kind === 'index' ? '' : linkOf(item.file);
               const rejectedBefore = Array.isArray(pending.rejectedBefore?.[item.file]) ? pending.rejectedBefore[item.file] : [];
               return h(
@@ -3660,10 +3730,12 @@ function normalizeStatus(raw) {
                     Array.isArray(detail.evidence) && detail.evidence.length > 0
                       ? h('div', { className: 'ccm-evidence' },
                         h('div', { className: 'ccm-diff-label' }, t('tidy.evidenceTitle')),
-                        ...detail.evidence.map((item, index) => h('div', { key: index, className: 'ccm-evidence-row' },
-                          h('code', null, item.memoryFile ? item.memoryFile : `${item.sessionId} #${item.seq}`),
-                          item.quote ? h('span', null, ' — ' + item.quote) : null,
-                          item.verified === true ? null : h('span', { className: 'ccm-note-error' }, ` (${t('tidy.quoteUnchecked')})`))))
+                        ...dreamEvidenceRows(detail.evidence, t))
+                      : null,
+                    detail.unsupportedClaims?.length > 0
+                      ? h('div', { className: 'ccm-evidence' },
+                        h('div', { className: 'ccm-diff-label' }, t('tidy.unsupportedClaims')),
+                        ...detail.unsupportedClaims.map((claim) => h('div', { key: claim, className: 'ccm-evidence-row' }, claim)))
                       : null)
                   : h('p', { className: 'ccm-card-text', role: 'status' }, t(detail ? 'tidy.diffError' : 'tidy.diffLoading')))
                   : null,
@@ -3697,11 +3769,7 @@ function normalizeStatus(raw) {
                 value: focus,
                 disabled: !idle || running,
                 placeholder: t('tidy.focusPlaceholder'),
-                onChange: (event) => {
-                  setFocus(event.target.value);
-                  // The estimate priced the old focus; ask again for the new one.
-                  setEstimate(null);
-                },
+                onChange: (event) => setFocus(event.target.value),
               }),
             )
           : null,
@@ -3812,7 +3880,14 @@ function normalizeStatus(raw) {
       const rulesText = draft === null ? rules.text : draft;
       const dirty = draft !== null && draft !== rules.text;
       const saveRules = async (scope) => {
-        const done = await run('rules', () => backend.saveRules(scope, rulesText), { success: t('notice.rulesSaved') });
+        const done = await run('rules', () => backend.saveRules(scope, rulesText), {
+          success: (saved) => {
+            const warnings = saved && Array.isArray(saved.warnings) ? saved.warnings : [];
+            return warnings.length > 0
+              ? `${t('notice.rulesSaved')} — ${warnings.join('; ')}`
+              : t('notice.rulesSaved');
+          },
+        });
         if (done) setDraft(null);
       };
       const resetRules = async () => {
@@ -4635,6 +4710,7 @@ function normalizeStatus(raw) {
       if (typeof window !== 'undefined') {
         window.__CC_MEMORY_INTERNALS__ = {
           normalizeStatus,
+          errorKey,
           normalizeFile,
           createBackend,
           renderMarkdown,

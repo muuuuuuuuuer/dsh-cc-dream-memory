@@ -52,7 +52,13 @@ export function registerScheduler(ctx, runtime) {
   }
 
   async function maybeAutoDream(projectContext) {
+    // `dreamReadiness` trusts the pending record; one whose copy is gone must
+    // not be able to block automatic runs for good.
+    await projectContext.state?.dropStaleShadowPending?.();
     if (disposed || !dreamReadiness(projectContext, { config: runtime.config }).eligible) return;
+    // `dreamReadiness` throttles on `lastScanAt`, so the attempt has to stamp it;
+    // otherwise a run that ends without a result is restarted on the next turn.
+    await projectContext.state?.noteScan?.();
     const run = await runtime.startDream(projectContext, { trigger: 'auto' });
     if (run.started && (await run.done)?.skipped) await projectContext.state.markSkipped();
   }

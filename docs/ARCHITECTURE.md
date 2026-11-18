@@ -74,7 +74,7 @@
 | `src/dream-session-text.js` | 会话事件 → 带来源标签的转写：只保留用户消息、每条用户消息前的那一条助手回复、失败的工具调用及报错；过滤宿主注入、识别 `[user-pasted]`、日期标记、转义伪造的标签行、按字符切块 | `buildSessionTranscript`, `chunkTranscript`, `extractSessionText`, `isProbeSession` |
 | `src/dream-run.js` | 运行目录与单元记录：`runId`、`.dreams/<runId>/manifest.json`、状态/取消/续跑所需字段 | `newRunId`, `writeRunManifest`, `readRunManifest`, `summarizeRun` |
 | `src/dream-agent.js` | Dream 唯一路径：给模型 `MEMORY.md` 头部 + 元数据 + 候选 session id；模型用 `memory_index/read/search`、`session_search/read` 按需读，只写 shadow；结束时 diff + 人工 switch/discard/undo；记录证据 provenance | `DreamAgent` |
-| `src/dream-evidence.js` | 文本匹配工具：忽略大小写/空白/markdown/标点的比对、转写块解析与引用定位、正文行级增删对比 | `normalizeForMatch`, `parseTranscriptBlocks`, `locateQuote`, `bodyLineChanges` |
+| `src/dream-evidence.js` | 转写解析、逐条事实与引用的核对、正文行级增删对比 | `parseTranscriptBlocks`, `reviewProofs`, `bodyLineChanges` |
 | `src/recall.js` | 自动召回：`recallMode` 只有 `model`（默认）/ `off`；model 每个用户输入最多一次廉价 selector 调用，失败或超时静默不附加；`agent/pre-step` 挂载但同 turn 的后续模型步跳过；每条每会话去重 | `selectRecallByModel`, `recallManifest`, `buildRecallText`, `attachRecall`, `RECALL_SOURCE_KIND` |
 | `src/auto-extract.js` | 官方式自动抽取：turn/end 后只读上次游标之后的转写，在进程内跑 5-turn 工具循环（`memory_read/search/save/update`），主 agent 本 turn 已写记忆则跳过；写入直接走 `memory_save` 门，不创建 live Agent | `runAutoExtract`, `applyProposals` |
 | `src/tool-loop.js` | 进程内工具循环：`llm.stream` + `tools` + `tool-call`/tool 消息；不建 session/Agent | `runToolLoop` |
@@ -184,7 +184,7 @@ Dream 不再产出「计划 JSON」，而是把分析结果写进一份**记忆�
   "counts": { "added": 0, "changed": 1, "removed": 0 },
   "files": [{ "file": "user_role.md", "action": "changed" }],
   "base": { "user_role.md": "<hash>" },
-  "verifiedFiles": ["user_role.md"], "sessions": ["session-…"] }
+  "sessions": ["session-…"] }
 ```
 
 切换（`DreamEngine.switchShadow`）先把当前记忆目录整目录备份到 `.dreams/<ts>/memory/`，然后逐文件写回、把副本里没有的文件 `trashEntry`、`refreshIndex`，并写：
@@ -349,8 +349,9 @@ agent/pre-step（异步瀑布）
   ├─ 用最后一条 typed user message 的 id（无 id 时用内容哈希）识别 turn；同一 turn 的后续模型步直接跳过
   ├─ recallMode='off'：完全不附加
   └─ recallMode='model'（唯一选择器）：
-        manifest 只含 name/description/type/modified（来自元数据目录，不读正文）
-        → 每个用户输入一次廉价 selector 调用（候选 ≤5，附加受 autoRecallMaxFiles 默认 3 约束；
+        按元数据和当前正文的词法匹配交错排列候选（正文索引按文件版本缓存在内存）
+        → manifest 保留现有条数与字符预算，正文命中可附短片段，历史和退役正文不参与
+        → 每个用户输入一次 selector 调用，只能选清单里的文件（最多选 5 篇，附加受 autoRecallMaxFiles 默认 3 约束；
           recentTools 降噪；本会话已给过的不再给）
         → 超时、调用失败、JSON 无效或没有选中：本轮不附加，不跑第二套词面排序，也不在同 turn 重试
         → 选中项按当前页读取，正文受 autoRecallMaxChars 硬预算
@@ -478,7 +479,7 @@ DreamPipeline.run({force, trigger, noSessions, focus, runId, resume, inputId, in
 - **rules 是持久提示面**：`POST /rules` 会写 `<projectDir>/memory-rules.log` 审计行（scope/source/bytes/sha256/preview），便于追溯 prompt 规则变更。
 - `enabled:false` 时仅 `/status`、`/toggle` 可用，其余返回 `{ok:false,error:'plugin-disabled'}`。
 - 备份/回收站（v7）：`GET /backups`、`GET /trash` → `{ok,items:[{id,at,files}]}`；`POST /restore {kind,id,file?}` → `{ok,restored,reconciled}`（只允许 `.dreams`/`.trash` 下单段路径，写入 changelog + reconcile）。
-- dream 动作（v24 改为副本语义）：`POST /dream {action:'estimate'}` → `{ok,result:{estimatedTokens,limit,rough,inputId,ranges:[{id,lastSeq}]}}`；`{action:'start'|'run',inputId?,inputRanges?,focus?}` 统一启动后台任务；`run` 等待结果（钉定范围被改写时返回 `stale-input`）；`{action:'status',runId}`；`{action:'cancel',runId}`（没有续跑，重新 `start`）；`{action:'switch'}` → `{ok,result:{ok:true,backupDir,counts}}`（运行期间有文件被改 → `{ok:false,error:'conflict',conflicts}`）；`{action:'discard'}`；`{action:'undo'}`。逐项审阅（`preview`/`apply-ops`/`dismiss`/`planId`/`opId`）在 v24 已删除。
+- Dream 通过 `POST /dream` 操作。`estimate` 返回粗略的输入 token 估算。`start` 启动后台任务，`run` 等待结果，两者都支持 `focus` 和 `noSessions`。`status`、`cancel` 和 `resume` 按 `runId` 操作。只有仍然有效的检查点可以续跑，检查点冲突后需重新启动。`switch` 接受 `reject`、`defer`、`confirm` 进行逐页审阅，也可 `discard` 丢弃副本或 `undo` 撤销上次切换。
 - 指标（v8）：`GET /metrics` → `{ok,metrics}`（canonical summary：inject/reads/writes/searches/dreams/costs，另带 `injections` 别名）；`/status` 自带 `metrics`。
 
 | 方法 | 路径 | 入参 | 返回 |
@@ -707,5 +708,5 @@ Dream 的 evidence 使用操作级引用；兼容旧 `{statement,quote}`，来�
 ## 未发布：移除 Knowledge Wiki
 
 - 删除 `wiki-build.js`、`wiki-query.js`、`wiki-store.js`、`wiki-tools.js`，以及四个只读 wiki 工具、`/memory wiki` 命令、`POST /wiki` 接口、首轮的 wiki 提示和记忆页的 Wiki 标签（UI-FREEZE 变更）。所有 `wiki*` 配置项一并移除；`paths` 不再给出 `wikiDir` 等路径。
-- `wiki-core.js` 保留（`indexText`/`citationToken`/`buildIndex` 等纯函数仍被 Dream 书写路径使用）；wiki 构建、查询与工具已删除。
+- `wiki-core.js` 随旧 Wiki 实现移除。记忆面板仍可渲染笔记正文中的已有链接。
 - 下文 0.12.x 小节里关于 Wiki 的条目只是历史记录，不再描述当前行为。

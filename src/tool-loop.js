@@ -240,4 +240,4 @@ export async function runToolLoop({
   return { text, turns, toolCalls: calls, usage, stopped: 'max-turns' };
 }
 
-export { textOf };
+export { mergeUsage, textOf };

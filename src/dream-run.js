@@ -2,23 +2,14 @@
  * Dream run records.
  *
  * A run is a directory under `<project>/.dreams/<runId>/`. The manifest is
- * written before any model call, so a later session can see what a run planned,
- * which units finished, and why it stopped. Verified analyzer units are stored
- * one file per unit and reused on resume, which is what makes resumption
- * incremental instead of a full re-analysis.
- *
- * The format version is part of every unit id: a reader that does not
- * understand the current format never reuses an old record.
+ * records the run's progress and outcome. A separate checkpoint keeps the
+ * session ranges and draft work needed to resume an interrupted run.
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 
 export const RUN_FORMAT_VERSION = 2;
-
-function text(value) {
-  return typeof value === 'string' ? value : '';
-}
 
 function stamp(ms) {
   return new Date(ms).toISOString().slice(0, 19).replace(/:/g, '-');
@@ -29,17 +20,51 @@ export function newRunId(now = Date.now()) {
   return `${stamp(now)}-${randomBytes(3).toString('hex')}`;
 }
 
-export function digestOf(value) {
-  return createHash('sha256').update(String(value)).digest('hex').slice(0, 16);
-}
-
-/** Stable across runs only when the format, source range, and text all match. */
-export function unitIdOf({ sessionId, firstSeq, lastSeq, text: body }) {
-  return digestOf(`${RUN_FORMAT_VERSION}\0${text(sessionId)}\0${firstSeq ?? ''}\0${lastSeq ?? ''}\0${text(body)}`);
-}
-
 export function runDirOf(paths, runId) {
   return path.join(paths.dreamsDir, runId);
+}
+
+export function validRunId(runId) {
+  return typeof runId === 'string' && /^[a-z0-9_-]{1,100}$/iu.test(runId);
+}
+
+const checkpointFile = (dir) => path.join(dir, 'checkpoint.json');
+
+export async function hasRunCheckpoint(dir) {
+  return fs.stat(checkpointFile(dir)).then((stat) => stat.isFile(), () => false);
+}
+
+export async function readRunCheckpoint(dir) {
+  try {
+    const record = JSON.parse(await fs.readFile(checkpointFile(dir), 'utf8'));
+    return record?.version === 1 && Array.isArray(record.work) && record.work.length > 0
+      && Array.isArray(record.sessionIds) && Array.isArray(record.bases) && Array.isArray(record.draft?.pages)
+      && typeof record.draft.index === 'string' && Array.isArray(record.evidence) ? record : null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeRunCheckpoint(dir, record) {
+  return writeJsonAtomic(checkpointFile(dir), { version: 1, ...record });
+}
+
+export function clearRunCheckpoint(dir) {
+  return fs.rm(checkpointFile(dir), { force: true });
+}
+
+/** Repair interrupted bookkeeping before a later run may evict its outcome. */
+export async function reconcileRunOutcomes(paths, state) {
+  for (const outcome of state?.snapshot?.().dreamRunOutcomes ?? []) {
+    if (!validRunId(outcome.runId)) continue;
+    const dir = runDirOf(paths, outcome.runId);
+    if (!await hasRunCheckpoint(dir)) continue;
+    const manifest = await readRunManifest(dir);
+    if (manifest && ['running', 'paused'].includes(manifest.status)) {
+      await writeRunManifest(dir, { ...manifest, ...outcome, stage: 'done' });
+    }
+    await clearRunCheckpoint(dir);
+  }
 }
 
 export async function writeJsonAtomic(file, value) {
@@ -48,7 +73,7 @@ export async function writeJsonAtomic(file, value) {
   // shared temp name would make one rename fail with ENOENT after the other
   // already moved the file away.
   const tmp = `${file}.${process.pid}-${randomBytes(6).toString('hex')}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   // Windows refuses to rename onto a file another reader has open. Status polls
   // read the manifest constantly, so retry briefly instead of losing an update.
   for (let attempt = 0; ; attempt += 1) {
@@ -100,41 +125,12 @@ export async function listRunManifests(paths, limit = 20) {
     const dir = path.join(paths.dreamsDir, name);
     const manifest = await readRunManifest(dir);
     if (!manifest) continue;
-    out.push({ dir, runId: manifest.runId || name, manifest });
+    out.push({ dir, runId: manifest.runId || name, manifest,
+      checkpoint: ['running', 'paused'].includes(manifest.status) && await hasRunCheckpoint(dir) });
   }
   return out;
 }
 
-export function unitFile(dir, sessionId, unitId) {
-  // Session ids are host-generated but still go through a whitelist so a
-  // malformed id can never escape the run directory.
-  const safeSession = text(sessionId).replace(/[^\p{L}\p{N}._-]+/gu, '_').slice(0, 120);
-  return path.join(dir, 'analysis', safeSession, `${unitId}.json`);
-}
-
-export async function readUnitRecord(dir, sessionId, unitId) {
-  try {
-    const raw = await fs.readFile(unitFile(dir, sessionId, unitId), 'utf8');
-    const value = JSON.parse(raw);
-    if (!value || typeof value !== 'object') return null;
-    if (value.unitId !== unitId) return null;
-    if (value.formatVersion !== RUN_FORMAT_VERSION) return null;
-    return value;
-  } catch {
-    return null;
-  }
-}
-
-export async function writeUnitRecord(dir, sessionId, unitId, record) {
-  const file = unitFile(dir, sessionId, unitId);
-  await writeJsonAtomic(file, { ...record, unitId, formatVersion: RUN_FORMAT_VERSION });
-  return file;
-}
-
-/**
- * The manifest is written often (once per unit). Keep it small: unit records
- * carry the payloads, the manifest carries ranges and status.
- */
 export function shapeManifest(base = {}) {
   return {
     kind: 'dream',
@@ -146,34 +142,37 @@ export function shapeManifest(base = {}) {
     stage: 'prepare',
     trigger: 'manual',
     reason: '',
-    dryRun: false,
     startedAt: 0,
     updatedAt: 0,
     finishedAt: 0,
     models: { agent: '' },
-    input: { sessions: [], expectedUnits: 0, memoryFiles: 0 },
+    input: { sessions: [], memoryFiles: 0 },
     usage: {},
-    counts: { done: 0, failed: 0, pending: 0 },
-    errors: [],
-    planPath: '',
-    applied: false,
-    coverageComplete: null,
     skipReason: '',
-    blockedReason: '',
     error: '',
     ...base,
   };
 }
 
-export function summarizeRun(manifest, { running = false } = {}) {
+export function dreamRunOutcome(state, runId) {
+  return state?.snapshot?.().dreamRunOutcomes?.find((item) => item.runId === runId);
+}
+
+export function summarizeRun(manifest, { running = false, checkpoint = false, outcome } = {}) {
   if (!manifest) return null;
+  if (outcome && ['running', 'paused'].includes(manifest.status)) manifest = { ...manifest, ...outcome, stage: 'done' };
+  // Older versions left invalid checkpoints marked as paused.
+  if (manifest.status === 'paused' && manifest.error === 'checkpoint-conflict') manifest = { ...manifest, status: 'failed' };
   // A manifest still marked running with no worker behind it was left by a
-  // process that stopped mid-run. It can only be resumed, so it reads as failed.
+  // process that stopped mid-run. A published checkpoint lets it resume.
   const interrupted = manifest.status === 'running' && !running;
+  const resumable = !running && checkpoint && ['running', 'paused'].includes(manifest.status);
   return {
     runId: manifest.runId,
-    status: interrupted ? 'failed' : manifest.status,
+    status: resumable ? 'paused' : interrupted ? 'failed' : manifest.status,
     interrupted,
+    resumable,
+    checkpointed: Number(manifest.checkpointed) || 0,
     stage: manifest.stage,
     trigger: manifest.trigger,
     reason: manifest.reason,
@@ -190,7 +189,7 @@ export function summarizeRun(manifest, { running = false } = {}) {
     coverageComplete: manifest.coverageComplete,
     planPath: manifest.planPath,
     applied: manifest.applied,
-    error: interrupted && !manifest.error ? 'stopped before finishing (the host process ended); run Dream again' : manifest.error,
+    error: interrupted && !resumable && !manifest.error ? 'stopped before finishing (the host process ended); run Dream again' : manifest.error,
     blockedReason: manifest.blockedReason,
     skipReason: manifest.skipReason,
     sessionsReviewed: Number(manifest.sessionsReviewed) || 0,

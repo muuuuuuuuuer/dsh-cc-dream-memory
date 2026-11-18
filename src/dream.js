@@ -17,11 +17,12 @@ import path from 'node:path';
 import { MemoryStore } from './store.js';
 import { withFileLock } from './lock.js';
 import { recordDream } from './metrics.js';
-import { bodyHashOf, recordVerifiedEntry } from './verification-ledger.js';
 import {
   clearShadow,
   archiveShadow,
+  mergeIndexText,
   diffShadow,
+  shadowConflicts,
   shadowPathsOf,
   switchShadow as commitShadow,
 } from './dream-shadow.js';
@@ -69,7 +70,7 @@ export async function recordDreamEvent(paths, payload) {
 }
 
 /** Total tokens of one usage object (falls back to input+output). */
-function totalTokensOf(usage) {
+export function totalTokensOf(usage) {
   if (!usage || typeof usage !== 'object') return null;
   const total = Number(usage.totalTokens);
   if (Number.isFinite(total) && total >= 0) return total;
@@ -140,6 +141,15 @@ function pendingOf(state) {
   return pending;
 }
 
+async function settleWithoutSwitch(store, state, pending, decision, rejected, reads) {
+  const sources = new Set(pending.analysisFiles ?? []);
+  if (sources.size === 0 || reads.length === 0) return state.settleShadowPending(pending.runId, decision, rejected, { reads });
+  return store.withWriteTransaction(async () => {
+    const changed = (await shadowConflicts({ store, base: pending.base })).some(({ file }) => sources.has(file));
+    await state.settleShadowPending(pending.runId, decision, rejected, { reads: changed ? [] : reads });
+  });
+}
+
 /**
  * The dream engine.
  */
@@ -182,7 +192,7 @@ export class DreamEngine {
     return withFileLock(pctx.paths.lockFile, async () => {
       await pctx.state?.read?.();
       return this.#switchShadow({ pctx, agent, reject, defer, confirm, runId });
-    }, { strict: true });
+    }, { strict: true, reclaimDeadOwner: true });
   }
 
   async #switchShadow({ pctx, agent, reject, defer, confirm, runId }) {
@@ -219,20 +229,35 @@ export class DreamEngine {
     for (const file of rejected) deferred.delete(file);
     const passed = diff.files.filter((item) => !rejected.has(item.file) && !deferred.has(item.file));
     const changedFiles = diff.files.map((item) => item.file);
+    const proofs = new Map((pending.proofs ?? []).map((item) => [item.file, item]));
+    const evidence = pending.evidence ?? [];
+    const boundEvidence = evidence.filter((item) => item?.verified && item.claims?.length);
+    const deferredFiles = changedFiles.filter((file) => deferred.has(file));
+    const sourcesOf = (file) => {
+      const proof = proofs.get(file);
+      if (['preserved', 'description'].includes(proof?.kind)) return [];
+      if (proof?.kind !== 'citation' || proof.unsupportedClaims?.length !== 0) return null;
+      const sources = boundEvidence.filter((item) => item.file === file);
+      return sources.length > 0 ? sources.flatMap((item) => item.sessionId ? [item.sessionId] : []) : null;
+    };
+    const deferredSources = deferredFiles.map(sourcesOf);
+    const heldSessions = new Set(deferredSources.flat());
+    const settledReads = deferredSources.includes(null) ? []
+      : (pending.reviewRecords ?? []).filter(({ id }) => !heldSessions.has(id));
     if (passed.length === 0) {
       if (deferred.size === 0) return this.#discardShadow(pctx, runId, 'rejected');
       // Nothing to apply, but only the explicit rejections are remembered.
       const rejectedFiles = changedFiles.filter((file) => rejected.has(file));
-      await state.settleShadowPending(pending.runId, 'deferred', proposalsOf(pending, rejectedFiles));
+      await settleWithoutSwitch(store, state, pending, 'deferred', proposalsOf(pending, rejectedFiles), settledReads);
       await clearShadow(paths);
       await recordDreamEvent(paths, { event: 'discarded', ops: 0 });
       return { ok: true, discarded: true, decision: 'deferred', rejected: rejectedFiles, deferred: changedFiles.filter((file) => deferred.has(file)) };
     }
-    const proofs = new Map((pending.proofs ?? []).map((item) => [item.file, item]));
     const confirmed = new Set(confirm);
     const sourced = ({ file, action }) => {
       const proof = proofs.get(file);
-      return proof?.action === action && ['citation', 'preserved', 'description'].includes(proof.kind);
+      return proof?.action === action && (['preserved', 'description'].includes(proof.kind)
+        || (proof.kind === 'citation' && proof.unsupportedClaims?.length === 0));
     };
     const unsupported = passed.filter((item) => {
       const proof = proofs.get(item.file);
@@ -244,8 +269,10 @@ export class DreamEngine {
       message: 'Reject, defer, or confirm after reading the diff, the changes without checked sources: ' + unsupported.map(({ file }) => file).join(', ') };
     const confirmedWithoutSource = passed.filter((item) => !sourced(item)).map(({ file }) => file);
     const passedFiles = new Set(passed.map((item) => item.file));
-    const settledSessions = rejected.size === 0 && deferred.size === 0 ? (pending.reviewRecords ?? []).map(({ id }) => id) : [];
-    const verifiedFiles = (pending.verifiedFiles ?? []).filter((file) => passedFiles.has(file));
+    const appliedSources = passed.map(({ file }) => sourcesOf(file));
+    const appliedSessions = new Set(appliedSources.flat());
+    const undoReads = appliedSources.includes(null) ? settledReads : settledReads.filter(({ id }) => appliedSessions.has(id));
+    const rejectedFiles = changedFiles.filter((file) => rejected.has(file));
     const result = await commitShadow({
       store,
       shadowStore,
@@ -254,36 +281,33 @@ export class DreamEngine {
       stamp,
       files: passedFiles,
       revisions: new Map(passed.map(({ file }) => [file, proofs.get(file).revision])),
-      dependencies: passed.map(({ file }) => proofs.get(file).dependsOn).filter(Boolean),
-      recordSwitch: ({ backupDir, counts }) => writeSwitchMeta(store, paths, {
-        stamp, backupDir, counts, files: passed, summary: pending.summary,
-        sessions: settledSessions, runId: pending.runId, verifiedFiles, confirmedWithoutSource,
-      }),
+      // A quote taken from another page is a dependency too: editing that page
+      // before the switch leaves the approved change without the support the
+      // reviewer read it on.
+      dependencies: [
+        ...passed.map(({ file }) => proofs.get(file).dependsOn).filter(Boolean),
+        ...(settledReads.length > 0 ? pending.analysisFiles ?? [] : []),
+        ...boundEvidence
+          .filter((item) => item.source === 'memory' && passedFiles.has(item.file))
+          .map((item) => item.memoryFile),
+      ],
+      recordSwitch: async ({ backupDir, counts }) => {
+        await writeSwitchMeta(store, paths, {
+          stamp, backupDir, counts, files: passed, summary: pending.summary,
+          sessions: undoReads.map(({ id }) => id), runId: pending.runId, confirmedWithoutSource,
+          evidence: evidence.filter((item) => passedFiles.has(item.file)),
+        });
+        // Settlement is the last step under the write transaction. A failed
+        // state write must restore the same pages and index as a failed copy.
+        await state.settleShadowPending(pending.runId,
+          rejectedFiles.length > 0 || deferredFiles.length > 0 ? 'partially-applied' : 'applied',
+          proposalsOf(pending, rejectedFiles), { reads: settledReads });
+      },
+      rollbackSwitch: ({ backupDir }) => fs.rm(path.join(path.dirname(backupDir), 'meta.json'), { force: true }),
     });
     if (result.ok !== true) {
       return result;
     }
-    // Notes whose facts were verified during the run become the trusted
-    // version the first turn may summarize.
-    for (const file of verifiedFiles) {
-      try {
-        const entry = await store.readEntry(file, 'project');
-        await recordVerifiedEntry({
-          store,
-          scope: 'project',
-          file,
-          name: entry.name,
-          description: entry.description,
-          bodyHash: bodyHashOf(entry.body),
-        });
-      } catch (error) {
-        warn(`record verification for ${file}`, error);
-      }
-    }
-    const rejectedFiles = changedFiles.filter((file) => rejected.has(file));
-    const deferredFiles = changedFiles.filter((file) => deferred.has(file));
-    await state.settleShadowPending(pending.runId, rejectedFiles.length > 0 || deferredFiles.length > 0 ? 'partially-applied' : 'applied',
-      proposalsOf(pending, rejectedFiles));
     // Claude Code parity: the applied result is kept next to the backup so the
     // human can inspect what the dream produced after switching to it.
     const outputDir = await archiveShadow(paths, stamp).catch(() => '');
@@ -305,7 +329,7 @@ export class DreamEngine {
     return withFileLock(pctx.paths.lockFile, async () => {
       await pctx.state?.read?.();
       return this.#discardShadow(pctx, runId);
-    }, { strict: true });
+    }, { strict: true, reclaimDeadOwner: true });
   }
 
   async #discardShadow(pctx, runId = '', decision = 'deferred') {
@@ -316,8 +340,9 @@ export class DreamEngine {
       return { ok: false, error: 'stale-dream', message: 'The pending Dream changed. Refresh the Memory page.' };
     }
     if (!pending) return { ok: false, error: 'no-pending' };
-    await pctx.state.settleShadowPending(pending.runId, decision,
-      decision === 'rejected' ? proposalsOf(pending, Object.keys(pending.proposals ?? {})) : []);
+    const rejected = decision === 'rejected';
+    await settleWithoutSwitch(pctx.store, pctx.state, pending, decision,
+      rejected ? proposalsOf(pending, Object.keys(pending.proposals ?? {})) : [], rejected ? pending.reviewRecords ?? [] : []);
     await clearShadow(paths);
     await recordDreamEvent(paths, { event: 'discarded', ops: 0 });
     return { ok: true, discarded: true, decision };
@@ -331,7 +356,7 @@ export class DreamEngine {
   async undoLastDream({ pctx, agent } = {}) {
     if (!pctx?.store || !pctx?.paths) return { ok: false, error: 'no-project' };
     return withFileLock(pctx.paths.lockFile,
-      () => pctx.store.withWriteTransaction(() => this.#undoLastDream(pctx, agent)), { strict: true });
+      () => pctx.store.withWriteTransaction(() => this.#undoLastDream(pctx, agent)), { strict: true, reclaimDeadOwner: true });
   }
 
   async #undoLastDream(pctx, agent) {
@@ -430,6 +455,11 @@ export class DreamEngine {
       invalidate(this.runtime, agent);
       return { ok: false, error: 'undo-partial', partial: true, restored, trashed, failed, backupDir };
     }
+    // Reconciliation preserves existing hooks, so restore just this batch's
+    // index lines from the backup before reconciling the restored pages.
+    const backupIndex = (await store._readText(path.join(backupDir, 'MEMORY.md'))) ?? '';
+    const touched = new Set([...rewritten, ...removed, ...created]);
+    await store.writeIndex(mergeIndexText(await store.indexText('project'), backupIndex, touched), 'project');
     await store.refreshIndex('project');
     // The run consumed these sessions; an undo makes them eligible again so the
     // human can dream them once more.
@@ -480,9 +510,9 @@ async function writeSwitchMeta(store, paths, payload) {
     created,
     rewritten,
     removed,
-    verifiedFiles: payload.verifiedFiles,
     // Changes the reviewer accepted after reading the diff, without a checked source.
     confirmedWithoutSource: Array.isArray(payload.confirmedWithoutSource) ? payload.confirmedWithoutSource : [],
+    evidence: payload.evidence,
     backupDir,
     hashes,
   }, null, 2)}\n`);

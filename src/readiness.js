@@ -101,7 +101,7 @@ function lockInfo(paths, config, now) {
     } catch {
       // A just-created lock can be empty until its owner writes metadata.
     }
-    const stale = ageMs >= ttlMs && !isProcessAlive(pid);
+    const stale = (ageMs >= ttlMs || (Number.isInteger(pid) && pid > 0)) && !isProcessAlive(pid);
     return { held: !stale, ageMs, stale, mtimeMs: stat.mtimeMs, ttlMs };
   } catch (error) {
     if (error && error.code !== 'ENOENT') warn('lock stat', error);

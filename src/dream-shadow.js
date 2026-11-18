@@ -87,6 +87,34 @@ export async function prepareShadow({ store, paths, config }) {
   return { shadowStore, base };
 }
 
+/** Save only pages Dream touched. The regular shadow remains disposable. */
+export async function captureShadowDraft(shadowStore, files) {
+  const pages = [];
+  for (const file of new Set(files)) {
+    const entry = await shadowStore.readEntry(file, 'project').catch((error) => {
+      if (error?.code !== 'NOT_FOUND') throw error;
+      return null;
+    });
+    pages.push({ file, raw: entry?.raw ?? null });
+  }
+  return { pages, index: await shadowStore.indexText('project') };
+}
+
+export async function restoreShadowDraft(shadowStore, draft) {
+  for (const { file, raw } of draft.pages) {
+    if (raw === null) {
+      await shadowStore.trashEntry(file, { scope: 'project', reason: 'restore Dream checkpoint' }).catch((error) => {
+        if (error?.code !== 'NOT_FOUND') throw error;
+      });
+    } else {
+      const { target } = shadowStore._entryTarget(file, 'project');
+      await shadowStore._atomicWrite(target, raw);
+    }
+  }
+  const files = new Set(draft.pages.map(({ file }) => file));
+  await shadowStore.writeIndex(mergeIndexText(await shadowStore.indexText('project'), draft.index, files), 'project');
+}
+
 /**
  * Write merged pages into the shadow copy. Deleted notes go to the shadow's
  * trash directory, so a discarded run leaves the live notes untouched even
@@ -269,7 +297,7 @@ export function mergeIndexText(liveText, shadowText, passed) {
  * @param {{store:object, shadowStore:object, paths:object, base?:Record<string,string>, stamp?:string, files:Iterable<string>}} input
  * @returns {Promise<{ok: boolean, error?: string, conflicts?: Array<{file:string,reason:string}>, backupDir?: string, counts?: Record<string, number>}>}
  */
-export async function switchShadow({ store, shadowStore, paths, base, stamp = '', files, revisions, dependencies = [], recordSwitch }) {
+export async function switchShadow({ store, shadowStore, paths, base, stamp = '', files, revisions, dependencies = [], recordSwitch, rollbackSwitch }) {
   const passed = new Set(files);
   return store.withWriteTransaction(async () => {
     // Only a passed file can be overwritten, so only its live edits conflict.
@@ -321,11 +349,18 @@ export async function switchShadow({ store, shadowStore, paths, base, stamp = ''
       }
       try {
         const index = await fs.readFile(path.join(backupDir, 'MEMORY.md'), 'utf8');
-        const current = await store.indexText('project');
-        await store.writeIndex(mergeIndexText(current, index, new Set(touched)), 'project');
-        await store.refreshIndex('project');
+        // The write lock covers the whole switch. Restore its exact snapshot,
+        // including the order of removed entries and surrounding prose.
+        await store.writeIndex(index, 'project');
       } catch (rollbackError) {
         rollbackFailed.push({ file: 'MEMORY.md', error: String(rollbackError?.message ?? rollbackError) });
+      }
+      if (rollbackFailed.length === 0) {
+        try {
+          await rollbackSwitch?.({ backupDir });
+        } catch (rollbackError) {
+          rollbackFailed.push({ file: 'meta.json', error: String(rollbackError?.message ?? rollbackError) });
+        }
       }
       return { ok: false, error: error.code === 'stale-dream' ? error.code : 'switch-failed', partial: rollbackFailed.length > 0,
         backupDir, rollbackFailed, cause: error?.message ?? String(error) };

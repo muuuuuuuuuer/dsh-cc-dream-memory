@@ -215,7 +215,7 @@ export async function listSwitches(paths)
 职责：
 - **不含计划校验**：`validateDreamPlan` / `executePlan` 已随旧引擎删除；页面级改动由 `diffShadow` 给出，切换按 `pending.base` 求差。无证据的通过项须列在 `confirm` 里，否则整次返回 `evidence-required`。
 - **副本**：Dream 只写 `.dreams/shadow/`（当前记忆的完整副本），与真实记忆逐文件比对得出 `added/changed/removed`；副本存在期间不再跑新的 Dream。
-- **切换**：先把当前记忆目录整体备份到 `.dreams/<ts>/memory/`，再写回、把副本里没有的笔记移入回收站、把副本的 `MEMORY.md` 写到 live 后 `refreshIndex`（`MOVED TO` 退休桩会保留），写 `meta.json`（`kind:'dream-switch'`、`counts`、`files`、`rewritten`、`created`、`removed`、`hashes`、`verifiedFiles`、`backupDir`）与 changelog。运行期间有人改过笔记 → 整次返回 `conflict`，记忆不动。
+- **切换**：先把当前记忆目录整体备份到 `.dreams/<ts>/memory/`，再写回、把副本里没有的笔记移入回收站、把副本的 `MEMORY.md` 写到 live 后 `refreshIndex`（`MOVED TO` 退休桩会保留），写 `meta.json`（`kind:'dream-switch'`、`counts`、`files`、`rewritten`、`created`、`removed`、`hashes`、`backupDir`）与 changelog。运行期间有人改过笔记 → 整次返回 `conflict`，记忆不动。
 - **撤销**：由 `listSwitches(paths)` 读取切换记录。只还原 `rewritten` 并把 `created` 移入回收站；若切换后被改过则整次返回 `conflict`。旧格式批次跳过。
 - **验证**：切换时把可核验笔记写进字段级台账；首轮索引始终取自 `MEMORY.md` 原文。
 - changelog 条目格式：
@@ -233,7 +233,7 @@ export class DreamAgent {
   async start({ pctx, agent, force, trigger, reason, signal, noSessions, focus, runId })
   async status(pctx, runId)     // 读 manifest：running/ready/failed/cancelled/skipped/unknown
   async cancel(pctx, runId)
-  async estimate(pctx, { noSessions, focus })
+  async estimate({ pctx, noSessions })
 }
 ```
 
@@ -321,8 +321,8 @@ async function exec(line) {
 `MemoryRuntime` 直接使用 `DreamAgent`（运行）与 `DreamEngine`（人工 switch/discard/undo）。后台启动统一经过 `startDream`。需要等待结果的调用方使用返回的 `done`。调度、执行和状态服务共用 `dreamReadiness`。
 ```js
 async startDream(pctx, options)
-async dream({ pctx, agent, force, trigger, reason, focus, inputId, inputRanges }): Promise<DreamRunResult>
-async estimateDream(pctx, { focus }): Promise<{ estimatedTokens, limit, rough, inputId, ranges }>
+async dream({ pctx, agent, trigger, reason, focus, noSessions, runId, resume }): Promise<DreamRunResult>
+async estimateDream(pctx, { noSessions }): Promise<{ estimatedTokens, limit, rough, costMode }>
 async pendingSwitch(pctx): Promise<null | { dir, createdAt, runId, counts, files }>
 async switchDream({ agent }): Promise<{ ok, backupDir?, counts?, error?, conflicts? }>
 async discardDream({ agent }): Promise<{ ok, error? }>

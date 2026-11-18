@@ -7,28 +7,32 @@
  * writes a *shadow* copy. Human switch/undo is unchanged: a run still ends
  * with `.dreams/shadow` plus `state.shadowPending`.
  *
- * One run = one model tool loop. Memory bodies are never put in the prompt up
- * front; only MEMORY.md and the note metadata are. The agent must call
- * `memory_read` for a body.
+ * An attempt is a model tool loop. A checkpoint keeps analyzed prefixes and
+ * private drafts so another attempt can continue the same run.
  */
 
-import fs from 'node:fs/promises';
 import path from 'node:path';
 import { withFileLock } from './lock.js';
-import { runToolLoop } from './tool-loop.js';
-import { bodyLineChanges, reviewProofs } from './dream-evidence.js';
+import { mergeUsage, runToolLoop } from './tool-loop.js';
+import { bodyLineChanges, reviewProofs, sourcePassages } from './dream-evidence.js';
 import { memoryHash } from './write-review.js';
 import { currentBody } from './memory-body.js';
 import { resolveModel, describeLlmError } from './llm-call.js';
+import { scanSecrets } from './secrets.js';
 import {
   prepareShadow,
   diffShadow,
   shadowConflicts,
   shadowDirOf,
   clearShadow,
+  captureShadowDraft,
+  restoreShadowDraft,
 } from './dream-shadow.js';
-import { newRunId, runDirOf, readRunManifest, writeRunManifest, shapeManifest } from './dream-run.js';
-import { costLimitStatus, dreamCostModeOf, estimateInputTokens, maxTotalTokensLimit } from './dream.js';
+import {
+  clearRunCheckpoint, dreamRunOutcome, hasRunCheckpoint, newRunId, readRunCheckpoint, readRunManifest, reconcileRunOutcomes,
+  runDirOf, shapeManifest, summarizeRun, validRunId, writeRunCheckpoint, writeRunManifest,
+} from './dream-run.js';
+import { costLimitStatus, dreamCostModeOf, estimateInputTokens, maxTotalTokensLimit, totalTokensOf } from './dream.js';
 
 const MAX_TURNS = 14;
 const MAX_TOKENS = 2_000;
@@ -59,8 +63,8 @@ You are working on a **copy** (shadow) of the memory directory. Never assume a c
 
 Your job:
 1. Read MEMORY.md and the note metadata first (memory_index).
-2. Compare the current pages with each other before reading any session. Read (memory_read) the pages that share a subject; when they repeat or contradict each other, fix that in the copy right away (step 4). Do this every run, even when there are new sessions: your turns are limited and sessions you do not finish stay for the next run.
-3. Then review sessions. Search narrowly; if session_search returns an error, page through the session with session_read (at most 8 events before/after per call). Before marking a session reviewed, use session_read to cover its unread text events. session_done reports the next missing seqs; when nearing the turn limit, call it to checkpoint the reviewed prefix.
+2. If resuming, continue the unread part of saved sessions first. Compare related pages as needed; when no sessions are offered, tidy the pages themselves.
+3. Then review sessions. Search narrowly and use session_read to cover unread text events. After analyzing a contiguous range and making its draft writes, call work_done with the final analyzed seq and a short outcome. Checkpoint early and often. On resume, use the saved outcomes and continue past their covered ranges.
    A page body is not in this prompt; read only the pages you need.
 4. Write the consolidated result to the shadow copy with memory_write / memory_delete.
    - Merge duplicate facts; keep one canonical line.
@@ -69,6 +73,7 @@ Your job:
    - When a page you keep says the other page's value is retired or replaced, that page is the evidence: delete or correct the other page now and cite it as {memory_file, quote}. Do not wait for a session to repeat it.
    - Remove clearly stale or wrong pages only when the evidence is in a session you read or in another current page that you keep.
    - Add source annotations like ^[session#seq, YYYY-MM-DD] to new fact lines when you can.
+   - Put each new or changed claim on its own line and cite a short source passage for each claim. Keep the original terms and conditions from the passage.
    - Keep MEMORY.md index lines one line each, under ~150 chars.
 5. Reply DONE when finished. If nothing durable changed, reply DONE without writing.
 
@@ -167,33 +172,37 @@ async function sessionBounds(sessionQuery, id) {
     const events = await sessionQuery.listEvents(id);
     if (!Array.isArray(events)) return null;
     const seqs = events.filter((event) => Number.isSafeInteger(event?.seq) && event.seq >= 0);
+    const relevant = seqs.filter((event) => !event.type || ['user/message', 'assistant/message', 'tool/result'].includes(event.type))
+      .sort((a, b) => a.seq - b.seq);
     return {
       lastSeq: seqs.reduce((max, event) => Math.max(max, event.seq), 0),
-      required: seqs.filter((event) => !event.type || ['user/message', 'assistant/message', 'tool/result'].includes(event.type))
-        .map((event) => event.seq).sort((a, b) => a - b),
+      required: relevant.map(({ seq }) => seq),
+      events: relevant,
     };
   } catch {
     return null;
   }
 }
 
-async function candidatesOf({ ctx, pctx, config, metadataOnly = false, signal }) {
+async function candidatesOf({ ctx, pctx, config, metadataOnly = false, signal, sessionIds }) {
   const sessionQuery = ctx?.get?.('sessionQuery');
   if (typeof sessionQuery?.filterSessions !== 'function') return [];
   const records = await sessionQuery.filterSessions([{ kind: 'cwd', values: [pctx.workspaceDir] }], signal);
   const processed = candidateState(pctx.state);
   const active = new Set((pctx.state.snapshot?.().sessionsSince ?? []).map((item) => item.id));
+  const wanted = sessionIds ? new Set(sessionIds) : null;
   const candidates = [];
   for (const record of Array.isArray(records) ? records : []) {
     const header = record?.header ?? record?.session ?? record;
     const id = textOf(header?.id);
     if (!id || header?.parentSession || header?.origin === 'subagent') continue;
+    if (wanted && !wanted.has(id)) continue;
     const mark = processed.get(id);
     if (mark && !mark.partial && !active.has(id)) continue;
     candidates.push({ id, createdAt: Number(header?.createdAt) || 0, readSeq: mark?.seq ?? null, checkedAt: mark?.at ?? 0 });
   }
   candidates.sort((a, b) => a.checkedAt - b.checkedAt || a.createdAt - b.createdAt || a.id.localeCompare(b.id));
-  const selected = candidates.slice(0, Math.max(1, Number(config.sessionLookback) || 8));
+  const selected = wanted ? candidates : candidates.slice(0, Math.max(1, Number(config.sessionLookback) || 8));
   if (metadataOnly) return selected;
   return Promise.all(selected.map(async (candidate) => ({ ...candidate, bounds: await sessionBounds(sessionQuery, candidate.id) })));
 }
@@ -229,35 +238,30 @@ function rejectedFileOf(line) {
   return /^(?:added|changed|removed) (\S+?)(?::|;|\s|$)/u.exec(String(line ?? ''))?.[1] ?? '';
 }
 
-function sessionLine(item) {
+function sessionLine(item, covered = item.readSeq) {
   const created = new Date(item.createdAt || 0).toISOString();
-  const range = item.readSeq !== null ? 'new events after seq ' + item.readSeq : 'not reviewed yet';
-  const first = item.bounds?.required.find((seq) => seq > (item.readSeq ?? -1));
+  const range = covered !== null ? 'new events after seq ' + covered : 'not reviewed yet';
+  const first = item.bounds?.required.find((seq) => seq > (covered ?? -1));
   const next = first === undefined ? '' : ', first unreviewed text event seq ' + first;
   return '- ' + item.id + ' created ' + created + ', ' + range + next;
+}
+
+function sourceHash(candidate, through) {
+  if (!candidate?.bounds || through > candidate.bounds.lastSeq) return '';
+  return memoryHash(JSON.stringify(candidate.bounds.events.filter(({ seq }) => seq <= through && seq > (candidate.readSeq ?? -1))));
 }
 
 function reviewProgress(candidate, reads) {
   if (!candidate.bounds) return null;
   const required = candidate.bounds.required.filter((seq) => seq > (candidate.readSeq ?? -1));
   const next = required.findIndex((seq) => !reads?.has(seq));
-  if (next === -1) return { seq: candidate.bounds.lastSeq, complete: true };
+  if (next === -1) return { seq: candidate.bounds.lastSeq, missing: [] };
   const seq = next > 0 ? required[next - 1] : candidate.readSeq;
-  return { seq, complete: false, missing: required.slice(next).filter((seq) => !reads?.has(seq)).slice(0, 8) };
-}
-
-function reviewRecords(candidates, reads, doneSessions, capturedAt) {
-  return candidates.flatMap((item) => {
-    if (!doneSessions.has(item.id)) return [];
-    const progress = reviewProgress(item, reads.get(item.id));
-    return progress && (progress.complete || (progress.seq !== null && progress.seq !== item.readSeq))
-      ? [{ id: item.id, seq: progress.seq, complete: progress.complete, capturedAt }]
-      : [];
-  });
+  return { seq, missing: required.slice(next).filter((seq) => !reads?.has(seq)).slice(0, 8) };
 }
 
 /** One tool surface, bound to the shadow store and the host session query. */
-function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSession: onSessionRead, onWrite, onEvidence, onSessionDone, onLink, reads, seenSessions, signal }) {
+function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSession: onSessionRead, onWrite, onEvidence, onLink, reads, seenSessions, signal, work, onWorkDone, onPageRead }) {
   const recordEvidence = typeof onEvidence === 'function' ? onEvidence : () => {};
   const sessionQuery = ctx?.get?.('sessionQuery');
   const citationSchema = {
@@ -378,12 +382,12 @@ function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSessi
       },
     },
     {
-      name: 'session_done',
-      description: 'Mark one candidate session reviewed. Call this only after reading the relevant events; unread sessions stay candidates for the next run.',
+      name: 'work_done',
+      description: 'Persist a completed portion of a session and the current drafts. Call after analyzing the range and writing any resulting drafts.',
       parameters: {
         type: 'object',
-        properties: { session_id: { type: 'string' } },
-        required: ['session_id'],
+        properties: { session_id: { type: 'string' }, through_seq: { type: 'integer', minimum: 0 }, summary: { type: 'string' } },
+        required: ['session_id', 'through_seq', 'summary'],
         additionalProperties: false,
       },
     },
@@ -409,6 +413,7 @@ function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSessi
           const offset = Number(args.offset ?? 0);
           if (!Number.isSafeInteger(offset) || offset < 0 || offset > entry.body.length) return 'ERROR: invalid offset';
           if (offset > 0 && args.version !== version) return 'ERROR: page version changed; start at offset 0';
+          onPageRead(entry.file);
           const end = textPageEnd(entry.body, offset, PAGE_CHARS);
           const read = pageReads.get(entry.file);
           if (offset === 0 || (read?.version === version && offset <= read.end)) {
@@ -428,6 +433,7 @@ function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSessi
         try {
           const hits = await shadowStore.search(query, { limit, scope: 'project', currentOnly: true });
           if (!Array.isArray(hits) || hits.length === 0) return 'No matches.';
+          for (const hit of hits) onPageRead(hit.file);
           return clip(hits.map((hit) => `- ${hit.file}: ${oneLine(hit.snippets?.[0] ?? hit.description ?? hit.name, 300)}`).join('\n'));
         } catch (error) {
           return `ERROR: ${error?.message ?? error}`;
@@ -486,7 +492,7 @@ function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSessi
         }
       }
       case 'session_list': {
-        return clip(candidates.map(sessionLine).join('\n') || '(no sessions)');
+        return clip(candidates.map((item) => sessionLine(item, work?.get(item.id)?.seq ?? item.readSeq)).join('\n') || '(no sessions)');
       }
       case 'session_search': {
         const sessionId = textOf(args.session_id);
@@ -532,15 +538,20 @@ function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSessi
           }, signal);
           const events = Array.isArray(page?.events) ? page.events : Array.isArray(page) ? page : [];
           const lines = [];
+          const covered = [];
+          let hidden = 0;
           for (const event of events) {
             const at = event.seq;
             if (!Number.isSafeInteger(at) || (paged && at !== seq)) continue;
+            covered.push(at);
             if (isInjectedEvent(event)) {
+              hidden += 1;
               onReadSession(sessionId, at);
               continue;
             }
             const text = eventText(event);
             if (!text) {
+              hidden += 1;
               onReadSession(sessionId, at);
               continue;
             }
@@ -553,20 +564,38 @@ function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSessi
             onReadSession(sessionId, at, { from, end, length: text.length });
           }
           if (lines.length > 0) seenSessions.add(sessionId);
-          return lines.length ? clip(lines.join('\n')) : 'No visible text in this window.';
+          const body = lines.join('\n');
+          if (paged) return body ? clip(body) : 'No visible text in this window.';
+          // A window can land inside a long run of tool calls and come back
+          // empty. Naming the range it covered and where the next text is keeps
+          // the agent from re-reading the same seq with other widths until its
+          // turns run out.
+          const first = covered.length > 0 ? Math.min(...covered) : seq;
+          const last = covered.length > 0 ? Math.max(...covered) : seq;
+          const item = candidates.find((candidate) => candidate.id === sessionId);
+          const upcoming = (item?.bounds?.required ?? []).filter((at) => at > last).slice(0, 3);
+          const footer = '[window seq ' + first + '–' + last + ': ' + covered.length + ' events, ' + hidden
+            + ' without text; '
+            + (upcoming.length > 0 ? 'next text at seq ' + upcoming.join(', ') : 'no more text in this session')
+            + ']';
+          return clip([footer, ...(body ? [body] : [])].join('\n'));
         } catch (error) {
           return `ERROR: ${error?.message ?? error}`;
         }
       }
-      case 'session_done': {
-        const sessionId = textOf(args.session_id);
-        if (sessionId === '') return 'ERROR: session_id is required';
-        if (!candidates.some((item) => item.id === sessionId)) return 'ERROR: session_id is not a candidate';
-        const item = candidates.find((candidate) => candidate.id === sessionId);
-        const progress = reviewProgress(item, reads.get(sessionId));
+      case 'work_done': {
+        const candidate = candidates.find(({ id }) => id === args.session_id);
+        if (!candidate) return 'ERROR: session_id is not a candidate';
+        const progress = reviewProgress(candidate, reads.get(candidate.id));
+        const seq = args.through_seq;
         if (!progress) return 'ERROR: session bounds unavailable; it will be retried.';
-        onSessionDone(sessionId);
-        return progress.complete ? 'DONE ' + sessionId : 'INCOMPLETE ' + sessionId + ': next unread seqs ' + progress.missing.join(', ');
+        if (!Number.isSafeInteger(seq) || seq <= (candidate.readSeq ?? -1) || !candidate.bounds.required.includes(seq)) {
+          return 'ERROR: through_seq must name an unreviewed text event';
+        }
+        if (seq > (progress.seq ?? -1)) return 'ERROR: next unread seqs ' + progress.missing.join(', ');
+        const summary = oneLine(textOf(args.summary), 500);
+        if (!summary || scanSecrets(summary).matches.length > 0) return 'ERROR: provide a short outcome without secrets';
+        return onWorkDone(candidate, seq, summary);
       }
       default:
         return `ERROR: unknown tool ${call.name}`;
@@ -595,10 +624,12 @@ function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSessi
       const sessionId = textOf(citation?.session_id ?? citation?.sessionId);
       const seq = Number(citation?.seq);
       if (!sessionId || !Number.isSafeInteger(seq) || !quote) continue;
-      const verified = await quoteMatches(sessionId, seq, quote);
+      const event = await quotedEvent(sessionId, seq, quote);
+      const verified = Boolean(event);
       if (verified) matched++;
       else unverified++;
-      recordEvidence({ sessionId, seq, quote, file, revision, source: 'citation', verified });
+      recordEvidence({ sessionId, seq, quote, file, revision, source: 'citation', verified,
+        eventType: event?.type, passages: event ? sourcePassages(eventText(event), quote) : [] });
     }
     if (unverified > 0) return ' (' + unverified + ' citation(s) did not match the cited session or page text)';
     return matched > 0 ? '' : ' (no checked citation; only fact-preserving edits can be applied without one)';
@@ -614,11 +645,11 @@ function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSessi
     }
   }
 
-  async function quoteMatches(sessionId, seq, quote) {
+  async function quotedEvent(sessionId, seq, quote) {
     const wanted = normalizeQuote(quote);
     if (wanted.length < MIN_QUOTE_CHARS || !candidates.some((item) => item.id === sessionId)) return false;
     const event = await readExactEvent(sessionId, seq);
-    return Boolean(event) && !isInjectedEvent(event) && normalizeQuote(eventText(event)).includes(wanted);
+    return event && !isInjectedEvent(event) && normalizeQuote(eventText(event)).includes(wanted) ? event : undefined;
   }
 
   /**
@@ -642,7 +673,20 @@ function toolsFor({ ctx, config, shadowStore, liveStore, candidates, onReadSessi
     if (Number.isSafeInteger(seq) && seq >= 0) onSessionRead(sessionId, seq, page);
   }
 
-  return { tools, execute };
+  async function sessionSources(citations) {
+    const checked = await Promise.all((Array.isArray(citations) ? citations : []).slice(0, 20).map(async (item) => {
+      const id = textOf(item?.session_id ?? item?.sessionId);
+      const seq = Number(item?.seq);
+      return id && Number.isSafeInteger(seq) && await quotedEvent(id, seq, item?.quote) ? id : '';
+    }));
+    return [...new Set(checked.filter(Boolean))].sort();
+  }
+
+  async function restoreCitations(items) {
+    for (const item of items) await checkCitations([item], item.file, item.revision);
+  }
+
+  return { tools, execute, sessionSources, restoreCitations };
 }
 
 export class DreamAgent {
@@ -661,8 +705,14 @@ export class DreamAgent {
     const paths = options.pctx?.paths;
     if (!paths) return { ok: false, started: false, error: 'no-project' };
     const key = paths.projectDir;
+    if (options.runId && !validRunId(options.runId)) return { ok: false, started: false, error: 'invalid-run-id' };
+    if (options.resume) {
+      const saved = await this.status(options.pctx, options.runId);
+      if (!saved.resumable) return { ok: false, started: false, error: 'not-resumable', runId: options.runId };
+    }
     const active = this.active.get(key);
     if (active) {
+      if (options.resume && active.runId !== options.runId) return { ok: false, started: false, error: 'dream-running', runId: options.runId };
       return { ok: true, started: false, reused: true, runId: active.runId, status: 'running', done: active.promise };
     }
     const runId = options.runId || newRunId();
@@ -700,24 +750,14 @@ export class DreamAgent {
     const active = this.active.get(paths.projectDir);
     const wanted = runId || active?.runId || '';
     if (wanted === '') return { ok: true, runId: '', status: 'none' };
+    if (!validRunId(wanted)) return { ok: false, error: 'invalid-run-id' };
     if (active?.runId === wanted) return { ok: true, running: true, runId: wanted, status: 'running', stage: 'agent' };
-    const manifest = await readRunManifest(runDirOf(paths, wanted));
+    const dir = runDirOf(paths, wanted);
+    const manifest = await readRunManifest(dir);
     if (!manifest) return { ok: true, running: false, runId: wanted, status: 'unknown' };
-    return {
-      ok: true,
-      running: false,
-      runId: wanted,
-      status: String(manifest.status || 'unknown'),
-      stage: String(manifest.stage || ''),
-      skipReason: manifest.skipReason ? String(manifest.skipReason) : undefined,
-      error: manifest.error ? String(manifest.error) : undefined,
-      counts: manifest.counts,
-      usage: manifest.usage,
-      sessionsReviewed: Number(manifest.sessionsReviewed) || 0,
-      sessionsOffered: Array.isArray(manifest.input?.sessions) ? manifest.input.sessions.length : 0,
-      startedAt: manifest.startedAt,
-      finishedAt: manifest.finishedAt,
-    };
+    const checkpoint = ['running', 'paused'].includes(manifest.status) && await hasRunCheckpoint(dir);
+    return { ok: true, running: false, ...summarizeRun(manifest, { checkpoint, outcome: dreamRunOutcome(pctx.state, wanted) }),
+      sessionsOffered: Array.isArray(manifest.input?.sessions) ? manifest.input.sessions.length : 0 };
   }
 
   async estimate({ pctx, noSessions = false } = {}) {
@@ -740,6 +780,7 @@ export class DreamAgent {
       inputChars: chars,
       turns,
       limit: Math.max(0, Math.floor(Number(this.config.dreamMaxTotalTokens) || 0)),
+      costMode: dreamCostModeOf(this.config),
       rough: true,
       sessions: candidates.length,
       units: candidates.length,
@@ -747,7 +788,7 @@ export class DreamAgent {
     };
   }
 
-  async #run({ pctx, runId, signal, trigger = 'manual', reason = '', noSessions = false, focus = '' } = {}) {
+  async #run({ pctx, runId, signal, trigger = 'manual', reason = '', noSessions = false, focus = '', resume = false } = {}) {
     const startedAt = Date.now();
     const config = this.config;
     const base = {
@@ -759,6 +800,7 @@ export class DreamAgent {
       files: [],
       sessionsReviewed: 0,
       startedAt,
+      runId,
     };
     let ran = false;
     const finish = (extra = {}) => ({ ...base, ran, ...extra, durationMs: Date.now() - startedAt, finishedAt: Date.now() });
@@ -772,45 +814,77 @@ export class DreamAgent {
 
     return withFileLock(paths.lockFile, async () => {
       await state.read?.();
+      await reconcileRunOutcomes(paths, state);
       // A pending shadow is the human's review queue. Never let a manual or
       // scheduled run replace it (and wipe its directory) before switch/discard.
       const pending = state.snapshot?.().shadowPending;
       if (pending && typeof pending.dir === 'string' && pending.dir !== '') {
-        let pendingExists = false;
-        try {
-          await fs.stat(pending.dir);
-          pendingExists = true;
-        } catch {
-          pendingExists = false;
-        }
-        if (pendingExists) return finish({ skipped: true, skipReason: 'pending-switch' });
         // Stale state pointing at a deleted directory must not block forever.
-        await state.clearShadowPending?.();
+        const dropped = await state.dropStaleShadowPending?.();
+        if (!dropped) return finish({ skipped: true, skipReason: 'pending-switch' });
       }
 
       const runDir = runDirOf(paths, runId);
+      const previous = await readRunManifest(runDir);
+      if (resume && dreamRunOutcome(state, runId)) return finish({ ok: false, error: 'not-resumable' });
+      let checkpoint = resume && previous && ['running', 'paused'].includes(previous.status)
+        ? await readRunCheckpoint(runDir) : null;
+      if (resume && !checkpoint) return finish({ ok: false, error: 'not-resumable' });
+      if (!resume && previous) return finish({ ok: false, error: 'run-id-in-use' });
+      const previousTotal = totalTokensOf(previous?.usage) ?? 0;
+      let usage = checkpoint ? (previousTotal >= (totalTokensOf(checkpoint.usage) ?? 0) ? previous.usage : checkpoint.usage) : null;
+      if (checkpoint) {
+        noSessions = previous.parameters?.noSessions === true;
+        focus = previous.parameters?.focus ?? '';
+      }
+      const checkpointableFocus = scanSecrets(focus).matches.length === 0;
       let manifest = shapeManifest({
+        ...previous,
         runId,
         projectId: paths.projectDirName || paths.projectId || '',
-        trigger,
-        reason,
-        startedAt,
+        trigger: previous?.trigger ?? trigger,
+        reason: previous?.reason ?? reason,
+        parameters: { noSessions, focus: checkpointableFocus ? focus : '' },
+        startedAt: previous?.startedAt || startedAt,
+        finishedAt: 0,
         status: 'running',
         stage: 'agent',
+        skipReason: '',
+        error: '',
       });
       const save = async (patch = {}) => {
-        manifest = shapeManifest({ ...manifest, ...patch, runId, startedAt, updatedAt: Date.now() });
+        manifest = shapeManifest({ ...manifest, ...patch, runId, updatedAt: Date.now() });
         await writeRunManifest(runDir, manifest).catch((error) => warn('manifest', error));
         return manifest;
       };
       const timeoutSignal = AbortSignal.timeout(Math.max(1_000, Number(config.dreamTimeoutMs) || 600_000));
       const loopSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
+      const pause = async (why) => {
+        await save({ status: 'paused', error: why, usage: usage ?? {}, finishedAt: Date.now() });
+        await clearShadow(paths).catch(() => {});
+        return finish({ ok: true, status: 'paused', resumable: true, error: why, usage });
+      };
+      const clearCheckpoint = () => clearRunCheckpoint(runDir).catch((error) => warn('remove checkpoint', error));
+      const failConflict = async (conflicts = []) => {
+        const error = 'checkpoint-conflict';
+        await save({ status: 'failed', error, usage: usage ?? {}, finishedAt: Date.now() });
+        await clearShadow(paths).catch(() => {});
+        await clearCheckpoint();
+        return finish({ ok: false, status: 'failed', resumable: false, error, conflicts });
+      };
 
       try {
-        await save();
+        await writeRunManifest(runDir, manifest);
         await state.markDreamStart?.();
         const capturedAt = Date.now();
-        const candidates = noSessions ? [] : await candidatesOf({ ctx: this.ctx, pctx, config, signal: loopSignal });
+        const candidates = noSessions ? [] : await candidatesOf({ ctx: this.ctx, pctx, config, signal: loopSignal, sessionIds: checkpoint?.sessionIds });
+        const work = new Map((checkpoint?.work ?? []).map((record) => [record.id, record]));
+        if (checkpoint && (candidates.length !== checkpoint.sessionIds.length || [...work.values()].some((record) => {
+          const item = candidates.find(({ id }) => id === record.id);
+          return !item || item.readSeq !== record.readSeq || sourceHash(item, record.seq) !== record.sourceHash;
+        }))) {
+          return failConflict();
+        }
         // A session with no unreviewed text (one that only ran a slash command,
         // say) has nothing to read. Settle it here instead of offering it to the
         // agent, which would otherwise spend its turns paging through nothing.
@@ -822,19 +896,29 @@ export class DreamAgent {
           model: config.dreamAnalyzerModel,
         });
         if (!model) {
+          if (checkpoint) return pause('llm-unavailable');
           await save({ status: 'skipped', skipReason: 'llm-unavailable', finishedAt: Date.now() });
           return finish({ skipped: true, skipReason: 'llm-unavailable', runId });
         }
 
         const { shadowStore, base: shadowBase } = await prepareShadow({ store, paths, config });
-        const reads = new Map();
-        const seenSessions = new Set();
-        const doneSessions = new Set(settled.map((item) => item.id));
-        const writes = [];
-        const links = {};
+        if (checkpoint) {
+          if (checkpoint.bases.some(([file, hash]) => (shadowBase[file] ?? null) !== hash)) {
+            return failConflict();
+          }
+          await restoreShadowDraft(shadowStore, checkpoint.draft);
+        }
+        const reads = new Map(candidates.filter(({ id }) => work.has(id)).map(({ id, bounds }) => [
+          id, new Set(bounds.required.filter((seq) => seq <= work.get(id).seq)),
+        ]));
+        const seenSessions = new Set(work.keys());
+        const writes = checkpoint?.draft.pages.map(({ file, raw }) => ({ file, op: raw === null ? 'delete' : 'write' })) ?? [];
+        const links = checkpoint?.links ?? {};
+        const readFiles = new Set(checkpoint?.readFiles ?? []);
         const evidence = [];
         const evidenceKeys = new Set();
-        const failedWrites = new Set();
+        const failedWrites = new Map((checkpoint?.failures ?? []).map(([key, scopes]) => [key, new Map(scopes)]));
+        const failedSources = () => [...failedWrites.values()].flatMap((scopes) => [...scopes.values()]);
         const onEvidence = (item) => {
           if (!item || evidence.length >= MAX_EVIDENCE) return;
           const quote = String(item.quote || '').slice(0, 500);
@@ -868,6 +952,8 @@ export class DreamAgent {
             ...(item.file ? { file: String(item.file) } : {}),
             source: item.source || 'citation',
             verified: item.verified === true,
+            ...(typeof item.eventType === 'string' ? { eventType: item.eventType } : {}),
+            passages: item.passages,
           });
         };
         const offsets = new Map();
@@ -886,8 +972,12 @@ export class DreamAgent {
           if (!reads.has(id)) reads.set(id, new Set());
           reads.get(id).add(seq);
         };
-        const onWrite = (file, op) => writes.push({ file, op });
-        const { tools, execute } = toolsFor({
+        let uncheckedWrites = false;
+        const onWrite = (file, op) => {
+          writes.push({ file, op });
+          uncheckedWrites = true;
+        };
+        const { tools, execute, sessionSources, restoreCitations } = toolsFor({
           ctx: this.ctx,
           config,
           shadowStore,
@@ -899,14 +989,43 @@ export class DreamAgent {
           onReadSession,
           onWrite,
           onEvidence,
-          onSessionDone: (sessionId) => doneSessions.add(String(sessionId)),
+          onPageRead: (file) => readFiles.add(file),
+          work,
+          onWorkDone: async (candidate, seq, summary) => {
+            if (!checkpointableFocus) return 'ERROR: the run focus cannot be saved in a checkpoint';
+            if (failedSources().some((ids) => ids.length === 0 || ids.includes(candidate.id))) {
+              return 'ERROR: finish or retry the unresolved writes for this range before checkpointing';
+            }
+            const last = work.get(candidate.id);
+            if (last && seq < last.seq) return 'ERROR: this range was already checkpointed';
+            const record = { id: candidate.id, seq, readSeq: candidate.readSeq, sourceHash: sourceHash(candidate, seq),
+              summary: last && seq > last.seq ? oneLine(`${last.summary} ${summary}`, 1_800) : summary };
+            const next = new Map(work).set(candidate.id, record);
+            const draft = await captureShadowDraft(shadowStore, writes.map(({ file }) => file));
+            const sources = evidence.filter((item) => item.verified && item.memoryFile).map((item) => item.memoryFile);
+            const protectedFiles = new Set([...readFiles, ...draft.pages.map(({ file }) => file), ...Object.keys(links), ...Object.values(links), ...sources]);
+            const saved = {
+              sessionIds: candidates.map(({ id }) => id), work: [...next.values()], draft, links, readFiles: [...readFiles],
+              bases: [...protectedFiles].map((file) => [file, shadowBase[file] ?? null]),
+              evidence: evidence.flatMap(({ passages: _passages, ...item }) => scanSecrets(item.quote).matches.length === 0 ? [item] : []),
+              failures: [...failedWrites].map(([key, scopes]) => [key, [...scopes]]),
+              usage,
+            };
+            await writeRunCheckpoint(runDir, saved);
+            checkpoint = saved;
+            uncheckedWrites = false;
+            work.set(candidate.id, record);
+            await save({ checkpointed: work.size, usage: usage ?? {}, input: { ...manifest.input, sessions: candidates.map(({ id }) => ({ id })) } });
+            return 'CHECKPOINTED ' + candidate.id + ' through seq ' + seq;
+          },
           onLink: (from, into) => {
             if (from && into && from !== into) links[String(from)] = String(into);
           },
         });
+        if (checkpoint) await restoreCitations(checkpoint.evidence);
         const index = await shadowStore.indexText('project');
         const indexHead = String(index || '').slice(0, 8_000);
-        const sessionLines = offered.map(sessionLine).join('\n');
+        const sessionLines = offered.map((item) => sessionLine(item, work.get(item.id)?.seq ?? item.readSeq)).join('\n');
         // Rejections of pages that still exist come last (nearest the cut):
         // those are the ones this run could propose again.
         const allRejected = (state.snapshot?.().dreamRejected ?? [])
@@ -922,12 +1041,14 @@ export class DreamAgent {
           focus ? `Focus: ${focus}` : '',
           rules.trim() === '' ? '' : `Project memory rules (follow these over your defaults):\n${rules}`,
           'Candidate sessions:\n' + (sessionLines || '(none)'),
+          work.size > 0 ? 'Saved analysis and drafts are already in the shadow. Continue beyond these ranges:\n'
+            + [...work.values()].map(({ id, seq, summary }) => `- ${id} through seq ${seq}: ${summary}`).join('\n') : '',
           'MEMORY.md (head):\n' + (indexHead || '(empty)'),
           rejected.length > 0
             ? 'Changes the reviewer rejected before. Each names the page version it was made against and the lines it removed and added. Do not propose the same change again. Propose it again only with evidence the reviewer has not seen (a session you read or a current page you quote), and cite that evidence. Other changes to the same page are fine:\n'
               + rejected.map((item) => `- ${item}`).join('\n')
             : '',
-          'Use memory_index for the note list. Use session_search/session_read for evidence. When you merge facts into another page, list the source files in `merges` (or `moved_to` on delete) so one review decision covers the whole move. Call session_done after you finish reviewing a session; unread sessions stay for the next run. Write only the shadow copy. Reply DONE when finished.',
+          'Use memory_index for the note list. Use session_search/session_read for evidence. List source files in `merges` or `moved_to` so one review decision covers a merge. Call work_done after analyzed ranges and their drafts are ready. Write only the shadow copy. Reply DONE when finished.',
         ].filter(Boolean).join('\n\n');
 
         // dreamMaxTotalTokens: the loop stops once usage reaches it. `block`
@@ -935,7 +1056,10 @@ export class DreamAgent {
         // away a copy built past it; `warn` keeps the copy and flags it.
         const tokenLimit = maxTotalTokensLimit(config);
         const blockOverLimit = dreamCostModeOf(config) === 'block';
-        if (tokenLimit > 0 && blockOverLimit && estimateInputTokens(SYSTEM.length + prompt.length) > tokenLimit) {
+        const remainingTokens = tokenLimit > 0 ? tokenLimit - (totalTokensOf(usage) ?? 0) : 0;
+        if (checkpoint && tokenLimit > 0 && (remainingTokens <= 0
+          || (blockOverLimit && estimateInputTokens(SYSTEM.length + prompt.length) > remainingTokens))) return pause('cost-limit');
+        if (tokenLimit > 0 && blockOverLimit && estimateInputTokens(SYSTEM.length + prompt.length) > remainingTokens) {
           await clearShadow(paths);
           await state.noteCostExceeded?.(true);
           await save({ status: 'skipped', skipReason: 'cost-limit', stage: 'agent', finishedAt: Date.now() });
@@ -952,9 +1076,20 @@ export class DreamAgent {
           executeTool: async (call) => {
             const result = await execute(call);
             if (call.name === 'memory_write' || call.name === 'memory_delete') {
-              const file = textOf(call.arguments?.file);
-              if (result.startsWith('ERROR:')) failedWrites.add(file);
-              else failedWrites.delete(file);
+              const args = parseArgs(call.arguments);
+              const target = textOf(args.file) || textOf(args.name);
+              const key = memoryHash(JSON.stringify([call.name, target]));
+              const existing = failedWrites.get(key);
+              const failed = result.startsWith('ERROR:');
+              if (failed || existing) {
+                const sources = await sessionSources(args.citations);
+                const scope = sources.length > 0 ? JSON.stringify(sources) : memoryHash(JSON.stringify(args));
+                const unresolved = existing ?? new Map();
+                if (failed) unresolved.set(scope, sources);
+                else unresolved.delete(scope);
+                if (unresolved.size > 0) failedWrites.set(key, unresolved);
+                else failedWrites.delete(key);
+              }
             }
             return result;
           },
@@ -962,34 +1097,48 @@ export class DreamAgent {
           maxTokens: MAX_TOKENS,
           purpose: 'cc-memory-dream',
           signal: loopSignal,
-          maxTotalTokens: tokenLimit,
+          maxTotalTokens: remainingTokens,
+          onUsage: (delta) => { usage = mergeUsage(usage, delta); },
         });
         // The run record keeps what the run actually used, whatever its outcome.
         await save({
-          usage: loop.usage ?? {},
+          usage: usage ?? {},
           models: { agent: `${model.provider}/${model.model}` },
           input: {
             sessions: candidates.map(({ id }) => ({ id })),
-            expectedUnits: 0,
             memoryFiles: (await store.listEntries('project').catch(() => [])).length,
           },
         });
-        const cost = costLimitStatus(config, loop.usage);
+        const cost = costLimitStatus(config, usage);
         const costExceeded = loop.stopped === 'budget' || cost.exceeded;
         if (costExceeded && blockOverLimit && !loopSignal.aborted) {
           await clearShadow(paths);
           await state.noteCostExceeded?.(true);
           await state.markDreamFailed?.('cost-limit-exceeded');
-          await save({ status: 'failed', stage: 'agent', error: 'cost-limit-exceeded', usage: loop.usage, finishedAt: Date.now() });
-          return finish({ ok: false, error: 'cost-limit-exceeded', usage: loop.usage, runId });
+          await save({ status: 'failed', stage: 'agent', error: 'cost-limit-exceeded', usage, finishedAt: Date.now() });
+          await clearCheckpoint();
+          return finish({ ok: false, error: 'cost-limit-exceeded', usage });
         }
 
         if (loopSignal.aborted) {
-          const reason = timeoutSignal.aborted ? 'timeout' : 'cancelled';
+          const reason = signal?.aborted ? 'cancelled' : 'timeout';
+          if (reason === 'timeout' && checkpoint) return pause(reason);
           await clearShadow(paths);
           await save({ status: 'cancelled', stage: 'agent', finishedAt: Date.now(), error: reason });
+          await clearCheckpoint();
           await state.clearDreamError?.();
           return finish({ ok: false, error: reason, runId });
+        }
+
+        // A missing finish or provider truncation only leaves previously checkpointed work.
+        if (checkpoint && !['stop', 'budget'].includes(loop.stopped)) return pause(loop.stopped || 'incomplete-stream');
+        if (checkpoint && uncheckedWrites) return pause('unchecked-draft');
+        if (!['stop', 'max-turns', 'budget'].includes(loop.stopped)) {
+          const error = loop.stopped || 'incomplete-stream';
+          await clearShadow(paths);
+          await state.markDreamFailed?.(error);
+          await save({ status: 'failed', stage: 'agent', error, finishedAt: Date.now() });
+          return finish({ ok: false, error, usage });
         }
 
         // Diff against the snapshot: only what the agent changed counts. A note
@@ -997,13 +1146,30 @@ export class DreamAgent {
         // pages the agent touched.
         const diff = await diffShadow({ store, shadowStore, base: shadowBase });
         const changed = new Set(diff.files.map((item) => item.file));
+        if (work.size > 0) {
+          for (const file of readFiles) changed.add(file);
+        }
         const conflicts = (await shadowConflicts({ store, base: shadowBase })).filter((item) => changed.has(item.file));
         if (conflicts.length > 0) {
+          if (checkpoint) return failConflict(conflicts);
+          // Nothing is left to review, and nothing can reach this copy: no
+          // pending record is written for a conflicted run.
+          await clearShadow(paths).catch(() => {});
           await save({ status: 'failed', stage: 'agent', error: 'conflict', finishedAt: Date.now() });
+          await clearCheckpoint();
           await state.markDreamFailed?.('notes changed while Dream ran');
           return finish({ ok: false, error: 'conflict', conflicts, runId });
         }
-        const records = failedWrites.size ? [] : reviewRecords(candidates, reads, doneSessions, capturedAt);
+        const unresolved = failedSources();
+        const unknownFailedSource = unresolved.some((ids) => ids.length === 0);
+        const blockedSessions = new Set(unresolved.flat());
+        const reviewedSessions = [...work.values()].map(({ id, seq }) => {
+          const bounds = candidates.find((item) => item.id === id).bounds;
+          const complete = bounds.required.every((event) => event <= seq);
+          return { id, seq: complete ? bounds.lastSeq : seq, complete, capturedAt };
+        });
+        const emptySessions = settled.map(({ id, bounds }) => ({ id, seq: bounds.lastSeq, complete: true, capturedAt }));
+        const records = [...reviewedSessions, ...emptySessions].filter(({ id }) => !unknownFailedSource && !blockedSessions.has(id));
         const coverage = {
           sessionsOffered: candidates.length,
           sessionsRead: seenSessions.size,
@@ -1015,8 +1181,14 @@ export class DreamAgent {
           const unfinished = loop.stopped === 'max-turns' || loop.stopped === 'budget';
           const outcome = unfinished ? 'unfinished' : 'nothing-new';
           await clearShadow(paths);
-          await state.clearShadowPending?.();
-          if (records.length > 0) await state.clearSessions?.(records.map((item) => item.id), { reads: records });
+          if (failedWrites.size > 0) {
+            await state.completeDreamRun({ runId, status: 'failed', skipReason: '', error: 'unfinished-writes', finishedAt: Date.now() }, records);
+            await state.markDreamFailed?.('unfinished-writes').catch((error) => warn('record run failure', error));
+            await save({ status: 'failed', stage: 'done', error: 'unfinished-writes', sessionsReviewed: coverage.sessionsReviewed, finishedAt: Date.now() });
+            await clearCheckpoint();
+            return finish({ ...coverage, ok: false, error: 'unfinished-writes', usage });
+          }
+          await state.completeDreamRun({ runId, status: 'done', skipReason: outcome, error: '', finishedAt: Date.now(), sessionsReviewed: coverage.sessionsReviewed }, records);
           await state.markDreamDone?.({
             sessions: coverage.sessionsReviewed,
             ops: 0,
@@ -1026,12 +1198,13 @@ export class DreamAgent {
             durationMs: Date.now() - startedAt,
             inputChars: prompt.length,
             outputChars: loop.text.length,
-            usage: loop.usage,
+            usage,
             costExceeded,
-          });
+          }).catch((error) => warn('record run statistics', error));
           // The agent ran (and either found nothing or ran out of turns): that
           // is a finished run, not a skipped one.
           await save({ status: 'done', skipReason: outcome, stage: 'done', sessionsReviewed: coverage.sessionsReviewed, finishedAt: Date.now() });
+          await clearCheckpoint();
           return finish({
             ...coverage,
             ok: true,
@@ -1047,8 +1220,12 @@ export class DreamAgent {
           removed: diff.removed.length,
         };
         const summary = `Dream agent: proposed changes to ${diff.files.length} page(s)`;
-        const proofs = await reviewProofs({ diff, store, shadowStore, links, evidence });
+        const reviewed = await reviewProofs({ diff, store, shadowStore, links, evidence });
+        const bindings = new Map(reviewed.flatMap(({ bindings }) => bindings.map(({ index, claims }) => [index, claims])));
+        const proofs = reviewed.map(({ bindings: _bindings, ...proof }) => proof);
         const finalRevisions = new Map(proofs.map((item) => [item.file, item.revision]));
+        const outcome = { runId, status: 'ready', skipReason: failedWrites.size > 0 ? 'unfinished-writes' : '',
+          error: '', finishedAt: Date.now(), counts: diff.files.length, sessionsReviewed: coverage.sessionsReviewed };
         await state.setShadowPending({
           dir: shadowDirOf(paths),
           createdAt: Date.now(),
@@ -1059,6 +1236,7 @@ export class DreamAgent {
           counts,
           sessions: candidates.map((item) => item.id),
           reviewRecords: records,
+          analysisFiles: work.size > 0 ? [...readFiles] : [],
           proposals: await proposalLines(diff, shadowStore, store),
           // Shown beside a change so the reviewer sees what they turned down before.
           rejectedBefore: Object.fromEntries(diff.files
@@ -1066,10 +1244,9 @@ export class DreamAgent {
             .filter(([, items]) => items.length > 0)),
           links,
           proofs,
-          evidence: evidence.filter((item) => finalRevisions.get(item.file) === item.revision),
-          verifiedFiles: [],
-          verifiedClaims: [],
-        });
+          evidence: evidence.flatMap(({ passages: _passages, ...item }, index) => finalRevisions.get(item.file) === item.revision
+            ? [{ ...item, claims: bindings.get(index) ?? [] }] : []),
+        }, outcome);
         await state.markDreamDone?.({
           sessions: coverage.sessionsReviewed,
           ops: writes.length,
@@ -1079,10 +1256,11 @@ export class DreamAgent {
           durationMs: Date.now() - startedAt,
           inputChars: prompt.length,
           outputChars: loop.text.length,
-          usage: loop.usage,
+          usage,
           costExceeded,
-        });
-        await save({ status: 'ready', stage: 'done', sessionsReviewed: coverage.sessionsReviewed, finishedAt: Date.now(), counts: diff.files.length });
+        }).catch((error) => warn('record run statistics', error));
+        await save({ ...outcome, stage: 'done' });
+        await clearCheckpoint();
         return finish({
           ok: true,
           ready: true,
@@ -1092,25 +1270,29 @@ export class DreamAgent {
           ops: writes.length,
           ...coverage,
           runId,
-          usage: loop.usage,
+          usage,
           turns: loop.turns,
+          ...(failedWrites.size > 0 ? { warnings: ['unfinished-writes'] } : {}),
           ...(costExceeded ? { costExceeded: true, warning: cost.warning || `cost-limit-reached: stopped at ${tokenLimit} total tokens` } : {}),
         });
       } catch (error) {
         if (loopSignal?.aborted) {
-          const reason = timeoutSignal?.aborted ? 'timeout' : 'cancelled';
+          const reason = signal?.aborted ? 'cancelled' : 'timeout';
+          if (reason === 'timeout' && checkpoint) return pause(reason);
           await clearShadow(paths).catch(() => {});
           await save({ status: 'cancelled', stage: 'agent', error: reason, finishedAt: Date.now() }).catch(() => {});
+          await clearCheckpoint();
           await state.clearDreamError?.().catch(() => {});
           return finish({ ok: false, error: reason, runId });
         }
         const message = describeLlmError(error);
+        if (checkpoint) return pause(message);
         await state.markDreamFailed?.(message).catch(() => {});
         await save({ status: 'failed', stage: 'agent', error: message, finishedAt: Date.now() }).catch(() => {});
         // A failed run leaves nothing to review; do not keep its partial copy.
         await clearShadow(paths).catch(() => {});
         return finish({ ok: false, error: message, runId });
       }
-    }, { ttlMs: config.lockTtlMs, waitMs: 2_000, strict: true });
+    }, { ttlMs: config.lockTtlMs, waitMs: 2_000, strict: true, reclaimDeadOwner: true });
   }
 }

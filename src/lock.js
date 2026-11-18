@@ -37,7 +37,7 @@ export function isProcessAlive(pid) {
 /**
  * @param {string} file lock file path.
  * @param {() => Promise<any>} fn critical section.
- * @param {{ttlMs?:number, waitMs?:number, onDegrade?:(error:unknown)=>void}} [options]
+ * @param {{ttlMs?:number, waitMs?:number, strict?:boolean, reclaimDeadOwner?:boolean, onDegrade?:(error:unknown)=>void}} [options]
  * @returns {Promise<any>} fn's result.
  */
 export async function withFileLock(file, fn, options = {}) {
@@ -76,8 +76,9 @@ export async function withFileLock(file, fn, options = {}) {
       if (CONTENTION_CODES.has(code)) {
         // A fresh lock means wait; a missing/stale lock means retry now.
         try {
+          if (options.reclaimDeadOwner && await reclaimDeadLock(file, ttlMs)) continue;
           const stat = await fs.stat(file);
-          if (Date.now() - stat.mtimeMs > ttlMs) {
+          if (!options.reclaimDeadOwner && Date.now() - stat.mtimeMs > ttlMs) {
             // Stale by age, but never steal a lock whose owner process is still
             // alive: a slow-but-running critical section must finish first.
             let ownerPid = 0;
@@ -135,6 +136,21 @@ export async function withFileLock(file, fn, options = {}) {
       }
     }
   }
+}
+
+/** Serialize recovery so two contenders cannot remove each other's new lock. */
+async function reclaimDeadLock(file, ttlMs) {
+  async function stale() {
+    const stat = await fs.stat(file);
+    const pid = Number((await readLock(file))?.pid);
+    return !isProcessAlive(pid) && ((Number.isInteger(pid) && pid > 0) || Date.now() - stat.mtimeMs > ttlMs);
+  }
+  if (!await stale()) return false;
+  return withFileLock(`${file}.reclaim`, async () => {
+    if (!await stale()) return false;
+    await fs.unlink(file);
+    return true;
+  }, { waitMs: 0, strict: true });
 }
 
 /** Read the current lock metadata, or null when the lock is absent. */

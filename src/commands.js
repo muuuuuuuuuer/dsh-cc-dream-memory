@@ -622,9 +622,9 @@ export function registerCommands(ctx, runtime) {
       const reads = Number(metricsView.reads?.total) || 0;
       const writes = Number(metricsView.writes?.total) || 0;
       const searches = Number(metricsView.searches?.count) || 0;
-      const adoptions = Number(metricsView.adoptions?.count) || 0;
+      const firstReads = Number(metricsView.adoptions?.count) || 0;
       lines.push(
-        `metrics: injections ${injectCount}   reads ${reads} (adopted ${adoptions})   writes ${writes}   searches ${searches}`,
+        `metrics: injections ${injectCount}   reads ${reads} (${firstReads} first reads per session)   writes ${writes}   searches ${searches}`,
       );
     }
     const policy = status.subagentPolicy;
@@ -777,10 +777,10 @@ export function registerCommands(ctx, runtime) {
     // v10: 7-day daily trend (text bars) and dream-plan quality.
     const trend = Array.isArray(metrics.trend) ? metrics.trend : [];
     if (trend.length > 0) {
-      lines.push('7-day trend (injections/reads/writes/searches/adopted):');
+      lines.push('7-day trend (injections, reads, writes, searches, first reads per session)');
       for (const day of trend) {
         lines.push(
-          `  ${day.date}  ${bar(day.injections)} ${Number(day.injections) || 0} inject · ${Number(day.reads) || 0} read · ${Number(day.writes) || 0} write · ${Number(day.searches) || 0} search · ${Number(day.adopted) || 0} adopted`,
+          `  ${day.date}  ${bar(day.injections)} ${Number(day.injections) || 0} inject · ${Number(day.reads) || 0} read · ${Number(day.writes) || 0} write · ${Number(day.searches) || 0} search · ${Number(day.adopted) || 0} first reads`,
         );
       }
     }
@@ -974,7 +974,7 @@ export function registerCommands(ctx, runtime) {
       const status = await collectStatus(invocation);
       if (!status.ok) return fail(`cc-memory: ${status.error}`);
       try {
-        const response = await service.dream(status.pctx, { action: 'estimate', focus: typeof flags.focus === 'string' ? flags.focus : '' });
+        const response = await service.dream(status.pctx, { action: 'estimate', noSessions: flags['memory-only'] === true });
         if (!response.ok) return fail(`dream estimate: ${response.message || response.error}`);
         const estimate = response.result;
         return ok(`Dream rough input estimate: ${estimate.estimatedTokens} tokens\nConfigured token limit: ${estimate.limit > 0 ? estimate.limit : 'unlimited'} (${estimate.costMode})\nActual total usage can be higher; this estimate is not a spending cap. No model was called and no memory was changed.`);
@@ -1027,12 +1027,14 @@ export function registerCommands(ctx, runtime) {
       }
       lines.push('');
       lines.push('Run /memory dream run [--focus <text>] [--memory-only] to consolidate now; a finished run waits until you pass or reject its changes.');
-      lines.push('Long runs can be checked with /memory dream status <runId> and stopped with /memory dream cancel; a stopped or failed run is started again with /memory dream run.');
+      lines.push('Use /memory dream status <runId> to see progress. A paused run can continue with /memory dream resume <runId>. Cancel discards the running draft.');
       return ok(lines.join('\n'));
     }
-    if (sub === 'run') {
+    if (sub === 'run' || sub === 'resume') {
       // `--wait` blocks until the run finishes; otherwise it runs in the background.
       const wait = flags.wait === true;
+      const resumeId = sub === 'resume' ? positional[1] : '';
+      if (sub === 'resume' && !resumeId) return fail('usage: /memory dream resume <runId> [--wait]');
       const status = await collectStatus(invocation);
       if (!status.ok) return fail(`cc-memory: ${status.error}`);
       let response;
@@ -1040,7 +1042,8 @@ export function registerCommands(ctx, runtime) {
         response = await service.dream(status.pctx, {
           agent: invocation.agent,
           sessionId: invocation?.agent?.id,
-          action: wait ? 'run' : 'start',
+          action: resumeId ? 'resume' : wait ? 'run' : 'start',
+          ...(resumeId ? { runId: resumeId, wait } : {}),
           trigger: 'manual',
           focus: typeof flags.focus === 'string' ? flags.focus : '',
           // `--memory-only` tidies the saved pages and reads no conversation.
@@ -1051,7 +1054,8 @@ export function registerCommands(ctx, runtime) {
       }
       if (!response.ok) return fail(`dream run: ${response.message || response.error}`);
       invalidate(invocation);
-      if (wait) return ok(formatDreamRun(response.result));
+      if (wait) return response.result?.ran === undefined && response.result?.ok === false
+        ? fail(`dream ${sub}: ${response.result.error}`) : ok(formatDreamRun(response.result));
       const started = response.result ?? {};
       if (started.started !== true && started.reused !== true) {
         return fail(`dream run: ${started.message || started.error || 'could not start'}`);
@@ -1103,12 +1107,15 @@ export function registerCommands(ctx, runtime) {
       }
       const proof = (pending.proofs ?? []).find((item) => item.file === file);
       const lines = [`dream diff: ${file}`];
-      lines.push(proof && proof.kind !== 'missing' ? `source: ${proof.kind}` : 'source: none checked (apply only with --confirm)');
+      const sourced = proof && proof.kind !== 'missing' && (proof.kind !== 'citation' || proof.unsupportedClaims?.length === 0);
+      lines.push(sourced ? `source: ${proof.kind}` : 'source: needs direct confirmation (apply with --confirm)');
       for (const item of detail.removedLines ?? []) lines.push(`- ${item.text}`);
       for (const item of detail.addedLines ?? []) lines.push(`+ ${item.text}`);
       for (const item of detail.evidence ?? []) {
-        lines.push(`evidence: ${item.memoryFile ?? `${item.sessionId}#${item.seq}`} — ${item.quote}${item.verified ? '' : ' (not checked)'}`);
+        lines.push(`evidence: ${item.memoryFile ?? `${item.sessionId}#${item.seq}`}${item.eventType ? ` (${item.eventType})` : ''} — ${item.quote}${item.verified ? '' : ' (not checked)'}`);
+        for (const claim of item.claims ?? []) lines.push(`  supports: ${claim}`);
       }
+      for (const claim of detail.unsupportedClaims) lines.push(`requires confirmation: ${claim}`);
       for (const item of pending.rejectedBefore?.[file] ?? []) lines.push(`rejected before: ${item}`);
       return ok(lines.join('\n'));
     }
@@ -1146,7 +1153,9 @@ export function registerCommands(ctx, runtime) {
       if (result.discarded === true) return ok('deferred the dream result; its sessions remain eligible');
       return fail(`dream discard: ${result.reason || result.error || 'nothing to discard'}`);
     }
-
+    const usage = 'usage: /memory dream run|cancel|status|diff|switch|discard|history|undo|on|off|estimate|resume';
+    if (sub === 'apply') return fail(`dream apply was replaced by switch; /memory dream switch applies the files you pass.\n${usage}`);
+    return fail(`unknown dream subcommand "${String(sub ?? '')}".\n${usage}`);
   }
 
   // -- /memory backups | trash | restore -------------------------------------
@@ -1204,6 +1213,8 @@ export function registerCommands(ctx, runtime) {
   }
 
   async function memoryRestore(invocation, args) {
+    const blocked = subagentGuard(invocation);
+    if (blocked) return blocked;
     const { positional } = splitFlags(args);
     const kind = String(positional[0] ?? '').toLowerCase();
     const id = positional[1];
@@ -1295,6 +1306,14 @@ export function registerCommands(ctx, runtime) {
     for (const key of ['name', 'type', 'description', 'content']) {
       if (typeof flags[key] === 'string') input[key] = flags[key];
     }
+    // `writeFile` refuses an existing page without the baseline an editor read,
+    // so the slash command reads it first. A missing page falls through to the
+    // same stale-write answer `writeFile` gave before.
+    try {
+      input.expectedHash = (await service.file(status.pctx, file)).expectedHash;
+    } catch (error) {
+      if (error?.code !== 'NOT_FOUND') return fail(`memory edit ${file}: ${errorText(error)}`);
+    }
     let result;
     try {
       result = await service.writeFile(status.pctx, input);
@@ -1363,7 +1382,12 @@ export function registerCommands(ctx, runtime) {
     lines.push(`plan references: ${refs.length}`);
     for (const ref of refs.slice(0, 10)) {
       if (ref.type === 'dream') {
-        lines.push(`  dream ${ref.ts} (${ref.kind || 'unknown'}, ops ${ref.ops})`);
+        lines.push(`  dream ${ref.id} (${formatTime(ref.appliedAt)}, ops ${ref.ops})`);
+        if (ref.confirmedWithoutSource) lines.push('    Reviewer confirmed changes without a checked source.');
+        for (const item of ref.evidence ?? []) {
+          lines.push(`    ${item.memoryFile ?? `${item.sessionId}#${item.seq}`}${item.eventType ? ` (${item.eventType})` : ''} — ${item.quote}${item.verified ? '' : ' (not checked)'}`);
+          for (const claim of item.claims ?? []) lines.push(`      supports: ${claim}`);
+        }
       } else {
         lines.push(`  pending ${ref.id}`);
       }
@@ -1417,7 +1441,7 @@ export function registerCommands(ctx, runtime) {
       return fail(`memory export: ${errorText(error)}`);
     }
     return ok(
-      `exported ${result.exported.length} file(s) to ${result.targetDir}${result.rules ? ' (rules included)' : ''}`,
+      `exported ${result.exported} file(s) to ${result.targetDir}${result.rules ? ' (rules included)' : ''}`,
     );
   }
 
@@ -1725,7 +1749,7 @@ function formatDreamRunStatus(run) {
   lines.push(runProgressLine(run));
   if (run.coverageComplete === true) lines.push('coverage: complete');
   if (run.coverageComplete === false) lines.push('coverage: incomplete — apply stays blocked until every unit finishes');
-  if (run.planPath) lines.push(`plan: ${run.planPath}${run.status === 'review' ? ' (apply with /memory dream apply)' : ''}`);
+  if (run.planPath) lines.push(`plan: ${run.planPath}${run.status === 'review' ? ' (apply with /memory dream switch)' : ''}`);
   if (run.blockedReason) lines.push(`blocked: ${truncate(run.blockedReason, 300)}`);
   if (run.error) lines.push(`error: ${truncate(run.error, 300)}`);
   if (run.skipReason) lines.push(`skipped: ${run.skipReason}`);
@@ -1743,6 +1767,9 @@ function formatDreamRunStatus(run) {
   }
   if (run.status === 'running') {
     lines.push(`stop: /memory dream cancel ${run.runId}`);
+  } else if (run.resumable) {
+    if (run.checkpointed > 0) lines.push(`sessions with saved analysis: ${run.checkpointed}`);
+    lines.push(`continue: /memory dream resume ${run.runId}`);
   } else if (['failed', 'cancelled', 'blocked'].includes(run.status)) {
     lines.push('run again: /memory dream run');
   }
@@ -1752,8 +1779,10 @@ function formatDreamRunStatus(run) {
 /** Render one `DreamRunResult` as chat text. */
 function formatDreamRun(result) {
   if (!result || typeof result !== 'object') return 'dream run: the engine returned no result';
+  if (result.error === 'checkpoint-conflict') return 'The saved Dream analysis is out of date. Start a new run with /memory dream run.';
   const lines = [];
   lines.push('dream run');
+  if (result.resumable) lines.push(`paused: continue with /memory dream resume ${result.runId}`);
   if (Number.isFinite(result.estimatedTokens)) lines.push(`rough input estimate: ${result.estimatedTokens} tokens (actual total can be higher)`);
   if (result.ran === false) {
     lines.push(`skipped: ${result.skipReason ?? 'unknown reason'}`);

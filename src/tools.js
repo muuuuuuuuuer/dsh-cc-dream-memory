@@ -24,12 +24,12 @@
  * @module dsh-cc-dream-memory/tools
  */
 import { currentBody, memoryStatusOf } from './memory-body.js';
-import { recordAdoption, recordRead, recordSearch, recordWrite } from './metrics.js';
+import { recordRead, recordSearch, recordWrite } from './metrics.js';
 import { evaluateWrite, normalizeBasis, textSimilarity } from './policy.js';
 import { normalizeType } from './store.js';
 import { verifyUserEvidence, bindUserClaim } from './user-evidence.js';
 import { recordVerifiedEntry, verifiedPage } from './verification-ledger.js';
-import { composeCorrection, ensureCurrentStatus, memoryHash } from './write-review.js';
+import { composeCorrection, ensureCurrentStatus, memoryHash, splitMemoryBody } from './write-review.js';
 
 /**
  * Record that the host verified a page the user just stated.
@@ -286,6 +286,22 @@ export function policyCandidate({ name, type, description, content, confidence }
  * @param {object|null} decision `evaluateWrite()` result
  * @returns {{conflicts?:object[], candidates?:object[], advisory?:boolean, hint?:string}}
  */
+/**
+ * `memory_read` answers with `currentBody()`, so the text a caller edits has no
+ * `## History` section. Writing that text back would delete the page's history,
+ * so the history rides along unless the new body brings one of its own.
+ * @param {unknown} existingBody
+ * @param {unknown} content
+ * @returns {unknown}
+ */
+function carriedHistory(existingBody, content) {
+  if (typeof content !== 'string') return content;
+  if (splitMemoryBody(content).history.length > 0) return content;
+  const history = splitMemoryBody(existingBody).history;
+  if (history.length === 0) return content;
+  return `${content.replace(/\s+$/u, '')}\n\n## History\n\n${history.join('\n')}`;
+}
+
 function advisoryOf(decision) {
   if (!decision || typeof decision !== 'object' || decision.advisory !== true) return {};
   const conflicts = Array.isArray(decision.conflicts) ? decision.conflicts : [];
@@ -688,7 +704,7 @@ export function registerTools(ctx, runtime) {
           basis === 'user-explicit' && typeof input.content === 'string'
             ? composeCorrection({ existingBody: existing.body, content: input.content, source })
             : null;
-        const composed = correction?.changed ? correction.content : input.content;
+        const composed = correction?.changed ? correction.content : carriedHistory(existing.body, input.content);
         const writeContent =
           verifiedEvidence !== '' && typeof composed === 'string'
             ? ensureCurrentStatus(composed)
@@ -880,8 +896,7 @@ export function registerTools(ctx, runtime) {
         // block and never hold the reply: the model already has the body.
         Promise.resolve()
           .then(async () => {
-            await recordRead(resolved.projectContext.paths, entry.file);
-            await recordAdoption(resolved.projectContext.paths, entry.file, sessionIdOf(exec));
+            await recordRead(resolved.projectContext.paths, entry.file, sessionIdOf(exec));
           })
           .catch((error) => warn('read metrics', error));
         // `raw` is the whole file, History included; returning it would hand the

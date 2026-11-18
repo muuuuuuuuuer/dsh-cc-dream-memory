@@ -132,7 +132,6 @@ test('Dream records session reads as complete when the last seq is reached', asy
     if (call === 1) {
       return streamOf([
         toolCall('c1', 'session_read', { session_id: 's1', seq: 7 }),
-        toolCall('c2', 'session_done', { session_id: 's1' }),
         toolCall('c3', 'memory_write', {
           file: 'project_deploy.md',
           name: 'Deploy',
@@ -140,6 +139,7 @@ test('Dream records session reads as complete when the last seq is reached', asy
           description: 'Release process uses pnpm',
           body: 'Use pnpm.',
         }),
+        toolCall('c2', 'work_done', { session_id: 's1', through_seq: 7, summary: 'Reviewed the new release command.' }),
         { type: 'finish', reason: { kind: 'tool-calls' } },
       ]);
     }

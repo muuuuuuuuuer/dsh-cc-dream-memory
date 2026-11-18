@@ -120,6 +120,7 @@ test('v10 metrics: /memory metrics prints the 7-day trend and quality', async (t
   assert.equal(output.kind, 'success', output.text);
   assert.match(output.text, /trend|day|7/i);
   assert.match(output.text, /quality|applied|dropped/i);
+  assert.match(output.text, /first reads per session/i);
 });
 
 test('automatic recalls are visible to the human, not only recorded', async (t) => {
