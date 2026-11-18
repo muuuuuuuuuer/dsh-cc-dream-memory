@@ -60,27 +60,38 @@ export function verificationHash(body) {
  * heading path. Only the bullet marker and surrounding whitespace are ignored.
  *
  * @param {string} body
- * @returns {string[]} `"<heading path> » <fact>"`, or the bare fact outside any heading.
+ * @returns {{line:number,paragraphStart:number,heading:string,text:string}[]} Zero-based positions in `currentBody(body)`.
  */
-export function currentFactsInContext(body) {
+export function currentFactLines(body) {
   const headings = [];
   const facts = [];
-  for (const raw of currentBody(body).split('\n')) {
+  let paragraphStart = 0;
+  for (const [index, raw] of currentBody(body).split('\n').entries()) {
     const line = raw.trim();
     const heading = /^(#{1,6})\s+(.*)$/u.exec(line);
     if (heading) {
+      paragraphStart = index + 1;
       const level = heading[1].length;
       while (headings.length > 0 && headings[headings.length - 1].level >= level) headings.pop();
       const text = heading[2].replace(/\s+#+\s*$/u, '').replace(/\s+/gu, ' ').trim();
       if (text !== '') headings.push({ level, text });
       continue;
     }
-    if (line === '' || FACT_METADATA_RE.test(line) || LINK_ONLY_RE.test(line) || SUPERSEDED_LINE_RE.test(line)) continue;
+    if (line === '') {
+      paragraphStart = index + 1;
+      continue;
+    }
+    if (FACT_METADATA_RE.test(line) || LINK_ONLY_RE.test(line) || SUPERSEDED_LINE_RE.test(line)) continue;
     const fact = line.replace(/^(?:[-*+]\s+|\d+[.)]\s+)/u, '');
     const path = headings.map((item) => item.text).join(' > ');
-    facts.push(path === '' ? fact : `${path} » ${fact}`);
+    facts.push({ line: index, paragraphStart, heading: path, text: path === '' ? fact : `${path} » ${fact}` });
   }
   return facts;
+}
+
+/** The text form used by evidence comparison. */
+export function currentFactsInContext(body) {
+  return currentFactLines(body).map(({ text }) => text);
 }
 
 /**

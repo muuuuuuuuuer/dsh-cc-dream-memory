@@ -1,5 +1,16 @@
 # Changelog — dsh-cc-dream-memory
 
+## 0.22.1
+
+- Recall uses the latest user message for ranking and selection. Concurrent steps for that turn use one selector request. A truncated reply is discarded, and timeout or cancellation releases the turn even if the provider stalls.
+- Attaching a clipped note only deduplicates the matched paragraph for that file revision. A later turn can recall another paragraph from the same note. Complete notes are still deduplicated by revision.
+- Automatic recall skips candidates whose descriptions or current bodies match the credential scanner, including notes edited directly on disk.
+- Dream checks the saved checkpoint before offering resume. Missing or damaged checkpoints in paused runs are reported as failed. Repeating resume while that run is active returns the existing run.
+
+## 0.22.0
+
+- When a selected note is too long to attach, recall delivers the matched paragraph with its heading and adjacent applicability, verification, and exception lines. Short notes keep their original order. If the matched passage and its conditions exceed the budget, the attachment points to `memory_read` for the full note.
+
 ## 0.21.0
 
 - Automatic recall now ranks current note text alongside titles and descriptions. An error code, command, or applicability condition in an older note can reach the selector even when its description omits it. The selector receives bounded excerpts, excludes superseded text from body matches, and can only choose files in the manifest. Recall still uses one selector call per user turn.

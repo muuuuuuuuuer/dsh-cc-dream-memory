@@ -29,7 +29,7 @@ import {
   restoreShadowDraft,
 } from './dream-shadow.js';
 import {
-  clearRunCheckpoint, dreamRunOutcome, hasRunCheckpoint, newRunId, readRunCheckpoint, readRunManifest, reconcileRunOutcomes,
+  clearRunCheckpoint, dreamRunOutcome, newRunId, readRunCheckpoint, readRunManifest, reconcileRunOutcomes,
   runDirOf, shapeManifest, summarizeRun, validRunId, writeRunCheckpoint, writeRunManifest,
 } from './dream-run.js';
 import { costLimitStatus, dreamCostModeOf, estimateInputTokens, maxTotalTokensLimit, totalTokensOf } from './dream.js';
@@ -706,11 +706,12 @@ export class DreamAgent {
     if (!paths) return { ok: false, started: false, error: 'no-project' };
     const key = paths.projectDir;
     if (options.runId && !validRunId(options.runId)) return { ok: false, started: false, error: 'invalid-run-id' };
-    if (options.resume) {
+    let active = this.active.get(key);
+    if (options.resume && !active) {
       const saved = await this.status(options.pctx, options.runId);
-      if (!saved.resumable) return { ok: false, started: false, error: 'not-resumable', runId: options.runId };
+      active = this.active.get(key);
+      if (!active && !saved.resumable) return { ok: false, started: false, error: 'not-resumable', runId: options.runId };
     }
-    const active = this.active.get(key);
     if (active) {
       if (options.resume && active.runId !== options.runId) return { ok: false, started: false, error: 'dream-running', runId: options.runId };
       return { ok: true, started: false, reused: true, runId: active.runId, status: 'running', done: active.promise };
@@ -755,7 +756,7 @@ export class DreamAgent {
     const dir = runDirOf(paths, wanted);
     const manifest = await readRunManifest(dir);
     if (!manifest) return { ok: true, running: false, runId: wanted, status: 'unknown' };
-    const checkpoint = ['running', 'paused'].includes(manifest.status) && await hasRunCheckpoint(dir);
+    const checkpoint = ['running', 'paused'].includes(manifest.status) && Boolean(await readRunCheckpoint(dir));
     return { ok: true, running: false, ...summarizeRun(manifest, { checkpoint, outcome: dreamRunOutcome(pctx.state, wanted) }),
       sessionsOffered: Array.isArray(manifest.input?.sessions) ? manifest.input.sessions.length : 0 };
   }

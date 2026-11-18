@@ -1751,7 +1751,9 @@ function formatDreamRunStatus(run) {
   if (run.coverageComplete === false) lines.push('coverage: incomplete — apply stays blocked until every unit finishes');
   if (run.planPath) lines.push(`plan: ${run.planPath}${run.status === 'review' ? ' (apply with /memory dream switch)' : ''}`);
   if (run.blockedReason) lines.push(`blocked: ${truncate(run.blockedReason, 300)}`);
-  if (run.error) lines.push(`error: ${truncate(run.error, 300)}`);
+  if (run.error) lines.push(run.error === 'checkpoint-unavailable'
+    ? 'The saved checkpoint is missing or damaged.'
+    : `error: ${truncate(run.error, 300)}`);
   if (run.skipReason) lines.push(`skipped: ${run.skipReason}`);
   const sessions = Array.isArray(run.sessions) ? run.sessions : [];
   for (const session of sessions.filter((item) => item.units > 0).slice(0, 5)) {

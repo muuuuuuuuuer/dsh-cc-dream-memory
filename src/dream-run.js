@@ -30,16 +30,21 @@ export function validRunId(runId) {
 
 const checkpointFile = (dir) => path.join(dir, 'checkpoint.json');
 
-export async function hasRunCheckpoint(dir) {
-  return fs.stat(checkpointFile(dir)).then((stat) => stat.isFile(), () => false);
-}
-
 export async function readRunCheckpoint(dir) {
   try {
     const record = JSON.parse(await fs.readFile(checkpointFile(dir), 'utf8'));
-    return record?.version === 1 && Array.isArray(record.work) && record.work.length > 0
-      && Array.isArray(record.sessionIds) && Array.isArray(record.bases) && Array.isArray(record.draft?.pages)
-      && typeof record.draft.index === 'string' && Array.isArray(record.evidence) ? record : null;
+    if (record?.version !== 1 || !Array.isArray(record.work) || record.work.length === 0
+      || !Array.isArray(record.sessionIds) || !Array.isArray(record.bases) || !Array.isArray(record.draft?.pages)
+      || typeof record.draft.index !== 'string' || !Array.isArray(record.evidence)) return null;
+    const valid = record.sessionIds.every((id) => typeof id === 'string' && id !== '')
+      && record.work.every((item) => record.sessionIds.includes(item?.id) && Number.isSafeInteger(item.seq)
+        && (item.readSeq === null || Number.isSafeInteger(item.readSeq))
+        && typeof item.sourceHash === 'string' && typeof item.summary === 'string')
+      && record.bases.every((item) => Array.isArray(item) && item.length === 2 && typeof item[0] === 'string'
+        && (item[1] === null || typeof item[1] === 'string'))
+      && record.draft.pages.every((item) => typeof item?.file === 'string' && (item.raw === null || typeof item.raw === 'string'))
+      && record.evidence.every((item) => item && typeof item.quote === 'string');
+    return valid ? record : null;
   } catch {
     return null;
   }
@@ -58,7 +63,7 @@ export async function reconcileRunOutcomes(paths, state) {
   for (const outcome of state?.snapshot?.().dreamRunOutcomes ?? []) {
     if (!validRunId(outcome.runId)) continue;
     const dir = runDirOf(paths, outcome.runId);
-    if (!await hasRunCheckpoint(dir)) continue;
+    if (!await fs.stat(checkpointFile(dir)).then((stat) => stat.isFile(), () => false)) continue;
     const manifest = await readRunManifest(dir);
     if (manifest && ['running', 'paused'].includes(manifest.status)) {
       await writeRunManifest(dir, { ...manifest, ...outcome, stage: 'done' });
@@ -126,7 +131,7 @@ export async function listRunManifests(paths, limit = 20) {
     const manifest = await readRunManifest(dir);
     if (!manifest) continue;
     out.push({ dir, runId: manifest.runId || name, manifest,
-      checkpoint: ['running', 'paused'].includes(manifest.status) && await hasRunCheckpoint(dir) });
+      checkpoint: ['running', 'paused'].includes(manifest.status) && Boolean(await readRunCheckpoint(dir)) });
   }
   return out;
 }
@@ -161,8 +166,11 @@ export function dreamRunOutcome(state, runId) {
 export function summarizeRun(manifest, { running = false, checkpoint = false, outcome } = {}) {
   if (!manifest) return null;
   if (outcome && ['running', 'paused'].includes(manifest.status)) manifest = { ...manifest, ...outcome, stage: 'done' };
-  // Older versions left invalid checkpoints marked as paused.
-  if (manifest.status === 'paused' && manifest.error === 'checkpoint-conflict') manifest = { ...manifest, status: 'failed' };
+  // A paused run requires a readable checkpoint. Honor conflicts written by older versions.
+  if (manifest.status === 'paused' && (!checkpoint || manifest.error === 'checkpoint-conflict')) {
+    manifest = { ...manifest, status: 'failed',
+      error: manifest.error === 'checkpoint-conflict' ? manifest.error : 'checkpoint-unavailable' };
+  }
   // A manifest still marked running with no worker behind it was left by a
   // process that stopped mid-run. A published checkpoint lets it resume.
   const interrupted = manifest.status === 'running' && !running;

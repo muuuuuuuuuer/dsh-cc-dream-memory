@@ -200,6 +200,7 @@
   "tidy.runUnfinished": "Stopped at the turn limit before proposing any change. Run Dream again to continue; it picks up the sessions it did not finish. Used about {tokens} tokens.",
   "tidy.runUnfinishedWrites": "Some changes could not be written. Their sessions remain eligible for another run.",
   "tidy.runCheckpointConflict": "The saved analysis is out of date because its sources changed. Start a new Dream to use the latest sources.",
+  "tidy.runCheckpointUnavailable": "The saved checkpoint is missing or damaged. Start a new Dream.",
   "tidy.runTitle": "This run",
   "tidy.start": "Start the dream run",
   "tidy.started": "Dream started. You can keep working; the new copy appears when the run finishes.",

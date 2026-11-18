@@ -167,6 +167,20 @@ Look elsewhere if you need:
 - Before starting a run, use `/memory dream estimate`, or review the input estimate shown when starting Dream in the interface. Estimation reads the input without calling the model. Starting a run calls the model. Actual total usage can exceed the rough input estimate. `dreamMaxTotalTokens: 0` means unlimited; set an explicit budget and `dreamCostMode: block` if you need the existing cost guard.
 - Writes that match common key formats are refused. This is a heuristic and will not catch every secret. See [SECURITY.md](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/SECURITY.md).
 
+## 0.22.1 recall and Dream recovery
+
+Recall uses the latest user message and makes at most one selector request for that turn, including on concurrent steps. Timeout and cancellation release the turn, and truncated replies are discarded. The same long note can supply another paragraph on a later turn. Candidates flagged by the credential scanner are omitted from automatic recall.
+
+Dream reports a paused run with a missing or damaged checkpoint as failed. Repeating resume while the run is active returns the existing run. [Changelog](CHANGELOG.md#0221)
+
+`npm run verify` passed 609 assertions across 75 test files. DeepSeek Flash ran the six synthetic recall cases twice per version. Against 0.21.0, expected attachments improved from 2/12 to 12/12 and exact answers from 6/12 to 12/12. In the unrelated case, 0.22.1 returned an empty selection both times. These results cover the recall hook through the DeepSeek API. Desktop end-to-end validation is pending. [Replay script](eval/recall-passages.mjs)
+
+## 0.22.0 recall passages
+
+When recall selects a long note, the answer model gets the matching paragraph with its heading and adjacent conditions. Short notes keep their original order, including each section's own caveats. When the passage and its caveats exceed the attachment budget, recall points the model to `memory_read` for the full note.
+
+Across six synthetic cases run twice per version with DeepSeek Flash, expected attachments improved from 2/12 to 10/12 and exact answers from 6/12 to 12/12. Both versions attached unrelated notes on the no-match case. [Paired evaluation](eval/RECALL-0.22.0.md)
+
 ## 0.21.0 changes and tests
 
 - **Recall searches current note text.** Titles, descriptions, and body terms share the candidate budget. An older note can reach the selector through an error code, command, or condition recorded only in its body. The selector gets a short excerpt when the body matches and can choose only from the files it was offered. History and retired notes stay out of body matching. Recall makes at most one selector request per user turn.

@@ -434,6 +434,13 @@ test('client: a checkpoint conflict explains why a new Dream is needed', async (
   assert.equal(findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Continue this run'), undefined);
 });
 
+test('client: a damaged checkpoint explains how to start a fresh Dream', async () => {
+  const ui = await dreamTabHarness({ dreamRuns: [{ runId: 'run-10', status: 'failed', error: 'checkpoint-unavailable' }] });
+  const { tree } = ui.render();
+  assert.match(collectText(tree), /checkpoint is missing or damaged/i);
+  assert.ok(findNode(tree, (node) => node.type === 'button' && collectText(node) === 'Run again'));
+});
+
 
 
 // ---------------------------------------------------------------------------

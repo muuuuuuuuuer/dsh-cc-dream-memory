@@ -26,7 +26,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { parseFrontmatter, stringifyFrontmatter } from './frontmatter.js';
-import { currentBody, currentFactsInContext, isCurrentPage } from './memory-body.js';
+import { currentBody, currentFactLines, isCurrentPage } from './memory-body.js';
 import { tokenize } from './policy.js';
 import { bodyHashOf } from './verification-ledger.js';
 import { withFileLock } from './lock.js';
@@ -735,9 +735,10 @@ export class MemoryStore {
     let recall;
     if (currentOnly) {
       recall = null;
-      if (parsed.body.trim() !== '' && isCurrentPage(parsed.body)) {
-        const facts = scanSecrets(parsed.body).matches.length === 0 ? currentFactsInContext(parsed.body) : [];
-        recall = { ...meta, facts, bodyTerms: tokenize(facts.join('\n')) };
+      if (parsed.body.trim() !== '' && isCurrentPage(parsed.body)
+        && scanSecrets(`${meta.description ?? ''}\n${currentBody(parsed.body)}`).matches.length === 0) {
+        const facts = currentFactLines(parsed.body);
+        recall = { ...meta, facts, bodyTerms: tokenize(facts.map(({ text }) => text).join('\n')) };
       }
     }
     this._metaCache.set(name, { revision, meta, recall });

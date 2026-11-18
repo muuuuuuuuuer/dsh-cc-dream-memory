@@ -345,16 +345,16 @@ DSH 创建 agent
 ```
 agent/pre-step（异步瀑布）
   ├─ 先 await next()，拿到本步决策；被拒绝的步骤原样返回
-  ├─ 取本步消息里用户手打的文本（source.kind 为空或 'user'）；没有就什么也不做
+  ├─ 取最新一条用户消息的文本（source.kind 为空或 'user'）；没有文本就跳过
   ├─ 用最后一条 typed user message 的 id（无 id 时用内容哈希）识别 turn；同一 turn 的后续模型步直接跳过
   ├─ recallMode='off'：完全不附加
   └─ recallMode='model'（唯一选择器）：
         按元数据和当前正文的词法匹配交错排列候选（正文索引按文件版本缓存在内存）
-        → manifest 保留现有条数与字符预算，正文命中可附短片段，历史和退役正文不参与
+        → manifest 保留条数与字符预算，正文命中可附短片段，跳过退役笔记以及简介或当前正文命中凭据扫描的笔记
         → 每个用户输入一次 selector 调用，只能选清单里的文件（最多选 5 篇，附加受 autoRecallMaxFiles 默认 3 约束；
-          recentTools 降噪；本会话已给过的不再给）
-        → 超时、调用失败、JSON 无效或没有选中：本轮不附加，不跑第二套词面排序，也不在同 turn 重试
-        → 选中项按当前页读取，正文受 autoRecallMaxChars 硬预算
+          recentTools 降噪；完整页按版本去重，截断页按版本和命中段落去重）
+        → 超时、取消、调用失败、回复截断、JSON 无效或没有选中时跳过本轮附加
+        → 选中项核对文件版本。短页保留顺序，长页优先附加命中段落及相邻条件，合计受 autoRecallMaxChars 限制
         → 追加 {source.kind:'plugin:cc-memory-recall'} 消息（标明是背景、可能过时）
 ```
 

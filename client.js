@@ -256,6 +256,7 @@ window.__ModuleLoader__.load({
   'tidy.runUnfinished': 'Stopped at the turn limit before proposing any change. Run Dream again to continue; it picks up the sessions it did not finish. Used about {tokens} tokens.',
   'tidy.runUnfinishedWrites': 'Some changes could not be written. Their sessions remain eligible for another run.',
   'tidy.runCheckpointConflict': 'The saved analysis is out of date because its sources changed. Start a new Dream to use the latest sources.',
+  'tidy.runCheckpointUnavailable': 'The saved checkpoint is missing or damaged. Start a new Dream.',
   'tidy.runTitle': 'This run',
   'tidy.start': 'Start the dream run',
   'tidy.switchConflict': 'memory changed while the dream ran: {files}',
@@ -508,6 +509,7 @@ const ZH = {
   'tidy.runUnfinished': '到轮数上限时还没做完，这次没有提出改动。再运行一次会接着复查没做完的会话。用了约 {tokens} token。',
   'tidy.runUnfinishedWrites': '部分改动写入失败，相关会话会留待下次处理。',
   'tidy.runCheckpointConflict': '来源已变化，保存的分析已过时。请重新运行 Dream 以读取最新来源。',
+  'tidy.runCheckpointUnavailable': '保存的检查点缺失或已损坏。请重新运行 Dream。',
   'tidy.runTitle': '本次运行',
   'tidy.start': '开始整理',
   'tidy.switchConflict': 'Dream 运行期间记忆被改动：{files}',
@@ -3609,7 +3611,9 @@ function normalizeStatus(raw) {
               ? h('p', { className: 'ccm-card-text ccm-note-error' }, t('tidy.runUnfinishedWrites'))
               : shownRun.error === 'checkpoint-conflict'
                 ? h('p', { className: 'ccm-card-text ccm-note-error' }, t('tidy.runCheckpointConflict'))
-                : shownRun.error ? h('p', { className: 'ccm-card-text ccm-note-error' }, String(shownRun.error)) : null,
+                : shownRun.error === 'checkpoint-unavailable'
+                  ? h('p', { className: 'ccm-card-text ccm-note-error' }, t('tidy.runCheckpointUnavailable'))
+                  : shownRun.error ? h('p', { className: 'ccm-card-text ccm-note-error' }, String(shownRun.error)) : null,
             shownRun.resumable ? h('p', { className: 'ccm-card-text' }, t('tidy.runCheckpoint', { n: shownRun.checkpointed || 0 })) : null,
             running ? h('div', { className: 'ccm-card-body' }, h('div', { className: 'ccm-progress' })) : null,
             running || shownRun.resumable || runStatus === 'cancelled' || runStatus === 'failed'

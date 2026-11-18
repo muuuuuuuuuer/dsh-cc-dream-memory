@@ -200,6 +200,7 @@
   "tidy.runUnfinished": "到轮数上限时还没做完，这次没有提出改动。再运行一次会接着复查没做完的会话。用了约 {tokens} token。",
   "tidy.runUnfinishedWrites": "部分改动写入失败，相关会话会留待下次处理。",
   "tidy.runCheckpointConflict": "来源已变化，保存的分析已过时。请重新运行 Dream 以读取最新来源。",
+  "tidy.runCheckpointUnavailable": "保存的检查点缺失或已损坏。请重新运行 Dream。",
   "tidy.runTitle": "本次运行",
   "tidy.start": "开始整理",
   "tidy.started": "Dream 已开始。你可以继续工作，运行结束后会出现新的副本。",

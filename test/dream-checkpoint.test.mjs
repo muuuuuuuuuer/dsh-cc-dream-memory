@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { writeFile } from 'node:fs/promises';
+import path from 'node:path';
 import { test } from 'node:test';
 import { MemoryRuntime } from '../src/runtime.js';
 import { streamOf, toolsEnv } from './v10-helpers.mjs';
@@ -86,6 +88,53 @@ test('resume refuses a checkpoint whose reviewed source event changed', async (t
   assert.equal((await env.runtime.startDream(env.pctx, { runId, resume: true })).error, 'not-resumable');
   assert.deepEqual(env.pctx.state.snapshot().dreamProcessedSessions, []);
   await assert.rejects(env.pctx.store.readEntry(file), { code: 'NOT_FOUND' });
+});
+
+test('status does not offer to resume a damaged checkpoint', async (t) => {
+  const env = await setup(t);
+  const runId = 'run-damaged-checkpoint';
+  assert.equal((await pause(env, runId)).status, 'paused');
+  await writeFile(path.join(env.pctx.paths.dreamsDir, runId, 'checkpoint.json'), '{"version":1,');
+  env.host.services.llm.stream = () => assert.fail('damaged checkpoints must not call the model');
+  const status = await env.runtime.dreamRun(env.pctx, runId);
+  assert.equal(status.status, 'failed');
+  assert.equal(status.resumable, false);
+  assert.equal(status.error, 'checkpoint-unavailable');
+  assert.equal((await env.runtime.startDream(env.pctx, { runId, resume: true })).error, 'not-resumable');
+  await assert.rejects(env.pctx.store.readEntry(file), { code: 'NOT_FOUND' });
+  assert.deepEqual(env.pctx.state.snapshot().dreamProcessedSessions, []);
+});
+
+test('a parsed checkpoint with broken saved work is unavailable', async (t) => {
+  const env = await setup(t);
+  const runId = 'run-broken-saved-work';
+  assert.equal((await pause(env, runId)).status, 'paused');
+  await writeFile(path.join(env.pctx.paths.dreamsDir, runId, 'checkpoint.json'), JSON.stringify({
+    version: 1, work: [null], sessionIds: ['s1'], bases: [], draft: { index: '', pages: [] }, evidence: [],
+  }));
+  assert.equal((await env.runtime.dreamRun(env.pctx, runId)).resumable, false);
+  assert.equal((await env.runtime.startDream(env.pctx, { runId, resume: true })).error, 'not-resumable');
+});
+
+test('repeating resume reuses the running Dream and its completion', async (t) => {
+  const env = await setup(t);
+  const runId = 'run-resume-twice';
+  assert.equal((await pause(env, runId)).status, 'paused');
+  const replyGate = Promise.withResolvers();
+  env.host.services.llm.stream = async function* () {
+    await replyGate.promise;
+    yield* streamOf([{ type: 'text-delta', text: 'DONE' }, end('stop')]);
+  };
+  const initial = await env.runtime.startDream(env.pctx, { runId, resume: true });
+  assert.equal(initial.started, true);
+  try {
+    const repeat = await env.runtime.startDream(env.pctx, { runId, resume: true });
+    assert.equal(repeat.reused, true);
+    assert.equal(repeat.done, initial.done);
+  } finally {
+    replyGate.resolve();
+    await initial.done;
+  }
 });
 
 test('a failure after publishing review keeps the saved batch available', async (t) => {
