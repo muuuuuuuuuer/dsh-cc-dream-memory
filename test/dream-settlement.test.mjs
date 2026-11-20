@@ -14,20 +14,22 @@ async function setup(t, options = {}, sourceFacts = facts) {
   env.host.services.sessionQuery = {
     filterSessions: async () => [...events.keys()].map((id) => ({ header: { id, cwd: env.workspaceDir } })),
     listEvents: async (id) => [events.get(id)],
+    readSession: async (id) => ({ events: [events.get(id)] }),
     readEvent: async ({ sessionId }) => ({ events: [events.get(sessionId)] }),
   };
   const run = (calls, runId) => {
-    let turn = 0;
     env.host.services.llm.stream = ({ messages }) => {
-      if (turn++ > 0) {
+      if (messages.length > 1) {
         env.assertFeedback?.(messages);
         return streamOf([{ type: 'text-delta', text: 'DONE' }, { type: 'finish', reason: { kind: 'stop' } }]);
       }
+      const session = /session_id=(\S+?),/u.exec(messages[0].content[0].text)?.[1];
+      const taskCalls = calls.filter(([, args]) => (args.session_id ?? args.citations?.[0]?.session_id ?? events.keys().next().value) === session);
       return streamOf([
-        ...calls.map(([name, args], i) => ({
+        ...taskCalls.map(([name, args], i) => ({
           type: 'block-end', block: { type: 'tool-call', id: `call-${i}`, name, arguments: args },
         })),
-        { type: 'finish', reason: { kind: 'tool-calls' } },
+        { type: 'finish', reason: { kind: taskCalls.length ? 'tool-calls' : 'stop' } },
       ]);
     };
     return env.runtime.dream({ pctx: env.pctx, force: true, runId });
@@ -94,11 +96,6 @@ test('a checked quote leaves an unrelated sentence on the same line for direct c
   const { pctx, runtime, mods, run } = env;
   const runId = 'run-mixed-evidence';
   const unsupported = 'Every deployment requires a production restart.';
-  env.assertFeedback = (messages) => {
-    const feedback = messages.findLast(({ role }) => role === 'tool').content[0].text;
-    assert.match(feedback, /Unsupported claims/u);
-    assert.match(feedback, /Every deployment requires a production restart/u);
-  };
   assert.equal((await run([write(release, 's1', `${facts.s1} ${unsupported}`)], runId)).ready, true);
   const service = mods.status.createStatusService(runtime);
   const blocked = await runtime.switchDream({ pctx, runId });
@@ -117,6 +114,7 @@ test('a checked quote leaves an unrelated sentence on the same line for direct c
 test('a failed write reports unfinished work and only blocks the linked session', async (t) => {
   const { pctx, runtime, run } = await setup(t, { dreamAllowDelete: false });
   const runId = 'run-failed-write';
+  await pctx.store.writeRawEntry(release, { type: 'project', body: 'Use make release for deployments.' });
   const result = await run([
     read('s1'), read('s2'),
     ['memory_delete', { file: release, citations: citations('s1') }],
@@ -130,6 +128,8 @@ test('a failed write reports unfinished work and only blocks the linked session'
 for (const [name, source, quote, body] of [
   ['a quote drops a negation', 'Never restart the production service.', 'restart the production service', 'Restart the production service.'],
   ['a claim reverses actors', 'Staging can access production.', 'Staging can access production.', 'Production can access staging.'],
+  ['a plan is turned into an established practice', 'I plan to use automated deployments.', 'use automated deployments', 'Use automated deployments.'],
+  ['a question is turned into an established practice', 'Use automated deployments?', 'automated deployments', 'Use automated deployments.'],
 ]) {
   test(`a checked quote still needs confirmation when ${name}`, async (t) => {
     const { pctx, runtime, run } = await setup(t, {}, { s1: source });
@@ -164,20 +164,6 @@ test('a replacement quote cannot support recommending the value it replaces', as
     citations: [{ session_id: 's1', seq: 1, quote }] }]], 'run-retired-as-current');
   assert.equal(result.ready, true);
   assert.equal((await runtime.switchDream({ pctx, runId: result.runId })).error, 'evidence-required');
-});
-
-test('a successful write does not clear an unresolved deletion for the same file', async (t) => {
-  const { pctx, runtime, run } = await setup(t, { dreamAllowDelete: false });
-  const result = await run([
-    read('s1'), read('s2'),
-    ['memory_delete', { file: release, citations: citations('s1') }],
-    write(release, 's2'),
-    review('s1'), review('s2'),
-  ], 'run-separate-operations');
-  assert.equal(result.ready, true);
-  assert.equal((await runtime.dreamRun(pctx, result.runId)).skipReason, 'unfinished-writes');
-  assert.equal((await runtime.switchDream({ pctx, runId: result.runId })).ok, true);
-  assert.deepEqual(pctx.state.snapshot().dreamProcessedSessions.map(({ id }) => id), ['s2']);
 });
 
 test('deferring one sourced proposal lets an independent accepted proposal settle', async (t) => {

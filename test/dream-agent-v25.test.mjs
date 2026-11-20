@@ -48,6 +48,9 @@ async function dreamEnv(t) {
     readEvent: async () => ({
       events: [{ seq: 7, type: 'user/message', data: { content: [{ type: 'text', text: TRANSITION }] } }],
     }),
+    readSession: async () => ({
+      events: [{ seq: 7, type: 'user/message', data: { content: [{ type: 'text', text: TRANSITION }] } }],
+    }),
   };
   return env;
 }
@@ -84,10 +87,9 @@ test('agent searches sessions, reads memory on demand, and writes only the shado
   assert.equal(result.ready, true);
   assert.equal(result.runId, 'run-agent-1');
 
-  // The first prompt must not contain the page body: Dream reads it via tool.
-  assert.ok(prompts[0].includes('s1'));
+  // The brief names the session; the child reads note bodies from its working directory.
+  assert.ok(prompts[0].includes('session_id=s1'));
   assert.ok(!prompts[0].includes('Use npm for installs.'));
-  assert.ok(prompts[0].includes('Release process'));
 
   const live = await env.pctx.store.readEntry('project_deploy.md');
   assert.equal(live.body.includes('Use npm for installs.'), true);

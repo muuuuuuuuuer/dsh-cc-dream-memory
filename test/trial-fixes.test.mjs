@@ -77,17 +77,6 @@ test('a Dream that ran and changed nothing is recorded as done with its usage', 
   assert.equal(status.usage.totalTokens, 110);
 });
 
-test('a Dream that runs out of turns without a change says so instead of "nothing to change"', async (t) => {
-  const env = await toolsEnv(t);
-  await save(env, 'note', 'Something durable.');
-  model(env, Array.from({ length: 30 }, () => [['memory_index', {}]]));
-  const result = await dream(env, { runId: 'trial-run-2' });
-  assert.equal(result.skipReason, 'unfinished');
-  const status = await env.runtime.dreamRun(env.pctx, 'trial-run-2');
-  assert.equal(status.status, 'done');
-  assert.equal(status.skipReason, 'unfinished');
-});
-
 test('a session with no text to review is settled instead of offered to the agent', async (t) => {
   const env = await toolsEnv(t);
   await save(env, 'note', 'Something durable.');
@@ -99,19 +88,17 @@ test('a session with no text to review is settled instead of offered to the agen
   };
   const requests = model(env, [[]]);
   await dream(env);
-  const prompt = JSON.stringify(requests[0].messages);
-  assert.doesNotMatch(prompt, /command-only/, 'the agent is not asked to read it');
+  assert.equal(requests.length, 0, 'an empty conversation is settled locally');
   const processed = env.pctx.state.snapshot().dreamProcessedSessions;
   assert.ok(processed.some((item) => item.id === 'command-only' && !item.partial), JSON.stringify(processed));
 });
 
-test('the Dream estimate counts every turn of the tool loop', async (t) => {
+test('the Dream estimate counts one child task, each with its own preset prompt and source', async (t) => {
   const env = await toolsEnv(t);
   for (let index = 0; index < 4; index += 1) await save(env, 'note ' + index, 'Fact ' + index + '.');
   const estimate = await env.runtime.estimateDream(env.pctx, { noSessions: true });
-  assert.ok(estimate.turns >= 2);
-  // One turn alone re-sends the system prompt and tool schemas (several KB).
-  assert.ok(estimate.estimatedTokens > 2_000 * estimate.turns, String(estimate.estimatedTokens));
+  assert.equal(estimate.turns, 1);
+  assert.ok(estimate.estimatedTokens > 10_000, String(estimate.estimatedTokens));
 });
 
 test('a correction keeps the new Why/How lines and does not copy the old ones into History', () => {

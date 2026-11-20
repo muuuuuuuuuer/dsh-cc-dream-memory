@@ -147,8 +147,11 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.20.0
 |---|---|
 | 整理方式 | 插件校验并生成副本，支持切换、丢弃和撤销 |
 | Dream 写入的新事实 | 必须引用会话原文 |
-| 自动 Dream | 默认关闭 |
-| 召回 | 按标题、简介和当前正文生成候选，模型每轮选择一次，默认最多附加 3 篇 |
+| 自动 Dream | 默认关闭。开启后只在有明确目标时运行：你纠正过的笔记、来源有变的笔记、被召回的笔记，最后是归档候选 |
+| 召回 | 按标题、简介和当前正文生成候选，模型每轮选择一次，默认最多附加 3 篇。聊天里会显示附加了哪些笔记，每篇都有“不相关”操作 |
+| 来源 | 笔记可以列出它依赖的仓库文件（`sources`）。宿主检查这些文件是否还在；来源已失效的笔记不再被召回 |
+| 用户记忆 | `user` 类型笔记由本机所有项目共享（`userMemory: global`，默认），其余仍按项目保存 |
+| 单个对话 | `/memory session use off` 不加载也不召回；`/memory session learn off` 让该对话不参与自动抽取和 Dream |
 | 子代理 | 默认不注入记忆 |
 
 ## 适合你吗
@@ -165,8 +168,24 @@ dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.20.0
 - 记忆保存在你自己的机器上，位于 `$DSH_HOME/cc-memory/`。插件没有遥测。
 - 召回模型会收到候选简介和短命中片段。选中的笔记会作为回答上下文发给模型服务。
 - Dream 会把会话文本和记忆发给你配置的模型服务。虚构的三个短会话演示用了 6,500 到 11,000 tokens；一次真实项目批次记录为 **149,984 总 tokens、约 263 秒**，随后应用了两次记忆写入和一次索引更新。两者工作量不同，不能当作典型成本。见[脱敏汇总](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/REAL-WORKSPACE-OBSERVATIONS-2026-11-09.md)。
-- 运行 Dream 会调用模型。启动前可用 `/memory dream estimate`，或查看界面启动 Dream 时显示的输入估算；单独估算不调用模型。实际总用量可能高于粗略输入估算。`dreamMaxTotalTokens: 0` 表示不限；需要成本保护时，请配置明确的预算和 `dreamCostMode: block`。
+- `/memory dream estimate` 显示粗略输入量。Dream 以本批工作完成为结束条件，并记录供应商报告的用量。用 `/memory dream off` 关闭自动运行，或用 `/memory dream cancel <runId>` 停止正在执行的任务。
 - 符合常见密钥格式的写入会被拒绝。这是启发式检查，不能保证拦住所有密钥。详见 [SECURITY.md](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/SECURITY.md)。
+
+## 0.25.0 Dream 交给宿主子智能体
+
+- 每轮 Dream 用一个 `standard` 预设的宿主子智能体，依次处理最多 `dreamMaxTasks` 个会话（默认 4）。每段任务都附上完整规则，子智能体通过专用工具分段读取脱敏后的对话、提交草稿。插件逐段检查并保存检查点，等你审阅并切换后才生效。Dream 需要宿主子智能体服务和项目里打开的对话。
+- `dreamYieldToSubagents`（默认关）：等你自己的子智能体都结束后再开始，开始后跑完不停。
+- Dream 页按工作区列出对话，并用一条进度条显示：已整理、等你审核、有新对话、部分整理、未整理、已关闭学习。
+
+## 0.24.0 纠正、来源与共享的用户层
+
+- 纠正会在当次对话里改动原笔记中对应的段落。自动 Dream 只处理明确目标：你纠正过的笔记、`sources` 有变的笔记、被召回的笔记和归档候选；没有目标就跳过。
+- 聊天里会显示召回附加了哪些记忆，展开可阅读全文；点“不相关”后，该笔记在这个对话里不再被附加。
+- `sources`（仓库相对路径，可写 `路径#符号`）把笔记锚定到文件。宿主在不调用模型的情况下检查它们。
+- `userMemory: global`（默认）把 `user` 类型笔记放在一个所有项目共享的目录。设为 `project` 则恢复旧布局。
+- 另有 `/memory session use|learn on|off`、`autoExtractSkipExternal`、`MEMORY.md` 超预算时按使用频率排序注入，以及归档提示（`archiveHintDays`，默认 60）。不会自动删除任何笔记。
+
+召回行通过聊天的事件/插槽接口注册。已通过单元测试和桌面应用实测。
 
 ## 0.23.1 项目历史与桌面体验
 

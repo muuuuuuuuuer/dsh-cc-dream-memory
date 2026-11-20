@@ -79,10 +79,11 @@ function failureBackoffMs(config, failures) {
 
 function distinctSessionCount(snapshot) {
   const sessions = Array.isArray(snapshot.sessionsSince) ? snapshot.sessionsSince : [];
+  const deferred = new Set((snapshot.dreamDeferredSessions ?? []).map(({ id }) => id));
   const ids = new Set();
   for (const entry of sessions) {
     const id = typeof entry === 'string' ? entry : entry?.id;
-    if (typeof id === 'string' && id !== '') ids.add(id);
+    if (typeof id === 'string' && id !== '' && !deferred.has(id)) ids.add(id);
   }
   return ids.size;
 }

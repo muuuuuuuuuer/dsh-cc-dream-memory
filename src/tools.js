@@ -27,6 +27,8 @@ import { currentBody, memoryStatusOf } from './memory-body.js';
 import { recordRead, recordSearch, recordWrite } from './metrics.js';
 import { evaluateWrite, normalizeBasis, textSimilarity } from './policy.js';
 import { normalizeType } from './store.js';
+import { brokenNote, checkSources, normalizeSources } from './sources.js';
+import { isDelegated } from './session-kind.js';
 import { verifyUserEvidence, bindUserClaim } from './user-evidence.js';
 import { recordVerifiedEntry, verifiedPage } from './verification-ledger.js';
 import { composeCorrection, ensureCurrentStatus, memoryHash, splitMemoryBody } from './write-review.js';
@@ -392,6 +394,40 @@ async function projectFor(runtime, exec) {
   return { agent, projectContext };
 }
 
+/** The user layer as a project-shaped context (its own store and paths), or undefined. */
+async function userLayer(runtime, projectContext) {
+  const user = await runtime.userContext?.(projectContext);
+  return user ? { ...projectContext, ...user } : undefined;
+}
+
+/**
+ * Find a note by file name: the project store first, then the user store.
+ * @returns {Promise<{ctx:object, label:'project'|'user', entry:object}>}
+ */
+async function locate(runtime, projectContext, file) {
+  const user = await userLayer(runtime, projectContext);
+  let missing;
+  for (const [label, ctx] of [['project', projectContext], ...(user ? [['user', user]] : [])]) {
+    try {
+      return { ctx, label, entry: await ctx.store.readEntry(file) };
+    } catch (error) {
+      if (error?.code !== 'NOT_FOUND') throw error;
+      missing ??= error;
+    }
+  }
+  throw missing;
+}
+
+/** A write receipt that also warns (never blocks) about sources that do not resolve. */
+async function withSourceWarnings(result, root, sources) {
+  const check = await checkSources(root, sources);
+  if (check.broken.length === 0) return result;
+  return { ...result, warnings: [...(result.warnings ?? []), ...check.broken.map((item) => `source ${item.source}: ${item.status}`)] };
+}
+
+/** `sources` parameter: the rules live here, on the parameter, not in the tool description. */
+const sourcesSchema = (description) => ({ type: 'array', items: { type: 'string' }, description });
+
 /** Notify the prompt cache owner after a memory write. */
 function invalidate(runtime, agent) {
   try {
@@ -472,7 +508,7 @@ export function registerTools(ctx, runtime) {
     parameters: {
       type: 'object',
       properties: {
-        name: { type: 'string', description: 'Stable short name in kebab-case, no extension (e.g. release-process).' },
+        name: { type: 'string', description: 'Short kebab-case name, no extension.' },
         type: {
           type: 'string',
           enum: ['user', 'feedback', 'project', 'reference'],
@@ -480,6 +516,7 @@ export function registerTools(ctx, runtime) {
         },
         description: { type: 'string', description: 'One-line index summary.' },
         content: { type: 'string', description: 'Markdown details.' },
+        sources: sourcesSchema('Repo-relative paths or path#symbol (max 10); anchors, not a code summary.'),
         basis: BASIS_SCHEMA,
         evidence: { type: 'string' },
         confidence: CONFIDENCE_SCHEMA,
@@ -519,8 +556,10 @@ export function registerTools(ctx, runtime) {
       }
       const resolved = await projectFor(runtime, exec);
       if (resolved.error) return resolved.error;
-      const projectContext = resolved.projectContext;
+      let projectContext = resolved.projectContext;
+      const projectRoot = projectContext.paths?.projectRoot ?? '';
       let scope = 'project';
+      let label = 'project';
       let type;
       try {
         type = normalizeType(input.type);
@@ -536,6 +575,15 @@ export function registerTools(ctx, runtime) {
         confidence: input.confidence,
       });
       try {
+        const sources = normalizeSources(input.sources);
+        // Type user notes belong to the person, not the project: they go to the shared layer.
+        if (type === 'user') {
+          const user = await userLayer(runtime, projectContext);
+          if (user) {
+            projectContext = user;
+            label = 'user';
+          }
+        }
         const entries = await loadPolicyEntries(projectContext.store, scope, '', candidate);
         // Nothing queues (Claude Code parity): a duplicate or an opposite fact
         // stops the write so the model edits the page that owns the fact;
@@ -548,7 +596,7 @@ export function registerTools(ctx, runtime) {
           return {
             ...stopped,
             basis,
-            scope,
+            scope: label,
             ...(evidenceReason === '' ? {} : { evidenceCheck: evidenceReason }),
           };
         }
@@ -569,6 +617,7 @@ export function registerTools(ctx, runtime) {
           description: input.description,
           content: writeContent,
           source,
+          sources,
         });
         invalidate(runtime, resolved.agent);
         let verification = 'not-applicable';
@@ -587,10 +636,10 @@ export function registerTools(ctx, runtime) {
           runtime.noteMemoryWrite?.(sessionIdOf(exec), Date.now());
         }
         return {
-          ...result,
+          ...(await withSourceWarnings(result, projectRoot, sources)),
           written: true,
           basis,
-          scope,
+          scope: label,
           verification,
           ...advisory,
         };
@@ -612,7 +661,8 @@ export function registerTools(ctx, runtime) {
         name: { type: 'string', description: 'New stable name; renames file/index.' },
         content: { type: 'string', description: 'New body; omit to keep.' },
         description: { type: 'string', description: 'New index summary; omit to keep it.' },
-        expectedHash: { type: 'string', description: 'Hash from the memory_read result you based this change on.' },
+        sources: sourcesSchema('Replaces sources; same rules.'),
+        expectedHash: { type: 'string', description: 'Hash from your memory_read result.' },
         delete: { type: 'boolean', description: 'Remove this memory.' },
         basis: BASIS_SCHEMA,
         evidence: { type: 'string' },
@@ -639,17 +689,21 @@ export function registerTools(ctx, runtime) {
       }
       const resolved = await projectFor(runtime, exec);
       if (resolved.error) return resolved.error;
-      const projectContext = resolved.projectContext;
+      let projectContext = resolved.projectContext;
+      const projectRoot = projectContext.paths?.projectRoot ?? '';
       let scope = 'project';
+      let label = 'project';
       try {
       } catch (error) {
         return toolError(error);
       }
       const source = sourceOf(exec, 'memory_update', basis);
       try {
+        const sources = normalizeSources(input.sources);
         let existing = null;
         try {
-          existing = await projectContext.store.readEntry(input.file, scope);
+          // Project store first, then the user store.
+          ({ ctx: projectContext, label, entry: existing } = await locate(runtime, projectContext, input.file));
         } catch {
           existing = null;
         }
@@ -674,7 +728,7 @@ export function registerTools(ctx, runtime) {
           await projectContext.store.trashEntry(input.file, { scope, reason: 'memory_update delete', expectedHash: memoryHash(existing.raw) });
           invalidate(runtime, resolved.agent);
           if (exec?.internal !== true) runtime.noteMemoryWrite?.(sessionIdOf(exec), Date.now());
-          return { ok: true, deleted: true, file: input.file, scope };
+          return { ok: true, deleted: true, file: input.file, scope: label };
         }
         const candidate = policyCandidate({
           name: typeof input.name === 'string' && input.name.trim() !== '' ? input.name : existing?.frontmatter?.name,
@@ -717,7 +771,7 @@ export function registerTools(ctx, runtime) {
           return {
             ...stopped,
             basis,
-            scope,
+            scope: label,
             ...(evidenceReason === '' ? {} : { evidenceCheck: evidenceReason }),
             ...(correction?.changed
               ? { correction: { superseded: correction.superseded, until: correction.until, source: correction.source } }
@@ -748,6 +802,7 @@ export function registerTools(ctx, runtime) {
             expectedHash: memoryHash(existing.raw),
             content: writeContent,
             description: input.description,
+            sources,
           });
           result = renameResult;
         } else {
@@ -756,6 +811,7 @@ export function registerTools(ctx, runtime) {
             content: writeContent,
             description: input.description,
             source,
+            sources,
             expectedHash: memoryHash(existing.raw),
           });
         }
@@ -775,13 +831,21 @@ export function registerTools(ctx, runtime) {
         if (typeof result?.file === 'string' && result.file !== '' && exec?.internal !== true) {
           runtime.noteMemoryWrite?.(sessionIdOf(exec), Date.now());
         }
+        // A changed body in a live session is a correction the next Dream should look at.
+        if (label === 'project' && typeof result?.file === 'string' && result.file !== '' && !isDelegated(exec?.agent)
+          && typeof writeContent === 'string' && currentBody(writeContent) !== currentBody(existing.body)) {
+          try {
+            await projectContext.state?.noteCorrected?.(result.file);
+          } catch (error) {
+            warn('noteCorrected', error);
+          }
+        }
         return {
-          ...(renameResult ?? {}),
-          ...result,
+          ...(await withSourceWarnings({ ...(renameResult ?? {}), ...result }, projectRoot, sources ?? existing.frontmatter?.sources)),
           ...advisory,
           written: true,
           basis,
-          scope,
+          scope: label,
           verification,
           ...(correction?.changed
             ? {
@@ -892,9 +956,10 @@ export function registerTools(ctx, runtime) {
       const resolved = await projectFor(runtime, exec);
       if (resolved.error) return resolved.error;
       try {
-        const entry = await resolved.projectContext.store.readEntry(input.file);
+        // Project store first, then the user store.
+        const { ctx: layer, label, entry } = await locate(runtime, resolved.projectContext, input.file);
         const hashes = readsFor(exec);
-        const key = readHashKey(exec, resolved.projectContext, entry.file);
+        const key = readHashKey(exec, layer, entry.file);
         hashes.delete(key);
         hashes.set(key, memoryHash(entry.raw));
         if (hashes.size > 4096) hashes.delete(hashes.keys().next().value);
@@ -902,15 +967,18 @@ export function registerTools(ctx, runtime) {
         // block and never hold the reply: the model already has the body.
         Promise.resolve()
           .then(async () => {
-            await recordRead(resolved.projectContext.paths, entry.file, sessionIdOf(exec));
+            await recordRead(layer.paths, entry.file, sessionIdOf(exec));
           })
           .catch((error) => warn('read metrics', error));
         // `raw` is the whole file, History included; returning it would hand the
         // model the superseded values that `body` leaves out.
         const { raw, ...visible } = entry;
+        const check = await checkSources(resolved.projectContext.paths?.projectRoot, entry.frontmatter?.sources);
         return {
           ok: true,
           ...visible,
+          scope: label,
+          ...(check.items.length > 0 ? { sourcesCheck: check.items, ...(check.broken.length > 0 ? { sourcesNote: brokenNote(check) } : {}) } : {}),
           hash: memoryHash(raw),
           // A read answers "what holds now". Old values stay in the file, the
           // changelog and `/memory history` rather than coming back as current.
@@ -932,7 +1000,7 @@ export function registerTools(ctx, runtime) {
     parameters: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Keywords or phrase; space-separated words match independently.' },
+        query: { type: 'string', description: 'Keywords; words match independently.' },
         limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Maximum hits (default 20).' },
         type: {
           type: 'string',
@@ -952,14 +1020,19 @@ export function registerTools(ctx, runtime) {
       const resolved = await projectFor(runtime, exec);
       if (resolved.error) return resolved.error;
       try {
-        const hits = await resolved.projectContext.store.search(input.query, {
-          limit: input.limit,
-          type: input.type,
-          currentOnly: true,
-        });
-        await recordSearch(resolved.projectContext.paths, hits.length);
+        // Project hits and user-layer hits, merged by score and labelled with their scope.
+        const user = await userLayer(runtime, resolved.projectContext);
+        const hits = [];
+        for (const [scope, layer] of [['project', resolved.projectContext], ...(user ? [['user', user]] : [])]) {
+          const found = await layer.store.search(input.query, { limit: input.limit, type: input.type, currentOnly: true });
+          await recordSearch(layer.paths, found.length);
+          hits.push(...found.map((hit) => ({ ...hit, scope })));
+        }
+        hits.sort((a, b) => b.score - a.score);
+        hits.length = Math.min(hits.length, Number.isInteger(input.limit) && input.limit > 0 ? input.limit : 20);
         const items = hits.map((hit) => ({
           file: hit.file,
+          ...(user ? { scope: hit.scope } : {}),
           name: hit.name,
           description: hit.description,
           type: hit.type,

@@ -8,6 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { attachRecall, RECALL_SOURCE_KIND } from '../src/recall.js';
 import { stringifyFrontmatter } from '../src/frontmatter.js';
+import { createStatusService } from '../src/status.js';
 import { runtimeEnv, streamOf } from './v10-helpers.mjs';
 
 const userMessage = (text) => ({ role: 'user', id: 'u1', content: [{ type: 'text', text }], source: { kind: 'user' } });
@@ -317,6 +318,25 @@ test('recall does not attach bytes edited after the selector saw a candidate', a
   assert.equal(decision.messages.length, 1);
 });
 
+test('dismissing a note during selection keeps it out of that turn', async (t) => {
+  const { env, agentCtx, file } = await modelRecallEnv(t);
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  env.host.services.llm.stream = async function* () {
+    started.resolve();
+    await release.promise;
+    yield* reply(JSON.stringify({ selected_memories: [file] }));
+  };
+  const step = agentCtx.preStep([userMessage('Cloud Run')]);
+  await started.promise;
+  try {
+    await createStatusService(env.runtime).dismissRecall(env.pctx, { sessionId: 'session-1', file });
+  } finally {
+    release.resolve();
+  }
+  assert.equal((await step).messages.length, 1);
+});
+
 test('handwritten credentials in active bodies or descriptions stay out of automatic recall', async (t) => {
   const { env, agentCtx, file } = await modelRecallEnv(t);
   const bodyFile = 'project_private_body.md';
@@ -375,7 +395,7 @@ test('recall can attach a different passage from a long note in the same session
   const ask = (id, text) => agentCtx.preStep([{ ...userMessage(text), id }]);
   assert.match((await ask('u1', 'EALIAS')).messages[1]?.content[0].text ?? '', /resolver-fix-v7/u);
   assert.equal((await ask('u2', 'healthcheck-v3')).messages.length, 1);
-  const later = (await ask('u3', 'manifest rotation')).messages[1]?.content[0].text ?? '';
+  const later = (await ask('u3', 'After checking Routing EALIAS with healthcheck-v3, what do I run for manifest rotation?')).messages[1]?.content[0].text ?? '';
   assert.match(later, /archive-v5/u);
   assert.doesNotMatch(later, /resolver-fix-v7/u);
   assert.equal(calls.length, 2);

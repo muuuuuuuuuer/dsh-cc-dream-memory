@@ -1,10 +1,9 @@
 /**
  * Automatic recall.
  *
- * The index tells the model what exists, but a model busy with a task rarely
- * stops to search. Claude Code therefore runs a small selector once per user
- * turn: it sees the memory manifest and the query, and returns up to five files
- * to attach. This plugin does the same with one cheap JSON call per user turn.
+ * The index tells the model what exists. This plugin also runs one small JSON
+ * selector call per user turn. It sees the memory manifest and query, and can
+ * return up to five files to attach.
  *
  * There is no second ranker. If the model is unavailable, times out, or returns
  * something that is not a selection, the turn gets no attachment; a wrong memory
@@ -30,13 +29,14 @@ import { recordRecall } from './metrics.js';
 import { tokenize } from './policy.js';
 import { scanSecrets } from './secrets.js';
 import { resolveModel, streamText, describeLlmError } from './llm-call.js';
+import { checkSources } from './sources.js';
 
 /** `source.kind` of attached memories; Dream ignores it like any injected context. */
 export const RECALL_SOURCE_KIND = 'plugin:cc-memory-recall';
 
 const DEFAULT_MAX_FILES = 3;
 const DEFAULT_MAX_CHARS = 3_000;
-/** The selector may return at most five files, matching Claude Code. */
+/** The selector may return at most five files. */
 const MODEL_MAX_FILES = 5;
 const DEFAULT_RECALL_TIMEOUT_MS = 4_000;
 const DEFAULT_MAX_CANDIDATES = 200;
@@ -65,6 +65,11 @@ const WRAPPER_CLOSE = '</system-reminder>';
 export function recallKey(entry) {
   const file = String(entry?.file ?? '');
   return JSON.stringify([entry?.project ?? '', entry?.scope ?? 'project', file, entry?.revision ?? entry?.modified ?? '']);
+}
+
+/** What the selector sees and returns for one entry: user-layer files are prefixed so they never collide with a project file of the same name. */
+function refOf(entry) {
+  return entry?.scope === 'user' ? `user/${entry.file}` : String(entry?.file ?? '');
 }
 
 function clippedRecallKey(entry, match) {
@@ -173,7 +178,8 @@ export function buildRecallText(items, { maxChars = DEFAULT_MAX_CHARS, attached 
 /** Read one ranked metadata entry into a recall item carrying its version. */
 async function readRecallItem(store, entry) {
   try {
-    const read = await store.readEntry(entry.file, entry.scope);
+    // Each layer is its own single-scope store; `entry.scope` only labels it.
+    const read = await store.readEntry(entry.file);
     if (!read || typeof read.body !== 'string' || read.body.trim() === '') return null;
     return {
       file: entry.file,
@@ -238,18 +244,23 @@ export function rankForQuery(entries, query) {
   return entries;
 }
 
-function matchExcerpt(entry, wanted) {
+/** `null` allows metadata-only recall; `undefined` means every match was shown. */
+function matchExcerpt(entry, wanted, shown) {
   if (termOverlap(wanted, entry.bodyTerms) === 0) return null;
   let score = 0;
   let best = -1;
+  let hasSeenMatch = false;
   for (const [index, fact] of entry.facts.entries()) {
     const overlap = termOverlap(wanted, tokenize(fact.text));
-    if (overlap > score) {
-      score = overlap;
-      best = index;
+    if (overlap <= score) continue;
+    if (shown.has(clippedRecallKey(entry, fact))) {
+      hasSeenMatch = true;
+      continue;
     }
+    score = overlap;
+    best = index;
   }
-  if (best < 0) return null;
+  if (best < 0) return hasSeenMatch ? undefined : null;
   const match = entry.facts[best];
   const fact = match.text;
   const divider = fact.lastIndexOf(' » ');
@@ -275,16 +286,16 @@ export function recallManifest(entries, { query = '', shown = new Set(), maxCand
   let chars = 0;
   for (const entry of Array.isArray(entries) ? entries : []) {
     if (shown.has(recallKey(entry))) continue;
-    const match = matchExcerpt(entry, wanted);
-    if (shown.has(clippedRecallKey(entry, match))) continue;
+    const match = matchExcerpt(entry, wanted, shown);
+    if (match === undefined || shown.has(clippedRecallKey(entry, match))) continue;
     const hint = match ? ` | match: ${JSON.stringify(match.excerpt)}` : '';
     const description = String(entry?.description ?? '').replace(/\s+/gu, ' ').trim()
       .slice(0, Math.max(0, MANIFEST_DESCRIPTION_CHARS - hint.length));
     const date = String(entry?.modified ?? '').slice(0, 10);
-    const line = `- [${entry.type ?? 'project'}] ${entry.file ?? ''}${date ? ` (updated ${date})` : ''}: ${description}${hint}`;
+    const line = `- [${entry.type ?? 'project'}] ${refOf(entry)}${date ? ` (updated ${date})` : ''}: ${description}${hint}`;
     if (chars + line.length + 1 > MANIFEST_MAX_CHARS) break;
     lines.push(line);
-    files.set(entry.file, match);
+    files.set(refOf(entry), match);
     chars += line.length + 1;
     if (lines.length >= Math.max(1, maxCandidates)) break;
   }
@@ -322,8 +333,7 @@ export function parseModelSelection(text) {
  * Ask the cheap selector model which files to attach.
  *
  * Status is part of the contract: `ok` (a valid reply, possibly empty),
- * `fallback` (bad reply / transport error / no model), or `timeout` (silence,
- * per Claude Code). The names are historical: there is no second ranker. The
+ * `fallback` (bad reply / transport error / no model), or `timeout`. The
  * attach hook treats every non-`ok` status as “attach nothing for this turn”.
  *
  * @returns {Promise<{status:'ok'|'fallback'|'timeout', files:string[], matches?:Map, reason?:string}>}
@@ -399,7 +409,7 @@ export async function selectRecallByModel({
 
 /** Resolve selected filenames against the manifest, tolerating `./` prefixes. */
 function selectedEntries(files, entries) {
-  const byFile = new Map((Array.isArray(entries) ? entries : []).map((entry) => [entry.file, entry]));
+  const byFile = new Map((Array.isArray(entries) ? entries : []).map((entry) => [refOf(entry), entry]));
   const picked = [];
   for (const raw of Array.isArray(files) ? files : []) {
     const file = String(raw).replace(/^\.\//u, '').trim();
@@ -459,12 +469,21 @@ export function attachRecall({ agent, agentCtx, runtime, config, shown = new Set
       lastTurn = key;
       const project = await runtime.forAgent(agent);
       if (!project?.store) return decision;
+      // `/memory session use off`: this session recalls nothing.
+      if (runtime.sessionFlags?.(project, agent.id).use === false) return decision;
       const maxFiles = Math.max(1, Number(effective?.autoRecallMaxFiles) || DEFAULT_MAX_FILES);
       const maxChars = Number(effective?.autoRecallMaxChars) > 0 ? Number(effective.autoRecallMaxChars) : DEFAULT_MAX_CHARS;
-      const listed = await project.store.listEntries('project', { currentOnly: true });
-      const candidates = listed
-        .map((entry) => ({ ...entry, scope: 'project', project: project.paths?.projectDir }))
-        .filter((entry) => !shown.has(recallKey(entry)));
+      const user = await runtime.userContext?.(project);
+      const dismissed = await project.state?.readRecallDismissals?.(agent.id) ?? new Set();
+      const layers = [{ scope: 'project', ctx: project }, ...(user ? [{ scope: 'user', ctx: user }] : [])];
+      const candidates = [];
+      for (const { scope, ctx } of layers) {
+        for (const entry of await ctx.store.listEntries('project', { currentOnly: true })) {
+          const labelled = { ...entry, scope, project: ctx.paths?.projectDir };
+          // "Not relevant" holds for the rest of the session, whatever version the file has.
+          if (!shown.has(recallKey(labelled)) && !dismissed.has(`${scope}/${entry.file}`)) candidates.push(labelled);
+        }
+      }
       if (candidates.length === 0) return decision;
       const entries = rankForQuery(candidates, query);
 
@@ -475,7 +494,10 @@ export function attachRecall({ agent, agentCtx, runtime, config, shown = new Set
         for (const { item, clipped } of attached) {
           shown.add(clipped ? clippedRecallKey(item, item.match) : recallKey(item));
         }
-        runtime.track?.(recordRecall(project.paths, attached.length));
+        for (const { scope, ctx } of layers) {
+          const files = attached.filter(({ item }) => item.scope === scope).map(({ item }) => item.file);
+          if (files.length > 0) runtime.track?.(recordRecall(ctx.paths, files.length, files));
+        }
         return {
           ...decision,
           messages: [
@@ -490,9 +512,11 @@ export function attachRecall({ agent, agentCtx, runtime, config, shown = new Set
         const items = [];
         for (const entry of ranked) {
           if (items.length >= maxFiles) break;
-          const item = await readRecallItem(project.store, entry);
+          const item = await readRecallItem((entry.scope === 'user' ? user : project).store, entry);
           if (item === null || item.revision !== entry.revision || !isCurrentPage(item.body) || shown.has(recallKey(item))) continue;
-          const match = matches.get(item.file);
+          // A note whose cited sources are gone or changed is not attached on trust.
+          if (entry.sources?.length > 0 && (await checkSources(project.paths?.projectRoot, entry.sources)).broken.length > 0) continue;
+          const match = matches.get(refOf(item));
           if (shown.has(clippedRecallKey(item, match)) || scanSecrets(currentBody(item.body)).matches.length !== 0) continue;
           items.push({ ...item, match });
         }
@@ -514,7 +538,11 @@ export function attachRecall({ agent, agentCtx, runtime, config, shown = new Set
       if (selection.status !== 'ok' || selection.files.length === 0) return decision;
       const picked = selectedEntries(selection.files, entries);
       const items = await readRanked(picked, selection.matches);
-      return payload?.signal?.aborted ? decision : attachItems(items);
+      if (items.length === 0) return decision;
+      // The user can dismiss a note while the selector or file read is running.
+      const latestDismissals = await project.state?.readRecallDismissals?.(agent.id) ?? dismissed;
+      return payload?.signal?.aborted ? decision
+        : attachItems(items.filter(({ scope, file }) => !latestDismissals.has(`${scope}/${file}`)));
     } catch (error) {
       // eslint-disable-next-line no-console
       console.warn('[cc-memory] recall:', error?.message ?? error);

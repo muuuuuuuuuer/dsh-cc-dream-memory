@@ -15,6 +15,9 @@ import path from 'node:path';
 
 const STATE_VERSION = 1;
 const MAX_SESSIONS = 200;
+/** Notes corrected since the last Dream, and per-session switches kept. */
+const MAX_CORRECTED = 200;
+const MAX_SESSION_FLAGS = 200;
 /** Rejected Dream proposals kept so the same fact is not proposed again. */
 const MAX_REJECTED = 2000;
 const LOCK_TTL_MS = 10_000;
@@ -45,6 +48,8 @@ function emptyState() {
     // v0.10.8: sessions already consumed by a successful dream; the corpus
     // fallback must not re-read them unless they became active again.
     dreamProcessedSessions: [],
+    // Scheduling only. A deferred review has not consumed any source events.
+    dreamDeferredSessions: [],
     counters: { dreams: 0, skipped: 0, failures: 0 },
     // The pending memory copy a finished dream produced. `null` means no
     // switch is waiting; the human either switches to the copy or discards it.
@@ -75,6 +80,16 @@ function emptyState() {
     // runtime map is only the fast path.
     extractSeqs: {},
     extractOffsets: {},
+    // v0.24: note files whose body the user corrected in a live session since
+    // the last Dream switch; the automatic Dream's focus list.
+    correctedFiles: [],
+    // v0.24: why the last automatic Dream did not start ('no-focus', ...).
+    lastDreamSkipReason: '',
+    // v0.24: per-session switches; only the off values are stored,
+    // `{ [sessionId]: { use?: false, learn?: false } }`.
+    sessionFlags: {},
+    // Files excluded from automatic recall by the user, keyed by session ID.
+    recallDismissals: {},
   };
 }
 
@@ -113,11 +128,14 @@ function normalize(raw) {
           id: entry.id,
           at: Number(entry.at) || 0,
           seq: Math.max(0, Math.trunc(Number(entry.seq) || 0)),
-          ...(entry.coverageVersion === 1 ? { coverageVersion: 1 } : {}),
+          ...([1, 2].includes(entry.coverageVersion) ? { coverageVersion: entry.coverageVersion } : {}),
           ...(entry.partial === true ? { partial: true } : {}),
         }))
     : [];
   state.counters = { ...base.counters, ...(raw.counters && typeof raw.counters === 'object' ? raw.counters : {}) };
+  state.dreamDeferredSessions = Array.isArray(raw.dreamDeferredSessions)
+    ? raw.dreamDeferredSessions.filter((item) => typeof item?.id === 'string' && Number.isFinite(item.at)).slice(-MAX_SESSIONS)
+    : [];
   state.consecutiveFailures = Math.max(0, Math.trunc(Number(state.consecutiveFailures) || 0));
   for (const key of [
     'lastDreamAt',
@@ -147,6 +165,21 @@ function normalize(raw) {
   ]) {
     state[key] = typeof state[key] === 'string' ? state[key] : '';
   }
+  state.correctedFiles = Array.isArray(raw.correctedFiles)
+    ? [...new Set(raw.correctedFiles.filter((file) => typeof file === 'string' && file !== ''))].slice(-MAX_CORRECTED)
+    : [];
+  state.lastDreamSkipReason = typeof raw.lastDreamSkipReason === 'string' ? raw.lastDreamSkipReason : '';
+  state.sessionFlags = Object.fromEntries(
+    Object.entries(raw.sessionFlags && typeof raw.sessionFlags === 'object' && !Array.isArray(raw.sessionFlags) ? raw.sessionFlags : {})
+      .map(([id, flags]) => [id, { ...(flags?.use === false ? { use: false } : {}), ...(flags?.learn === false ? { learn: false } : {}) }])
+      .filter(([id, flags]) => id !== '' && Object.keys(flags).length > 0)
+      .slice(-MAX_SESSION_FLAGS),
+  );
+  state.recallDismissals = Object.fromEntries(
+    Object.entries(raw.recallDismissals ?? {})
+      .filter(([id, files]) => id !== '' && Array.isArray(files))
+      .map(([id, files]) => [id, [...new Set(files.filter((file) => typeof file === 'string'))]]),
+  );
   state.dreamRejected = Array.isArray(raw.dreamRejected)
     ? raw.dreamRejected.filter((key) => typeof key === 'string' && key !== '').slice(-MAX_REJECTED)
     : [];
@@ -178,21 +211,23 @@ function applyDreamCoverage(state, drop, reads) {
     if (typeof read?.id !== 'string' || read.id === '') continue;
     const seq = Math.max(0, Math.trunc(Number(read.seq) || 0));
     const partial = read.complete !== true;
+    const coverageVersion = read.capturedAt ? (read.coverageVersion === 2 ? 2 : 1) : undefined;
     const existing = processed.find((item) => item.id === read.id);
     if (existing) {
-      existing.seq = read.capturedAt && existing.coverageVersion !== 1 ? seq : Math.max(Number(existing.seq) || 0, seq);
-      if (read.capturedAt) existing.coverageVersion = 1;
+      existing.seq = coverageVersion && ![1, 2].includes(existing.coverageVersion) ? seq : Math.max(Number(existing.seq) || 0, seq);
+      if (coverageVersion) existing.coverageVersion = Math.max(coverageVersion, existing.coverageVersion || 0);
       existing.at = Date.now();
       if (partial) existing.partial = true;
       else delete existing.partial;
     } else {
       processed.push({ id: read.id, at: Date.now(), seq, ...(partial ? { partial: true } : {}),
-        ...(read.capturedAt ? { coverageVersion: 1 } : {}) });
+        ...(coverageVersion ? { coverageVersion } : {}) });
     }
     if (read.capturedAt) captured.set(read.id, read.capturedAt);
     drop.add(read.id);
   }
   state.dreamProcessedSessions = processed.slice(-MAX_SESSIONS);
+  state.dreamDeferredSessions = state.dreamDeferredSessions.filter((item) => !drop.has(item.id));
   state.sessionsSince = state.sessionsSince.filter((entry) =>
     !drop.has(entry.id) || (captured.has(entry.id) && (entry.lastActivityAt || entry.at) >= captured.get(entry.id)));
 }
@@ -332,6 +367,7 @@ export class ProjectState {
   async ensureSession(sessionId, at = Date.now()) {
     if (typeof sessionId !== 'string' || sessionId === '') return;
     await this._mutate((state) => {
+      state.dreamDeferredSessions = state.dreamDeferredSessions.filter((item) => item.id !== sessionId || item.at > at);
       const prior = state.sessionsSince.find((entry) => entry.id === sessionId);
       if (prior) {
         prior.lastActivityAt = Math.max(prior.lastActivityAt || prior.at, Number(at) || Date.now());
@@ -536,6 +572,18 @@ export class ProjectState {
       const settleAll = ['applied', 'rejected'].includes(decision) && Array.isArray(pending.reviewRecords);
       const settled = reads ?? (settleAll ? pending.reviewRecords : []);
       if (settled.length > 0) applyDreamCoverage(state, new Set(), settled);
+      if (decision === 'deferred' || decision === 'partially-applied') {
+        const consumed = new Set(settled.map(({ id }) => id));
+        const held = (pending.reviewRecords ?? []).filter(({ id }) => !consumed.has(id));
+        const deferred = new Map(state.dreamDeferredSessions.map((item) => [item.id, item]));
+        const activity = new Map(state.sessionsSince.map((item) => [item.id, item.lastActivityAt || item.at]));
+        for (const { id, capturedAt } of held) {
+          deferred.delete(id);
+          const at = capturedAt || pending.createdAt || Date.now();
+          if ((activity.get(id) || 0) < at) deferred.set(id, { id, at });
+        }
+        state.dreamDeferredSessions = [...deferred.values()].slice(-MAX_SESSIONS);
+      }
       state.dreamRejected = [...new Set([...state.dreamRejected, ...rejected])].slice(-MAX_REJECTED);
       state.lastDreamDecision = { runId, decision, reads: settled, at: Date.now() };
       recordRunDecision(state, runId, decision);
@@ -588,9 +636,70 @@ export class ProjectState {
     });
   }
 
-  async markSkipped() {
+  async markSkipped(reason = '') {
     await this._mutate((state) => {
       state.counters.skipped = (Number(state.counters.skipped) || 0) + 1;
+      if (reason !== '') state.lastDreamSkipReason = String(reason).slice(0, 80);
     });
-    }
+  }
+
+  /** Read dismissals without refreshing the unrelated cached project state. */
+  async readRecallDismissals(sessionId) {
+    const state = await this._readForMutation() ?? this.state;
+    const files = state.recallDismissals?.[sessionId];
+    return new Set(Array.isArray(files) ? files : []);
+  }
+
+  /** Add one scoped file once and report whether it was newly dismissed. */
+  async dismissRecall(sessionId, ref) {
+    let added = false;
+    await this._mutate((state) => {
+      const dismissals = state.recallDismissals;
+      const files = Object.hasOwn(dismissals, sessionId) ? dismissals[sessionId] : [];
+      if (files.includes(ref)) return;
+      state.recallDismissals = { ...dismissals, [sessionId]: [...files, ref] };
+      added = true;
+    });
+    return added;
+  }
+
+  /** Remember that the user corrected this note in a live session. */
+  async noteCorrected(file) {
+    if (typeof file !== 'string' || file === '') return;
+    await this._mutate((state) => {
+      state.correctedFiles = [...state.correctedFiles.filter((item) => item !== file), file].slice(-MAX_CORRECTED);
+    });
+  }
+
+  /**
+   * Forget corrections a Dream switch consumed: the named files, or all of them
+   * when no list is given (a pending record from before 0.24.0).
+   */
+  async clearCorrected(files) {
+    if (this.state.correctedFiles.length === 0) return;
+    const consumed = Array.isArray(files) ? new Set(files) : null;
+    await this._mutate((state) => {
+      state.correctedFiles = consumed ? state.correctedFiles.filter((file) => !consumed.has(file)) : [];
+    });
+  }
+
+  /** The per-session switches of one session (`true` = on, the default). */
+  flagsOf(sessionId) {
+    const stored = this.state.sessionFlags?.[sessionId] ?? {};
+    return { use: stored.use !== false, learn: stored.learn !== false };
+  }
+
+  /** Switch one session's `use` or `learn`; the on value drops the record. */
+  async setSessionFlag(sessionId, key, value) {
+    if (typeof sessionId !== 'string' || sessionId === '' || !['use', 'learn'].includes(key)) return;
+    await this._mutate((state) => {
+      const flags = { ...(state.sessionFlags[sessionId] ?? {}) };
+      if (value === false) flags[key] = false;
+      else delete flags[key];
+      delete state.sessionFlags[sessionId];
+      if (Object.keys(flags).length > 0) state.sessionFlags[sessionId] = flags;
+      const ids = Object.keys(state.sessionFlags);
+      for (const id of ids.slice(0, Math.max(0, ids.length - MAX_SESSION_FLAGS))) delete state.sessionFlags[id];
+    });
+  }
 }

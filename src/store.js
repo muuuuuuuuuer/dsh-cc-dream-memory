@@ -231,6 +231,11 @@ function provenanceOf(data) {
   };
 }
 
+/** The `sources` list of one parsed frontmatter bag (empty when absent). */
+function sourcesOf(data) {
+  return Array.isArray(data?.sources) ? data.sources.filter((item) => typeof item === 'string' && item !== '') : [];
+}
+
 /** Strip a trailing `.md` extension. */
 function stripExtension(file) {
   return file.replace(/\.md$/i, '');
@@ -352,8 +357,27 @@ function selectIndexLinesWithinBudget(lines, maxLines, maxBytes) {
   return [...kept, INDEX_TRUNCATION_MARKER];
 }
 
+/**
+ * Reorder entry lines by use (most used first) without moving any other line:
+ * entry lines are permuted among the positions entry lines already occupy.
+ * Equal use keeps file order. The file on disk is never rewritten.
+ */
+function orderByUsage(lines, usage) {
+  const score = (line) => {
+    const reference = referencedFile(line);
+    return isIndexEntryReference(reference) ? Number(usage[reference]) || 0 : -1;
+  };
+  const slots = lines.map((line, index) => (score(line) >= 0 ? index : -1)).filter((index) => index >= 0);
+  const ranked = slots.map((index) => lines[index])
+    .map((line, order) => ({ line, order, used: score(line) }))
+    .sort((a, b) => b.used - a.used || a.order - b.order);
+  const result = [...lines];
+  slots.forEach((index, position) => { result[index] = ranked[position].line; });
+  return result;
+}
+
 /** Render one project's injected index head within the line/byte budget. */
-function buildIndexHead(text, maxLines, maxBytes) {
+function buildIndexHead(text, maxLines, maxBytes, usage) {
   const all = splitLines(text);
   const render = (lines) => (lines.length > 0 ? `${lines.join('\n')}\n` : '');
   const totalLines = all.length;
@@ -374,7 +398,8 @@ function buildIndexHead(text, maxLines, maxBytes) {
       ...total,
     };
   }
-  const selected = selectIndexLinesWithinBudget(all, maxLines, maxBytes);
+  const selected = selectIndexLinesWithinBudget(
+    usage && typeof usage === 'object' ? orderByUsage(all, usage) : all, maxLines, maxBytes);
   let head = render(selected);
   // Final safety net for a budget smaller than the marker itself: never emit a
   // broken UTF-8 or a half line, even if that means only the marker fits.
@@ -921,7 +946,8 @@ export class MemoryStore {
    * The index head that the prompt receives: the first `maxLines` lines and the
    * first `maxBytes` bytes, whichever is smaller.
    *
-   * The optional second argument overrides the index budget.
+   * The optional second argument overrides the index budget. `usage` (file name
+   * -> use count) keeps the most used entries first when the index overflows.
    * @param {'project'} [scope]
    * @param {{maxLines?:number, maxBytes?:number}} [budget]
    * @returns {Promise<{text:string,lines:number,bytes:number,truncated:boolean,
@@ -939,7 +965,7 @@ export class MemoryStore {
     const maxBytes =
       Number.isFinite(maxBytesValue) && maxBytesValue > 0 ? Math.trunc(maxBytesValue) : fallbackBytes;
     const text = await this.indexText(normalized);
-    return buildIndexHead(text, maxLines, maxBytes);
+    return buildIndexHead(text, maxLines, maxBytes, limits.usage);
   }
 
   /**
@@ -995,6 +1021,7 @@ export class MemoryStore {
       created: cleanInline(data.created),
       sourceSession: cleanInline(data.source_session),
       via: cleanInline(data.via),
+      ...(sourcesOf(data).length > 0 ? { sources: sourcesOf(data) } : {}),
       bytes: byteLength(raw),
       lines: countLines(raw),
     };
@@ -1026,6 +1053,7 @@ export class MemoryStore {
         created: meta.created,
         source_session: meta.sourceSession,
         via: meta.via,
+        ...(meta.sources ? { sources: meta.sources } : {}),
       },
       body: parsed.body,
       raw,
@@ -1064,7 +1092,7 @@ export class MemoryStore {
    *   preserveCreatedAbsence?:boolean}} input
    * @returns {string} memory file text
    */
-  _composeFrontmatter({ name, description, type, modified, body, existing, source, preserveCreatedAbsence = false }) {
+  _composeFrontmatter({ name, description, type, modified, body, existing, source, sources, preserveCreatedAbsence = false }) {
     const src = normalizeSource(source);
     const prior = existing && typeof existing === 'object' ? existing : {};
     const hadProvenance =
@@ -1073,6 +1101,9 @@ export class MemoryStore {
       cleanInline(prior.source_session) !== '';
     const wantsProvenance = hadProvenance || src.via !== '' || src.sessionId !== '';
     const fields = { name, description, type, modified };
+    // `sources` survives edits that do not name it; an empty list clears it.
+    const keptSources = sources === undefined ? sourcesOf(prior) : sources;
+    if (keptSources.length > 0) fields.sources = keptSources;
     if (wantsProvenance) {
       // `created` is the first-write timestamp: a creation gets one, an update
       // keeps the existing one, and (only on the raw editor path) a legacy file
@@ -1231,6 +1262,7 @@ export class MemoryStore {
         body,
         existing,
         source: input.source,
+        sources: input.sources,
       });
       // v12: keep the replaced version before overwriting an existing memory.
       if (!created) await this._recordHistory(file, await this._readText(target));
@@ -1258,7 +1290,9 @@ export class MemoryStore {
    */
   async _chooseSaveFile(scope, type, name) {
     const dir = this._scopeDir(scope);
-    const base = `${type}_${slugify(name)}`;
+    // A name that already carries the type (`feedback_handover`) keeps a single prefix.
+    const slug = slugify(name);
+    const base = slug.startsWith(`${type}_`) ? slug : `${type}_${slug}`;
     const digest = createHash('sha1').update(name, 'utf8').digest('hex').slice(0, CONFLICT_HASH_CHARS);
     const candidates = [`${base}.md`, `${base}-${digest}.md`];
     for (let attempt = 2; attempt <= CONFLICT_ATTEMPTS; attempt += 1) {
@@ -1322,6 +1356,7 @@ export class MemoryStore {
         body,
         existing: parsed.data,
         source: changes.source,
+        sources: changes.sources,
       });
       // v12: keep the previous version before it is replaced.
       await this._recordHistory(name, raw);
@@ -1410,6 +1445,7 @@ export class MemoryStore {
         body,
         existing: parsed.data,
         source: options.source,
+        sources: options.sources,
       });
       await this._recordHistory(oldFile, raw);
       await this._atomicWrite(newTarget, next);
@@ -1501,9 +1537,10 @@ export class MemoryStore {
    * @param {string} file topic file name.
    * @param {{scope?:'project',type?:string,name?:string,description?:string,
    *   body?:string,content?:string}} [input]
+   * @param {{preview?:boolean}} [options] Return the proposed entry without updating the file, history or index.
    * @returns {Promise<object>} SaveResult
    */
-  writeRawEntry(file, input = {}) {
+  writeRawEntry(file, input = {}, { preview = false } = {}) {
     return this._run(async () => {
       const scope = normalizeScope(input.scope);
       const { name: fileName, target } = this._entryTarget(file, scope);
@@ -1542,6 +1579,7 @@ export class MemoryStore {
         source: input.source,
         preserveCreatedAbsence: true,
       });
+      if (preview) return { file: fileName, raw, body, frontmatter: { name, type, description } };
       // v12: raw dream/apply writes also keep the overwritten version.
       if (existingRaw !== undefined) await this._recordHistory(fileName, existingRaw);
       await this._atomicWrite(target, raw);

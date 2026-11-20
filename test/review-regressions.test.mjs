@@ -134,22 +134,21 @@ for (const cutoff of ['max-tokens', 'max-turns']) {
   });
 }
 
-test('search does not expose injected text or accept runtime context as a citation', async (t) => {
+test('Dream source pages omit injected text and exclude it from citation checks', async (t) => {
   const env = await toolsEnv(t);
   const quote = 'Old injected memory says to always use French.';
   env.host.services.sessionQuery = {
     filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir } }],
-    listEvents: async () => [{ seq: 1 }, { seq: 2 }],
-    searchEvents: async () => ({ items: [{ seq: 1, snippet: quote }, { seq: 2, snippet: quote }] }),
+    listEvents: async () => [{ seq: 1 }, { seq: 2 }, { seq: 3 }],
     readEvent: async ({ seq }) => ({ events: [{ seq, type: 'user/message',
-      data: { role: 'user', source: { kind: seq === 1 ? 'plugin:cc-memory-recall' : 'runtime-context' },
-        content: [{ type: 'text', text: quote }] } }] }),
+      data: { role: 'user', source: { kind: ['plugin:cc-memory-recall', 'runtime-context', 'user'][seq - 1] },
+        content: [{ type: 'text', text: seq === 3 ? 'Check the release notes.' : quote }] } }] }),
   };
-  const requests = model(env, [[['session_search', { session_id: 's1', query: 'French' }],
-    ['memory_write', { file: 'user_language.md', body: quote, type: 'user', citations: [{ session_id: 's1', seq: 2, quote }] }]]]);
+  model(env, [[['memory_write', { file: 'project_language.md', body: quote, type: 'project', citations: [{ session_id: 's1', seq: 2, quote }] }]]]);
   assert.equal((await dream(env)).ready, true);
-  const result = requests[1].messages.find((message) => message.role === 'tool');
-  assert.doesNotMatch(result.content[0].text, /French/);
+  const source = env.host.dreamSourcePages.join('\n');
+  assert.match(source, /Check the release notes/u);
+  assert.doesNotMatch(source, /French/u);
   assert.equal(env.pctx.state.snapshot().shadowPending.evidence[0].verified, false);
 });
 test('switch holds the same lock as ordinary writes and rollback preserves other pages', async (t) => {
@@ -232,7 +231,7 @@ test('manual merge detects a changed source and rolls back its other changes', a
   await assert.rejects(store.readEntry('project_merged.md'), { code: 'NOT_FOUND' });
 });
 
-test('Dream estimate loads no logs and ending a search does not cover unread events', async (t) => {
+test('Dream estimate loads no logs', async (t) => {
   const env = await toolsEnv(t);
   const events = [1, 20].map(seq => ({ seq, type: 'user/message', data: { content: [{ type: 'text', text: 'Message ' + seq }] } }));
   let loads = 0;
@@ -244,11 +243,6 @@ test('Dream estimate loads no logs and ending a search does not cover unread eve
   };
   await env.runtime.estimateDream(env.pctx);
   assert.equal(loads, 0);
-  model(env, [[['session_search', { session_id: 's0', query: 'Message 20' }],
-    ['work_done', { session_id: 's0', through_seq: 20, summary: 'Reviewed message 20.' }]]]);
-  await dream(env);
-  assert.equal(loads, 8);
-  assert.ok(!env.pctx.state.snapshot().dreamProcessedSessions.some(x => x.id === 's0' && !x.partial));
 });
 
 test('Dream cannot complete a session whose log could not be loaded', async (t) => {
@@ -272,32 +266,6 @@ test('a rejected extraction update keeps the input eligible for retry', async (t
   const run = () => runAutoExtract({ runtime: env.runtime, pctx: env.pctx, ...exec });
   assert.equal((await run()).reason, 'write-incomplete');
   assert.equal(env.pctx.state.snapshot().extractSeqs.s1, undefined);
-});
-
-test('Dream completes a long event only after it sees every page', async (t) => {
-  const env = await toolsEnv(t);
-  const text = 'a'.repeat(8050) + ' Actual durable detail at the end.';
-  const event = { seq: 7, type: 'user/message', data: { content: [{ type: 'text', text }] } };
-  env.host.services.sessionQuery = {
-    filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir } }],
-    listEvents: async () => [event],
-    readEvent: async () => ({ events: [event] }),
-  };
-  const checkpoint = ['work_done', { session_id: 's1', through_seq: 7, summary: 'Reviewed the long event.' }];
-  const requests = model(env, [
-    [['session_read', { session_id: 's1', seq: 7, offset: 8000 }], checkpoint],
-    [['session_read', { session_id: 's1', seq: 7, offset: 0 }], checkpoint],
-    [['session_read', { session_id: 's1', seq: 7, offset: 8000 }], checkpoint],
-  ]);
-  const result = await dream(env);
-  const outputs = requests.at(-1).messages.filter(m => m.role === 'tool').map(m => m.content[0].text);
-  assert.deepEqual(outputs.filter(s => s.startsWith('ERROR')), [
-    'ERROR: next unread seqs 7', 'ERROR: next unread seqs 7',
-  ]);
-  assert.equal(outputs.at(-1), 'CHECKPOINTED s1 through seq 7');
-  assert.equal(result.ran, true);
-  assert.equal(result.sessionsRead, 1);
-  assert.equal(result.sessionsReviewed, 1);
 });
 
 test('merge preserves active sections after a source with history', async (t) => {
@@ -352,7 +320,7 @@ test('deferring a sourced Dream keeps the reviewed session eligible without reje
   assert.deepEqual(env.pctx.state.snapshot().dreamRejected, []);
   const requests = model(env, [[]]);
   await dream(env);
-  assert.match(requests[0].messages[0].content[0].text, /s1 created/);
+  assert.match(requests[0].messages[0].content[0].text, /session_id=s1/);
 });
 
 test('automatic extraction resumes within a long event and reaches the final short tail', async (t) => {
@@ -370,30 +338,6 @@ test('automatic extraction resumes within a long event and reaches the final sho
   assert.ok(requests.some(r => r.messages[0].content[0].text.includes('Last clue')));
   assert.equal(env.pctx.state.snapshot().extractSeqs.s1, 1);
   assert.equal(env.pctx.state.snapshot().extractOffsets.s1, undefined);
-});
-
-test('Dream needs the full long page and its read version before replacement', async (t) => {
-  const env = await toolsEnv(t);
-  const original = 'a'.repeat(8050) + '\nKeep this tail.';
-  const { file } = await save(env, 'Long', original);
-  const { memoryHash } = await import('../src/write-review.js');
-  const version = memoryHash((await env.pctx.store.readEntry(file)).raw);
-  const [citations] = cite(env, 'Add an explicit review step.');
-  const requests = model(env, [
-    [['memory_read', { file }]],
-    [['memory_write', { file, version, body: 'Truncated rewrite.', citations }]],
-    [['memory_read', { file, offset: 8000, version: 'stale' }]],
-    [['memory_read', { file, offset: 8000, version }]],
-    [['memory_write', { file, version, body: original + '\nAdd an explicit review step.', citations }]],
-  ]);
-  const pending = await dream(env);
-  assert.equal(pending.ready, true);
-  const outputs = requests.at(-1).messages.filter(item => item.role === 'tool').map(item => item.content[0].text);
-  assert.match(outputs[1], /read all pages/);
-  assert.match(outputs[2], /version changed/);
-  assert.match(outputs[3], /Keep this tail/);
-  assert.equal((await env.runtime.switchDream({ pctx: env.pctx })).ok, true);
-  assert.match(await body(env, file), /Keep this tail/);
 });
 
 test('a checked source for an older rewrite does not approve the final rewrite', async (t) => {

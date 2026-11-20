@@ -33,7 +33,7 @@ const checkpointFile = (dir) => path.join(dir, 'checkpoint.json');
 export async function readRunCheckpoint(dir) {
   try {
     const record = JSON.parse(await fs.readFile(checkpointFile(dir), 'utf8'));
-    if (record?.version !== 1 || !Array.isArray(record.work) || record.work.length === 0
+    if (![1, 2].includes(record?.version) || !Array.isArray(record.work) || (record.version === 1 && record.work.length === 0)
       || !Array.isArray(record.sessionIds) || !Array.isArray(record.bases) || !Array.isArray(record.draft?.pages)
       || typeof record.draft.index !== 'string' || !Array.isArray(record.evidence)) return null;
     const valid = record.sessionIds.every((id) => typeof id === 'string' && id !== '')
@@ -44,7 +44,13 @@ export async function readRunCheckpoint(dir) {
         && (item[1] === null || typeof item[1] === 'string'))
       && record.draft.pages.every((item) => typeof item?.file === 'string' && (item.raw === null || typeof item.raw === 'string'))
       && record.evidence.every((item) => item && typeof item.quote === 'string');
-    return valid ? record : null;
+    const frozen = record.version === 1 || (Number.isFinite(record.capturedAt) && record.capturedAt > 0
+      && Array.isArray(record.ranges) && record.ranges.length === record.sessionIds.length
+      && new Set(record.ranges.map(({ id }) => id)).size === record.sessionIds.length
+      && record.ranges.every(({ id, lastSeq, fingerprint, readSeq }) => record.sessionIds.includes(id)
+        && Number.isSafeInteger(lastSeq) && lastSeq >= 0 && typeof fingerprint === 'string'
+        && (readSeq === null || Number.isSafeInteger(readSeq))));
+    return valid && frozen ? record : null;
   } catch {
     return null;
   }
@@ -212,6 +218,7 @@ export function summarizeRun(manifest, { running = false, checkpoint = false, ou
     skipReason: manifest.skipReason,
     sessionsReviewed: Number(manifest.sessionsReviewed) || 0,
     usage: manifest.usage,
+    reviewRanges: manifest.reviewRanges,
     errors: manifest.errors ?? [],
     sessions: (manifest.input?.sessions ?? []).map((session) => ({
       id: session.id,

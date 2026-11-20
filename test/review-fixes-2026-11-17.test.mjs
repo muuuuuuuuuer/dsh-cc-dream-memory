@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { toolsEnv, streamOf } from './v10-helpers.mjs';
+import { mountDreamFixture, toolsEnv, streamOf } from './v10-helpers.mjs';
 import { ProjectState } from '../src/state.js';
 import { listSwitches } from '../src/dream.js';
 import { attachRecall } from '../src/recall.js';
@@ -130,28 +130,25 @@ test('undo can retry index restoration after its first index write fails', async
   assert.ok(!(await pctx.store.indexText()).includes(groundedDescription));
 });
 
-for (const ending of ['incomplete-stream', 'length', 'incomplete-tool-call']) {
+for (const stopReason of ['error', 'max-tokens']) {
   for (const changed of [false, true]) {
-    test(`Dream preserves unread work after ${ending} with changed=${changed}`, async (t) => {
+    test(`Dream preserves unread work when its child stops with ${stopReason}, changed=${changed}`, async (t) => {
       const env = await toolsEnv(t, { autoDreamEnabled: false });
       const event = { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: 'Use blue deployment.' }] } };
       env.host.services.sessionQuery = {
         filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir, createdAt: Date.now() - 1000 } }],
-        listEvents: async () => [event],
-        readEvent: async () => ({ events: [event] }),
+        readSession: async () => ({ events: [event] }),
       };
       await env.pctx.state.ensureSession('s1', Date.now() - 1000);
-      const calls = [
-        toolCall('session_read', { session_id: 's1', seq: 1 }),
-      ];
-      if (changed) calls.push(toolCall('memory_write', { file: 'project_deploy.md', body: 'Use blue deployment.' }));
-      calls.push(toolCall('work_done', { session_id: 's1', through_seq: 1, summary: 'Reviewed deployment.' }));
-      const last = ending === 'incomplete-stream' ? [] : [finish(ending === 'incomplete-tool-call' ? 'tool-calls' : ending)];
-      script(env, [[...calls, finish('tool-calls')], last]);
-      const runId = `run-${ending}-${changed}`;
+      env.host.services.subagents.startActivation = async (spec) => {
+        mountDreamFixture(env.host, spec);
+        if (changed) await fs.writeFile(path.join(spec.cwd, 'project_deploy.md'), '---\nname: Deploy\ntype: project\n---\n\nUse blue deployment.\n');
+        return { childId: spec.childId, result: Promise.resolve({ stopReason, output: [] }), dispose: async () => {} };
+      };
+      const runId = `run-${stopReason}-${changed}`;
       const result = await env.runtime.dream({ pctx: env.pctx, force: true, runId });
       assert.equal(result.status, 'paused');
-      assert.equal(result.error, ending);
+      assert.equal(result.error, 'subagent-' + stopReason);
       const state = env.pctx.state.snapshot();
       assert.equal(state.shadowPending, null);
       assert.deepEqual(state.dreamProcessedSessions, []);

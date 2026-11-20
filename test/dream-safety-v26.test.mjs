@@ -38,12 +38,6 @@ function script(env, steps, { usage, before } = {}) {
   return { calls: () => call, replies };
 }
 
-/** Text of the tool results the model received, in order. */
-function toolResults(replies) {
-  const last = replies.at(-1) ?? [];
-  return last.filter((message) => message.role === 'tool').map((message) => message.content?.[0]?.text ?? '');
-}
-
 async function seed(env) {
   const save = (name, type, description, content) => env.pctx.store.saveEntry({ name, type, description, content, source: { via: 'test' } });
   await save('Deploy', 'project', 'Release process', 'Use make release.');
@@ -57,6 +51,7 @@ async function dreamEnv(t, overrides = {}, make = toolsEnv) {
   env.host.services.sessionQuery = {
     filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir, createdAt: now - 1000, lastSeq: 9 } }],
     searchEvents: async () => ({ items: [{ seq: 7, snippet: QUOTE }] }),
+    listEvents: async () => [7, 8, 9].map((seq) => ({ seq })),
     readEvent: async ({ seq }) => ({
       events: seq === 7 ? [{ seq: 7, type: 'user/message', data: { content: [{ type: 'text', text: `${QUOTE} last week. ${RELEASE}` }] } }] : [{ seq, type: 'user/message', data: { content: [{ type: 'text', text: seq === 8 ? ciSource[0].quote : deletion[0].quote }] } }],
     }),
@@ -69,13 +64,14 @@ const file = (env, name) => path.join(env.pctx.paths.memoryDir, name);
 
 test('a Dream write carrying a secret is refused and never reaches the copy', async (t) => {
   const env = await dreamEnv(t);
-  const { replies } = script(env, [
+  script(env, [
     [{ name: 'memory_write', arguments: { file: 'reference_aws.md', type: 'reference', description: 'AWS access', body: `Key: ${AWS_KEY}` } }],
     [],
   ]);
   const result = await dream(env, 'run-secret');
-  assert.match(toolResults(replies).join('\n'), /^ERROR: .*secret/imu);
+  // The replay refuses it, and the copy the child wrote it into is thrown away.
   assert.equal(result.error, 'unfinished-writes');
+  assert.equal(await exists(path.join(env.pctx.paths.dreamsDir, 'shadow', 'reference_aws.md')), false);
   assert.equal(env.pctx.state.snapshot().shadowPending, null);
   assert.equal(await exists(file(env, 'reference_aws.md')), false);
 });
@@ -134,8 +130,7 @@ test('undo refuses to overwrite a removed page that was recreated after the swit
 
 test('only citations count as evidence, and each one is checked against the session', async (t) => {
   const env = await dreamEnv(t);
-  const { replies } = script(env, [
-    [{ name: 'session_search', arguments: { session_id: 's1', query: 'pnpm' } }],
+  script(env, [
     [{
       name: 'memory_write',
       arguments: {
@@ -150,7 +145,6 @@ test('only citations count as evidence, and each one is checked against the sess
     [],
   ]);
   assert.equal((await dream(env, 'run-evidence')).ready, true);
-  assert.match(toolResults(replies).at(-1), /1 citation\(s\) did not match/u);
   const evidence = env.pctx.state.snapshot().shadowPending.evidence;
   assert.deepEqual(evidence.map((item) => [item.source, item.verified]), [['citation', true], ['citation', false]]);
 
@@ -158,36 +152,22 @@ test('only citations count as evidence, and each one is checked against the sess
   assert.deepEqual(diff.evidence.map((item) => item.verified), [true, false]);
 });
 
-test('warn mode stops the agent at the token cap and keeps the flagged copy', async (t) => {
-  const env = await dreamEnv(t, { dreamMaxTotalTokens: 5_000, dreamCostMode: 'warn' });
-  const steps = Array.from({ length: 10 }, () => [{ name: 'memory_index', arguments: {} }]);
-  steps[0] = [{ name: 'memory_write', arguments: { file: 'project_deploy.md', body: 'Use pnpm release.', citations: correction } }];
-  const { calls } = script(env, steps, { usage: { inputTokens: 2_000, outputTokens: 500, totalTokens: 2_500 } });
-  const result = await dream(env, 'run-cap-warn');
-  assert.equal(calls(), 2, 'no model call after the cap is reached');
-  assert.equal(result.ready, true);
-  assert.equal(result.costExceeded, true);
-  assert.equal(env.pctx.state.snapshot().lastDreamCostExceeded, true);
-});
-
-test('block mode throws away a copy built past the token cap', async (t) => {
-  const env = await dreamEnv(t, { dreamMaxTotalTokens: 5_000, dreamCostMode: 'block' });
-  const steps = Array.from({ length: 10 }, () => [{ name: 'memory_index', arguments: {} }]);
-  steps[0] = [{ name: 'memory_write', arguments: { file: 'project_deploy.md', body: 'Use pnpm release.', citations: correction } }];
-  script(env, steps, { usage: { totalTokens: 2_500 } });
-  const result = await dream(env, 'run-cap-block');
-  assert.equal(result.error, 'cost-limit-exceeded');
-  assert.equal(env.pctx.state.snapshot().shadowPending, null);
-  assert.equal(await exists(path.join(env.pctx.paths.dreamsDir, 'shadow')), false);
-});
-
-test('block mode does not call the model when the first prompt is already over the cap', async (t) => {
-  const env = await dreamEnv(t, { dreamMaxTotalTokens: 1_000, dreamCostMode: 'block' });
-  const { calls } = script(env, [[]]);
-  const result = await dream(env, 'run-cap-preflight');
-  assert.equal(result.skipReason, 'cost-limit');
-  assert.equal(calls(), 0);
-});
+for (const dreamCostMode of ['warn', 'block']) {
+  test(`legacy ${dreamCostMode} settings allow Dream to finish and preserve the draft`, async (t) => {
+    const env = await dreamEnv(t, { dreamMaxTotalTokens: 1_000, dreamCostMode });
+    const steps = [
+      [{ name: 'memory_write', arguments: { file: 'project_deploy.md', body: 'Use pnpm release.', citations: correction } }],
+      [{ name: 'memory_index', arguments: {} }],
+      [],
+    ];
+    const { calls } = script(env, steps, { usage: { totalTokens: 2_500 } });
+    const result = await dream(env, `run-legacy-${dreamCostMode}`);
+    assert.equal(calls(), 3);
+    assert.equal(result.ready, true);
+    assert.equal(result.usage.totalTokens, 7_500);
+    assert.equal(env.pctx.state.snapshot().lastDreamCostExceeded, false);
+  });
+}
 
 test('/memory dream cancel discards the run and prevents resume', async (t) => {
   const env = await dreamEnv(t, {}, commandEnv);

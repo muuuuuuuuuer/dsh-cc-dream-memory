@@ -13,29 +13,32 @@ const second = 'Archive the release manifest.';
 const tool = (name, args = {}) => ({ type: 'block-end', block: { type: 'tool-call', id: name, name, arguments: args } });
 const end = (kind) => ({ type: 'finish', reason: { kind } });
 
+// Two sessions, one child each: s1 holds the release command, s2 the manifest step.
 async function setup(t) {
   const env = await toolsEnv(t, { autoDreamEnabled: false });
   const events = [first, second].map((text, i) => ({ seq: i + 1, type: 'user/message', data: { content: [{ type: 'text', text }] } }));
-  const reads = [];
+  const of = (id) => events.filter((event) => event.seq === (id === 's1' ? 1 : 2));
   env.host.services.sessionQuery = {
-    filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir } }],
-    listEvents: async () => events,
-    readEvent: async ({ seq, before, after }) => {
-      reads.push({ seq, before, after });
-      return { events: events.filter((event) => event.seq >= seq - before && event.seq <= seq + after) };
-    },
+    filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir, createdAt: 1 } }, { header: { id: 's2', cwd: env.workspaceDir, createdAt: 2 } }],
+    readSession: async (id) => ({ events: structuredClone(of(id)) }),
   };
-  return { ...env, events, reads };
+  return { ...env, events };
 }
 
-async function pause(env, runId) {
+const failed = () => streamOf([end('error')]);
+
+/** The s1 child drafts the note and finishes; the s2 child fails, so the run pauses with s1 checkpointed. */
+async function pause(env, runId, firstTurn = [
+  tool('memory_write', { file, body: first, citations: [{ session_id: 's1', seq: 1, quote: first }] }),
+  tool('work_done', { session_id: 's1', through_seq: 1, summary: 'Captured the release command.' }),
+]) {
   let turn = 0;
-  env.host.services.llm.stream = () => streamOf(turn++ === 0 ? [
-    tool('session_read', { session_id: 's1', seq: 1, before: 0, after: 0 }),
-    tool('memory_write', { file, body: first, citations: [{ session_id: 's1', seq: 1, quote: first }] }),
-    tool('work_done', { session_id: 's1', through_seq: 1, summary: 'Captured the release command.' }),
-    end('tool-calls'),
-  ] : [tool('memory_index'), end('tool-calls')]);
+  env.host.services.llm.stream = () => {
+    turn += 1;
+    if (turn === 1) return streamOf([...firstTurn, end('tool-calls')]);
+    if (turn === 2) return streamOf([{ type: 'text-delta', text: 'DONE' }, end('stop')]);
+    return failed();
+  };
   return env.runtime.dream({ pctx: env.pctx, force: true, runId });
 }
 
@@ -48,17 +51,16 @@ test('a new host resumes the same run and retains its saved analysis and draft',
   assert.deepEqual(env.pctx.state.snapshot().dreamProcessedSessions, []);
 
   const runtime = new MemoryRuntime(env.host, env.config);
+  t.after(runtime.subagents.attach(env.host));
   const pctx = await runtime.storeFor(env.workspaceDir);
-  let prompt;
+  pctx.agent = env.host.dreamParent;
+  const prompts = [];
   let turn = 0;
-  env.host.services.llm.stream = ({ messages, tools }) => {
-    assert.ok(tools.some(({ name }) => name === 'work_done'));
-    assert.ok(tools.every(({ name }) => name !== 'session_done'));
+  env.host.services.llm.stream = ({ messages }) => {
     if (turn++ > 0) return streamOf([{ type: 'text-delta', text: 'DONE' }, end('stop')]);
-    prompt = messages[0].content[0].text;
+    prompts.push(messages[0].content[0].text);
     return streamOf([
-      tool('session_read', { session_id: 's1', seq: 2, before: 0, after: 0 }),
-      tool('work_done', { session_id: 's1', through_seq: 2, summary: 'Reviewed the release manifest step.' }),
+      tool('work_done', { session_id: 's2', through_seq: 2, summary: 'Reviewed the release manifest step.' }),
       end('tool-calls'),
     ]);
   };
@@ -67,11 +69,14 @@ test('a new host resumes the same run and retains its saved analysis and draft',
   const resumed = await runtime.dream({ pctx, force: true, runId, resume: true });
   assert.equal(resumed.runId, runId);
   assert.equal(resumed.ready, true);
-  assert.match(prompt, /Captured the release command/u);
-  assert.match(prompt, /first unreviewed text event seq 2/u);
+  // Only the unfinished session gets a new child.
+  assert.equal(prompts.length, 1);
+  assert.match(prompts[0], /session_id=s2/u);
   assert.equal((await runtime.switchDream({ pctx, runId })).ok, true);
   assert.equal((await pctx.store.readEntry(file)).body, first);
-  assert.equal(pctx.state.snapshot().dreamProcessedSessions.find(({ id }) => id === 's1')?.seq, 2);
+  const processed = pctx.state.snapshot().dreamProcessedSessions;
+  assert.equal(processed.find(({ id }) => id === 's1')?.seq, 1);
+  assert.equal(processed.find(({ id }) => id === 's2')?.seq, 2);
 });
 
 test('resume refuses a checkpoint whose reviewed source event changed', async (t) => {
@@ -153,15 +158,11 @@ test('a failure after publishing review keeps the saved batch available', async 
 test('resume rechecks a memory page that informed a saved no-change decision', async (t) => {
   const env = await setup(t);
   await env.pctx.store.writeRawEntry(file, { body: first, type: 'project' });
-  let turn = 0;
-  env.host.services.llm.stream = () => streamOf(turn++ === 0 ? [
-    tool('memory_read', { file }),
-    tool('session_read', { session_id: 's1', seq: 1, before: 0, after: 0 }),
-    tool('work_done', { session_id: 's1', through_seq: 1, summary: 'The release command is already in memory.' }),
-    end('tool-calls'),
-  ] : [tool('memory_index'), end('tool-calls')]);
   const runId = 'run-read-dependency';
-  assert.equal((await env.runtime.dream({ pctx: env.pctx, runId })).status, 'paused');
+  assert.equal((await pause(env, runId, [
+    tool('memory_read', { file }),
+    tool('work_done', { session_id: 's1', through_seq: 1, summary: 'The release command is already in memory.' }),
+  ])).status, 'paused');
   await env.pctx.store.updateEntry(file, { content: second });
   env.host.services.llm.stream = () => assert.fail('a changed source page must stop resume before asking the model');
   assert.equal((await env.runtime.dream({ pctx: env.pctx, runId, resume: true })).error, 'checkpoint-conflict');
@@ -174,7 +175,6 @@ test('an unchecked tail cannot delete a checkpointed draft and consume its sourc
   assert.equal((await pause(env, runId)).status, 'paused');
   let turn = 0;
   env.host.services.llm.stream = () => streamOf(turn++ === 0 ? [
-    tool('session_read', { session_id: 's1', seq: 2, before: 0, after: 0 }),
     tool('memory_delete', { file }),
     end('tool-calls'),
   ] : [{ type: 'text-delta', text: 'DONE' }, end('stop')]);
@@ -197,24 +197,25 @@ test('a checkpoint and its drafts survive a killed host with a fresh project loc
     const [runId, workspaceDir, config, events] = JSON.parse(process.argv[1]);
     const host = fakeHost({ workspaceDir });
     host.services.sessionQuery = {
-      filterSessions: async () => [{ header: { id: 's1', cwd: workspaceDir } }],
-      listEvents: async () => events,
-      readEvent: async ({ seq }) => ({ events: events.filter((event) => event.seq === seq) }),
+      filterSessions: async () => [{ header: { id: 's1', cwd: workspaceDir, createdAt: 1 } }, { header: { id: 's2', cwd: workspaceDir, createdAt: 2 } }],
+      readSession: async (id) => ({ events: events.filter((event) => event.seq === (id === 's1' ? 1 : 2)) }),
     };
     const tool = (name, args) => ({ type: 'block-end', block: { type: 'tool-call', id: name, name, arguments: args } });
     const quote = events[0].data.content[0].text;
     let turn = 0;
-    host.services.llm.stream = () => turn++ === 0 ? streamOf([
-      tool('session_read', { session_id: 's1', seq: 1, before: 0, after: 0 }),
+    host.services.llm.stream = () => ++turn === 1 ? streamOf([
       tool('memory_write', { file: 'project_release.md', body: quote, citations: [{ session_id: 's1', seq: 1, quote }] }),
       tool('work_done', { session_id: 's1', through_seq: 1, summary: 'Release command analyzed.' }),
       { type: 'finish', reason: { kind: 'tool-calls' } },
-    ]) : (async function* () {
+    ]) : turn === 2 ? streamOf([{ type: 'text-delta', text: 'DONE' }, { type: 'finish', reason: { kind: 'stop' } }]) : (async function* () {
       process.stdout.write('checkpoint published\\n');
       await new Promise((resolve) => setTimeout(resolve, 60_000));
     })();
     const runtime = new MemoryRuntime(host, config);
-    await runtime.dream({ pctx: await runtime.storeFor(workspaceDir), runId });
+    runtime.subagents.attach(host);
+    const pctx = await runtime.storeFor(workspaceDir);
+    pctx.agent = host.dreamParent;
+    await runtime.dream({ pctx, runId });
   `, JSON.stringify([runId, env.workspaceDir, env.config, env.events])], { windowsHide: true });
   t.after(() => { if (worker.exitCode === null) worker.kill(); });
   let output = '';

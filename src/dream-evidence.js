@@ -17,7 +17,7 @@ const TRANSCRIPT_TAG = /^\[(user|user-pasted|assistant|tool-call|tool-result|too
 const DATE_MARKER = /^--- (\d{4}-\d{2}-\d{2}) ---$/;
 const RETIREMENT = /\b(?:remove|delete|retir(?:e|ed)|obsolete|deprecated|replac(?:e|ed)|superseded)\b|删除|移除|废弃|停用|淘汰|已替换/iu;
 const UNCERTAIN_RETIREMENT = /[?？]|\b(?:not|never|don't|if|unless|should|could|may|might)\b|不要|不可|尚未|未被|如果|是否/iu;
-const MODALITY = /\b(?:must|should|may|can|will|always|never|required|optional)\b/giu;
+const MODALITY = /\b(?:must|should|may|might|could|would|can|will|always|never|required|optional|consider(?:ing|ed)?|plan(?:s|ned|ning)? to|thinking (?:of|about)|intend(?:s|ed)? to|hop(?:e|es|ing) to)\b|打算|考虑|计划|可能|也许/giu;
 const REPLACEMENT = /^(?:please\s+)?replace (.+?) with (.+)$/iu;
 
 const normalizePassage = (value) => String(value ?? '').replace(/\s+/gu, ' ').trim().toLowerCase();
@@ -50,7 +50,25 @@ export function sourcePassages(text, quote) {
   return [...new Set(matches)];
 }
 
-function supportsClaim(claim, passage) {
+/** Narrow first-to-third person rendering for a direct user statement. Keep
+ * the complete predicate and its qualifiers, including all names and numbers. */
+const USER_VERBS = Object.freeze({ prefer: 'prefers', use: 'uses', live: 'lives', work: 'works', want: 'wants',
+  have: 'has', am: 'is', moved: 'moved', decided: 'decided', plan: 'plans' });
+
+function userRestatement(claim, passage) {
+  const plain = (s) => s.trim().replace(/\s+/gu, ' ').replace(/[.!。！]$/u, '');
+  const source = plain(passage).replace(/^(?:by the way,\s+|顺便(?:说|提)一下[，,]\s*)/iu, '');
+  const note = plain(claim);
+  if (/^我(?!们)/u.test(source) && note.startsWith('用户')) {
+    return !/[我你咱]/u.test(source.slice(1)) && source.slice(1) === note.slice(2);
+  }
+  const match = /^[Ii] (\w+) (.+)$/u.exec(source);
+  const predicate = /^(?:the )?user (.+)$/iu.exec(note)?.[1];
+  return Boolean(match && Object.hasOwn(USER_VERBS, match[1]) && !/\b(?:i|we|me|us|my|our|you|your)\b/iu.test(match[2])
+    && predicate === USER_VERBS[match[1]] + ' ' + match[2]);
+}
+
+function supportsClaim(claim, passage, fromUser) {
   const separator = claim.lastIndexOf(' » ');
   if (separator >= 0) {
     const heading = claim.slice(0, separator);
@@ -58,6 +76,8 @@ function supportsClaim(claim, passage) {
     claim = claim.slice(separator + 3);
   }
   if (normalizePassage(claim) === normalizePassage(passage)) return true;
+  if (fromUser && userRestatement(claim, passage)) return true;
+  if (/[?？]$/u.test(passage.trim()) && !/[?？]$/u.test(claim.trim())) return false;
   const replacement = REPLACEMENT.exec(passage);
   const source = replacement && !UNCERTAIN_RETIREMENT.test(passage) ? replacement[2] : passage;
   if (source === passage && RETIREMENT.test(passage) && !RETIREMENT.test(claim)) return false;
@@ -74,13 +94,32 @@ function supportsClaim(claim, passage) {
 }
 
 /** A quote can span sentences. Each new claim must still have one local source. */
-function supportsBoundClaim(claim, passage) {
-  if (!supportsClaim(claim, passage)) return false;
+function supportsBoundClaim(claim, passage, fromUser = false) {
+  if (!supportsClaim(claim, passage, fromUser)) return false;
   const parts = splitPassages(passage);
   return parts.some((_, start) => {
     let end = start + 1;
     while (end < parts.length && MEMORY_CAVEAT_RE.test(parts[end])) end++;
-    return supportsClaim(claim, parts.slice(start, end).join('\n'));
+    return supportsClaim(claim, parts.slice(start, end).join('\n'), fromUser);
+  });
+}
+
+function supportsCitedClaim(claim, passage, evidence) {
+  const text = claim.replace(/^Description: /u, '');
+  const recorded = /^(?:Recorded|记录于) (\d{4}-\d{2}-\d{2}) UTC[:：]\s*/u.exec(text);
+  if (!recorded || evidence.source === 'memory') return supportsBoundClaim(text, passage, evidence.eventType === 'user/message');
+  if (!Number.isSafeInteger(evidence.eventTime) || Math.abs(evidence.eventTime) > 8.64e15
+    || new Date(evidence.eventTime).toISOString().slice(0, 10) !== recorded[1]) return false;
+  return supportsBoundClaim(text.slice(recorded[0].length), passage, evidence.eventType === 'user/message');
+}
+
+/** Feedback only: a narrower citation might bind this edit. The actual write
+ * still resolves every quote against its complete passage in the frozen source. */
+export function canRefineCitation(claim, quotes) {
+  if (quotes.some((quote) => supportsBoundClaim(claim, quote))) return false;
+  return quotes.some((quote) => {
+    const parts = splitPassages(quote);
+    return parts.length > 1 && parts.some((part) => supportsBoundClaim(claim, part));
   });
 }
 
@@ -269,13 +308,17 @@ export async function reviewProofs({ diff, store, shadowStore, links, evidence }
     const changes = [...new Set([...added, ...removed])];
     for (const item of checked) {
       item.claims = [
-        ...added.filter((claim) => item.passages.every((passage) => supportsBoundClaim(claim.replace(/^Description: /u, ''), passage))),
+        ...added.filter((claim) => item.passages.every((passage) => supportsCitedClaim(claim, passage, evidence[item.index]))),
         ...removed.filter((claim) => item.passages.every((passage) => {
           const target = next ? '' : file;
           return supportsRemoval(claim, passage, target)
             && splitPassages(passage).some((part) => supportsRemoval(claim, part, target));
         })),
       ];
+      // A targeted edit may carry support for previously bound, unchanged
+      // claims. New or reworded claims need citations for this revision.
+      const bound = evidence[item.index].boundClaims;
+      if (bound) item.claims = item.claims.filter((claim) => bound.includes(claim));
     }
     const covered = new Set(checked.flatMap((item) => item.claims));
     const unsupportedClaims = preserved || descriptionOnly ? [] : changes.filter((claim) => !covered.has(claim));

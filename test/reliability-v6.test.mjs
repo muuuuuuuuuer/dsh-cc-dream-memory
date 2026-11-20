@@ -602,7 +602,7 @@ test('v6: store.search matches Chinese queries without spaces (single char + big
 
   const bigram = await store.search('跨会话');
   assert.ok(bigram.length >= 1, 'a 3-char Chinese query must match through its bigrams');
-  assert.equal(bigram[0].file, 'project_project_preference.md');
+  assert.equal(bigram[0].file, 'project_preference.md');
 
   const twoChar = await store.search('会话');
   assert.ok(twoChar.length >= 1, 'a 2-char Chinese query must match');

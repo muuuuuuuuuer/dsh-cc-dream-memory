@@ -10,11 +10,12 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import { createHash } from 'node:crypto';
-import { buildPaths, projectLayout, resolveMemoryRoot } from './paths.js';
+import { buildPaths, buildUserPaths, isInside, projectLayout, resolveMemoryRoot } from './paths.js';
 import { resolveIdentity } from './identity.js';
 import { MemoryStore } from './store.js';
 import { DreamEngine } from './dream.js';
 import { DreamAgent } from './dream-agent.js';
+import { SubagentTracker } from './dream-subagent.js';
 import { isDelegated } from './session-kind.js';
 import { ProjectState } from './state.js';
 import { withFileLock } from './lock.js';
@@ -102,6 +103,8 @@ export class MemoryRuntime {
   constructor(ctx, config) {
     this.ctx = ctx;
     this.baseConfig = config;
+    /** Host subagent runs; Dream's own children are kept apart. */
+    this.subagents = new SubagentTracker();
     this.homeDir = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
     /** Global runtime override file; toggles apply immediately, no reload. */
     this.overrideFile = path.join(resolveMemoryRoot(config.memoryRoot, this.homeDir), '.plugin-state.json');
@@ -129,6 +132,8 @@ export class MemoryRuntime {
     this.turnState = new Map();
     /** Last event seq each session has already offered to auto-extract. */
     this.extractCursors = new Map();
+    /** @type {Promise<{paths:object, store:MemoryStore}>|null} the one shared user-memory store */
+    this._userContext = null;
     /** @type {Set<(info:{sessionId:string, agent?:object}) => void>} */
     this.listeners = new Set();
     this.#dreamEngine = new DreamEngine({ runtime: this });
@@ -302,8 +307,27 @@ export class MemoryRuntime {
   }
 
   /** @returns {Promise<object|undefined>} project context for one live agent. */
+  /**
+   * Dream's children work in a shadow copy under the memory root. Neither they
+   * nor any other session there is a project with memory of its own.
+   */
+  isMemoryWorkspace(sessionId, cwd) {
+    if (this.subagents.isOwn(sessionId)) return true;
+    if (typeof cwd !== 'string' || cwd === '') return false;
+    return isInside(resolveMemoryRoot(this.config.memoryRoot, this.homeDir), path.resolve(cwd));
+  }
+
+  /** Whether this session is one of Dream's children (live or saved). */
+  async isDreamSession(sessionId) {
+    if (this.subagents.isOwn(sessionId)) return true;
+    const agent = this.ctx.get?.('agents')?.get?.(sessionId);
+    const cwd = agent?.session?.header?.cwd ?? (await this._persistedCwd(sessionId));
+    return this.isMemoryWorkspace(sessionId, cwd);
+  }
+
   async forAgent(agent) {
     if (!agent || typeof agent !== 'object' || typeof agent.id !== 'string') return undefined;
+    if (this.isMemoryWorkspace(agent.id, agent.session?.header?.cwd)) return undefined;
     const cached = this.bySession.get(agent.id);
     if (cached) {
       cached.agent = agent;
@@ -343,6 +367,8 @@ export class MemoryRuntime {
 
   /** Whether an agent may use the memory snapshot and write its own notes. */
   canWriteMemory(agent) {
+    // A Dream child works only on the shadow copy, whatever subagentMemory says.
+    if (this.subagents.isOwn(agent?.id)) return false;
     return !isDelegated(agent) || this.config.subagentMemory === 'shared' || this.agentMemoryEnabled(agent);
   }
 
@@ -384,6 +410,31 @@ export class MemoryRuntime {
     return promise;
   }
 
+  /**
+   * The cross-project user memory layer for one project context, or undefined
+   * when `userMemory` is `project` or the context is a subagent's own store.
+   * One store instance serves every project, so its writes serialize.
+   * @returns {Promise<{paths:object, store:MemoryStore}|undefined>}
+   */
+  async userContext(pctx) {
+    if (this.config.userMemory !== 'global' || !pctx || pctx.agentMemory === true) return undefined;
+    this._userContext ??= (async () => {
+      const paths = buildUserPaths({ memoryRoot: this.config.memoryRoot, homeDir: this.homeDir });
+      const store = new MemoryStore({ paths, getConfig: () => this.config });
+      await store.ensure();
+      return { paths, store };
+    })().catch((error) => {
+      this._userContext = null;
+      throw error;
+    });
+    return this._userContext;
+  }
+
+  /** Per-session switches (`use` loads memory and recall, `learn` allows auto-extract and Dream). */
+  sessionFlags(pctx, sessionId) {
+    return pctx?.state?.flagsOf?.(sessionId) ?? { use: true, learn: true };
+  }
+
   /** Resolve one agent once; `forAgent` dedupes concurrent first calls. */
   async _resolveAgent(agent) {
     let workspaceDir = '';
@@ -423,6 +474,7 @@ export class MemoryRuntime {
   /** @returns {Promise<object|undefined>} project context for a session id. */
   async forSessionId(sessionId, cwdHint) {
     if (typeof sessionId !== 'string' || sessionId === '') return undefined;
+    if (this.isMemoryWorkspace(sessionId, cwdHint)) return undefined;
     const cached = this.bySession.get(sessionId);
     if (cached) return cached;
     const pending = this.agentPromises.get(sessionId);
@@ -442,7 +494,7 @@ export class MemoryRuntime {
       warn('agents.get', error);
     }
     const cwd = cwdHint || (await this._persistedCwd(sessionId));
-    if (!cwd) return undefined;
+    if (!cwd || this.isMemoryWorkspace(sessionId, cwd)) return undefined;
     const projectContext = { ...(await this.storeFor(cwd)), workspaceDir: cwd, sessionId };
     this.bySession.set(sessionId, projectContext);
     return projectContext;
@@ -583,6 +635,11 @@ export class MemoryRuntime {
     return this.#dreamAgent.cancel(pctx, runId);
   }
 
+  /** Each conversation of this project and whether Dream has reviewed it. */
+  async dreamCoverage(pctx) {
+    return this.#dreamAgent.coverage(pctx);
+  }
+
   async estimateDream(pctx, options = {}) {
     return this.#dreamAgent.estimate({ pctx, ...options });
   }
@@ -612,8 +669,10 @@ export class MemoryRuntime {
     const projectContext = pctx ?? (agent ? await this.forAgent(agent) : undefined);
     if (!projectContext) return { ok: false, error: 'no-project' };
     try {
+      const consumed = projectContext.state.snapshot().shadowPending?.corrected;
       const result = await this.#dreamEngine.switchShadow({ pctx: projectContext, agent: agent ?? projectContext.agent, reject, defer, confirm, runId });
       if (result?.ok === true) {
+        await projectContext.state.clearCorrected(consumed).catch((error) => warn('clearCorrected', error));
         try {
           this.invalidateAllInjections('dream-switch');
         } catch {

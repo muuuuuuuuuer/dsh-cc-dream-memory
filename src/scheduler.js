@@ -4,6 +4,8 @@
  */
 import { runAutoExtract } from './auto-extract.js';
 import { dreamReadiness } from './readiness.js';
+import { buildFocus } from './dream-focus.js';
+import { listRunManifests } from './dream-run.js';
 import { isDelegated } from './session-kind.js';
 
 function warn(scope, error) {
@@ -43,7 +45,7 @@ export function registerScheduler(ctx, runtime) {
     const work = previous.catch(() => {}).then(async () => {
       const extraction = maybeAutoExtract(projectContext, sessionId, at, session);
       if (extraction) await extraction.catch((error) => warn('auto extract', error));
-      await maybeAutoDream(projectContext).catch((error) => warn('auto dream', error));
+      await maybeAutoDream(projectContext, sessionId).catch((error) => warn('auto dream', error));
     });
     projectQueues.set(key, work);
     runtime.track(work.finally(() => {
@@ -51,7 +53,7 @@ export function registerScheduler(ctx, runtime) {
     }));
   }
 
-  async function maybeAutoDream(projectContext) {
+  async function maybeAutoDream(projectContext, sessionId) {
     // `dreamReadiness` trusts the pending record; one whose copy is gone must
     // not be able to block automatic runs for good.
     await projectContext.state?.dropStaleShadowPending?.();
@@ -59,7 +61,23 @@ export function registerScheduler(ctx, runtime) {
     // `dreamReadiness` throttles on `lastScanAt`, so the attempt has to stamp it;
     // otherwise a run that ends without a result is restarted on the next turn.
     await projectContext.state?.noteScan?.();
-    const run = await runtime.startDream(projectContext, { trigger: 'auto' });
+    const query = ctx.get?.('sessionQuery');
+    const canReviewDialogue = typeof query?.readSession === 'function' && typeof query?.filterSessions === 'function';
+    if (canReviewDialogue) {
+      const [latest] = await listRunManifests(projectContext.paths, 1);
+      if (latest?.checkpoint && latest.manifest.trigger === 'auto') return;
+    }
+    const focus = await buildFocus(projectContext, runtime.config);
+    if (focus.files.length === 0) {
+      const ids = (projectContext.state?.snapshot()?.sessionsSince ?? []).map(({ id }) => id)
+        .filter((id) => projectContext.state.flagsOf(id).learn !== false);
+      const sessions = ids.length && canReviewDialogue ? await query.filterSessions([{ kind: 'id', values: ids }]) : [];
+      if (sessions.length === 0) {
+        await projectContext.state?.markSkipped?.('no-focus');
+        return;
+      }
+    }
+    const run = await runtime.startDream(projectContext, { trigger: 'auto', focus: focus.text, sessionId });
     if (run.started && (await run.done)?.skipped) await projectContext.state.markSkipped();
   }
 
@@ -73,6 +91,8 @@ export function registerScheduler(ctx, runtime) {
     if (config.enabled === false || !config.autoMemoryEnabled || !config.autoExtract || disposed) return;
     if (typeof sessionId !== 'string' || sessionId === '') return;
     if (extracting.has(sessionId)) return;
+    // `/memory session learn off`: nothing is mined from this conversation.
+    if (projectContext.state?.flagsOf?.(sessionId).learn === false) return;
     const turn = runtime.noteTurnEnd(sessionId, at);
     if (turn.wrote) return;
     const every = Math.max(1, Number(config.autoExtractEveryTurns) || 1);

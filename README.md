@@ -145,8 +145,11 @@ What is different here:
 |---|---|
 | Consolidation | A validated copy you can switch to or discard, with backups and undo |
 | New facts from Dream | Must quote the transcript |
-| Automatic Dream | Off by default |
-| Recall | Titles, descriptions, and current note text rank candidates. One model call per turn selects up to 5 files, and `autoRecallMaxFiles` caps attachments (default 3). |
+| Automatic Dream | Off by default. When on, it runs only with a named target: notes you corrected, notes whose sources changed, recalled notes, then archive candidates |
+| Recall | Titles, descriptions, and current note text rank candidates. One model call per turn selects up to 5 files, and `autoRecallMaxFiles` caps attachments (default 3). The chat shows a row with the attached files and a **Not relevant** action per file. |
+| Sources | A note can list the repository files it depends on (`sources`). The host checks they still exist; recall skips a note whose sources are gone |
+| User memory | Type `user` notes are shared by every project on this machine (`userMemory: global`, default); everything else stays per project |
+| Per conversation | `/memory session use off` loads and recalls nothing; `/memory session learn off` keeps it out of auto-extract and Dream |
 | Auto-extract | On by default. After the mainline turn ends, a bounded 5-turn in-process tool loop reads only events after the stored cursor and writes through `memory_save` (duplicate/conflict/secret gates still apply) |
 | Subagents | One `subagentMemory` policy: `off` (default), `shared`, or `own` per-agent directories |
 
@@ -164,8 +167,24 @@ Look elsewhere if you need:
 - Memories stay on your machine, under `$DSH_HOME/cc-memory/`. The plugin has no telemetry.
 - The recall model receives candidate descriptions and short matching excerpts. Selected notes go to your model provider as context for the answer.
 - Dream sends session text and memories to the provider you configured. The synthetic three-short-session demo used 6,500 to 11,000 tokens. One real-project batch used **149,984 reported total tokens and about 263 seconds**, then applied two memory writes and one index update. These are different workloads, not a typical-use estimate. See the [aggregate observations](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/REAL-WORKSPACE-OBSERVATIONS-2026-11-09.md).
-- Before starting a run, use `/memory dream estimate`, or review the input estimate shown when starting Dream in the interface. Estimation reads the input without calling the model. Starting a run calls the model. Actual total usage can exceed the rough input estimate. `dreamMaxTotalTokens: 0` means unlimited; set an explicit budget and `dreamCostMode: block` if you need the existing cost guard.
+- `/memory dream estimate` shows the rough input size. Dream runs until the selected work is checked and records provider-reported usage. Use `/memory dream off` to disable automatic runs, or `/memory dream cancel <runId>` to stop an active run.
 - Writes that match common key formats are refused. This is a heuristic and will not catch every secret. See [SECURITY.md](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/SECURITY.md).
+
+## 0.25.0 Dream runs as host subagents
+
+- Each Dream run uses one `standard`-preset host subagent for up to `dreamMaxTasks` sessions (default 4). The worker receives the full task rules each time and reads redacted source pages through scoped tools. The plugin checks and checkpoints each task's draft in the shadow copy, which you can review before switching. Dream requires host subagents and an open conversation in the project.
+- `dreamYieldToSubagents` (default off) waits until your own subagents finish, then runs to the end.
+- The Dream tab lists the conversations of the current workspace with a bar: dreamed, waiting for your switch, new turns since, partly dreamed, not dreamed, learning off.
+
+## 0.24.0 Corrections, sources and a shared user layer
+
+- A correction edits the matching passage of the existing note in the same session. The automatic Dream then looks only at named targets: notes you corrected, notes whose `sources` changed, recalled notes and archive candidates. With none, it skips.
+- The chat shows which memories recall attached. Expand the row to read them; **Not relevant** keeps a note out of the rest of that conversation.
+- `sources` (repo-relative paths, optionally `path#symbol`) anchor a note to files. The host checks them without a model call.
+- `userMemory: global` (default) keeps type `user` notes in one directory for all projects. `project` restores the old layout.
+- `/memory session use|learn on|off`, `autoExtractSkipExternal`, usage-ordered index when `MEMORY.md` is over budget, and archive hints (`archiveHintDays`, default 60). Nothing is deleted automatically.
+
+The recall row is registered through the Chat event/slot API. It has been checked in unit tests and in the desktop app.
 
 ## 0.23.1 Project history and desktop reliability
 

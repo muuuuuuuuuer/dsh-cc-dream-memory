@@ -161,7 +161,8 @@ test('a live edit to a page Dream rewrote still blocks the run', async (t) => {
     },
   });
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-edit' });
-  assert.equal(result.error, 'conflict');
+  // Every run keeps a checkpoint, so the conflict ends it as a checkpoint conflict.
+  assert.equal(result.error, 'checkpoint-conflict');
 });
 
 test('shadow deletes and rewrites stay out of the live trash and history', async (t) => {

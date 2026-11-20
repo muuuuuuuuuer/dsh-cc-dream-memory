@@ -1208,6 +1208,17 @@ test('client: two windows share the edit baseline and a stale save keeps its dra
   assert.equal(sent[0].body.content, 'x', 'the draft body is what gets submitted');
 });
 
+test('Dream review distinguishes a matched quote with unsupported claims from an absent source', async () => {
+  const files = ['release.md', 'style.md'];
+  const pending = { dir: '/tmp/shadow/B', runId: 'run-9', files: files.map((file) => ({ file, action: 'added' })),
+    proofs: files.map((file) => ({ file, kind: 'missing', unsupportedClaims: ['Needs review.'] })),
+    evidence: [{ file: files[0], sessionId: 's1', seq: 4, verified: true }] };
+  const ui = await dreamTabHarness({ pending });
+  const text = collectText(ui.render().tree);
+  assert.match(text, /Source text was found/u);
+  assert.match(text, /No checked source/u);
+});
+
 test('client: each change of a dream result is passed or rejected', async () => {
   const pending = {
     dir: '/tmp/shadow/B',

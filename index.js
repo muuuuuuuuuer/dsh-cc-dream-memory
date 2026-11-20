@@ -57,6 +57,7 @@ export function createMemoryPlugin(ctx, rawConfig) {
     mount('slash commands', () => registerCommands(ctx, runtime));
     mount('dream scheduler', () => registerScheduler(ctx, runtime));
     mount('web api', () => registerHttpApi(ctx, runtime));
+    mount('subagent tracker', () => runtime.subagents.attach(ctx));
 
     // Prewarm contexts for agents that already exist when this plugin loads
     // through HMR (their `agent/created` event already fired). Tracked so

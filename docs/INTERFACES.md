@@ -36,9 +36,13 @@
   lockTtlMs: 3600000,
   dreamAnalyzerProvider: '',        // 与 dreamAnalyzerModel 成对；都填才指定模型
   dreamAnalyzerModel: '',
-  dreamTimeoutMs: 600000,   // 单次 Dream 工具循环总超时
   dreamAllowDelete: true,
+  dreamMaxTasks: 4,         // 子智能体 Dream：一次最多几个任务（一个会话一个），其余留给下次
+  dreamYieldToSubagents: false, // true: 用户子智能体在跑时先等待；开始后跑完不停
   autoExtract: true,        // 每 turn 直接写入；无 Inbox staging
+  autoExtractSkipExternal: false, // true: 窗口里有 mcp__* / web_search / web_fetch 工具调用则跳过
+  userMemory: 'global',     // 'global'|'project'：type user 笔记存 <memoryRoot>/user/memory，所有项目共享
+  archiveHintDays: 60,      // 这么久没读没召回的笔记列为归档候选（只提示，不删除）
   tools: true,
   commands: true,
   ui: true,
@@ -56,6 +60,7 @@ export function defaultMemoryRoot(homeDir): string        // <homeDir>/cc-memory
 export function buildPaths({ memoryRoot, homeDir, workspaceDir }): Paths
 // Paths = { root, projectRoot, projectDir, memoryDir, indexFile, stateFile, lockFile,
 //           changelogFile, dreamsDir, pendingDir }
+export function buildUserPaths({ memoryRoot, homeDir }): Paths   // <root>/user：用户层，memoryDir = <root>/user/memory
 ```
 所有路径均为绝对路径；`memoryDir` 必须位于 `root` 内。
 
@@ -238,13 +243,19 @@ export class DreamAgent {
 ```
 
 - 唯一路径：`runtime.dream()` 始终委托 `DreamAgent`；旧 `DreamPipeline`/`dream-input/analyzer/merge/verifier` 已删除。
-- 输入：prompt 只含 `MEMORY.md` 头部、笔记元数据、候选 session id 列表和 focus；不预推任何 topic 正文或 transcript。
-- 工具：`memory_index`、`memory_read`、`memory_search`、`memory_write`（可带 `citations:[{session_id,seq,quote}]`）、`memory_delete`、`session_list`、`session_search`、`session_read`。`session_search` 用 `sessionQuery.searchEvents`，`session_read` 用 `sessionQuery.readEvent`；只允许候选 session。
-- 写入：全部只写 `.dreams/shadow/`；只有 `memory_write` 的 citation 算证据（session/seq/quote），搜索命中和读取窗口不再记录。每条 citation 用 `readEvent({seq, before:0, after:0})` 回读该事件，引用原文（忽略大小写和空白，至少 8 字符）在事件文本里才 `verified:true`，否则工具结果提示模型、审阅界面标“会话里找不到这段引用”。
-- 运行：`runToolLoop` 最多 14 轮、每轮 2,000 输出 token；总超时 `dreamTimeoutMs`。锁 `<projectDir>/.consolidate-lock`（`waitMs:2000`、`strict`），已有待切换副本时拒绝新运行。
+- 执行（0.25）：每轮启动一个子智能体，依次处理最多 `dreamMaxTasks` 段任务。父级是当前项目的在线对话。插件在 `agent/created` 时挂载该子会话专用的 Dream 工具并限制继承工具。支持 `dreamYieldToSubagents` 等待用户子智能体结束后再启动。
+- 整段只有可识别的问候、致谢，或者仅含命令、工具事件且没有对话文本时，普通 Dream 在本地结算。全部入选会话都符合条件时，省去影子副本和模型调用。后续有新发言时从原进度继续。显式 `--memory-only` 仍可整理已有笔记。
+- 每段任务重发规则和 focus。短会话直接读原文。后续单页会话的交接回复能放进 8,000 个 UTF-16 码元时直接附上原文，宿主截断交接时可以补读。
+- 普通 Dream 对至少三页的会话才考虑两层阅读。若可筛页数超过概览调用次数、可省原文字符也超过概览字符，子代理通过 `dream_read_source(view="overview")` 每次看最多四页的脱敏摘录、序号和已有时间戳。可能有用或拿不准的页通过同一工具按页读原文。未完整展示用户发言、或助手摘录省略部分命中决定、纠正或执行结果线索时，标为 `requiresDetail` 并细读。显式指定 focus 的任务逐页看原文。
+- `dream_submit_task.skip_pages` 显式列出已经粗看、判定没有可复用信息的页。只有概览完整交付才可筛过相应页。每页都须细读或显式筛过才能结算整段。采用概览的任务提交会话证据时，引用必须能在已交付的原文中定位。运行记录按任务区分 `rawPagesRead`、`pagesScreened` 和 `totalPages`。有具体候选事实时才用 `dream_list_notes` 和 `dream_read_note` 核对已有笔记。
+- 同一会话明确派发多张带编号的任务卡时，概览标出每张卡的首次要求、后续要求和最近回复。普通执行播报按卡合并，用户裁定与助手提到的例外保留在概览或细读页。测试计数、临时阻塞、提交号与队列状态优先留在项目进度文件中。
+- 原文页按事件标注 UTC 日期。需要注明观察时间时，`记录于 YYYY-MM-DD UTC：` 或 `Recorded YYYY-MM-DD UTC: ` 前缀由引用事件的时间核对，其余陈述继续核对引文。事件日期缺失时可省略日期。
+- 完成会话前，宿主在内存中预检整批草稿。若存在未获支持的陈述，子代理可删减、补证或提交空改动，整批可修订一次。仍需人工判断的内容沿用原审核流程。界面区分找不到已核对的引文和已找到原文但陈述仍需确认两种情况。
+- 写入：`dream_submit_task` 提交当前任务及引用，插件通过现有写入检查更新影子副本并保存已完成任务。任务返回下一段说明，整轮才用 `structured_output` 结束。意外中断后从已保存的任务恢复。共享用户记忆使用自己的保存入口。
+- Dream 按已选范围完成任务，记录用量和耗时。模型调用采用供应商的请求限制。锁为 `<projectDir>/.consolidate-lock`，已有待切换副本时暂停新运行。
 - 收尾：`diffShadow({base})` 只算 agent 相对快照的改动（运行期间或之后 live 新建的笔记不算删除）；`shadowConflicts` 只对 agent 改过的页面生效 → `state.setShadowPending`；无差异返回 `{skipped:true, skipReason:'nothing-new'}`；人工 `switch`/`discard`/`undo` 仍由 `dream-shadow.js`/`dream.js` 执行，`switch` 同样按 `pending.base` 求差。
 - 副本隔离：shadow 的回收站在 `.dreams/shadow/.trash`，shadow 写入不记 live `.history`。
-- 复查标记：循环正常结束时，所有候选会话标记为已复查到提供给模型的 `lastSeq`（无差异时也标记）；被轮数上限截断时只标记实际读过的会话（未读到末尾记 `partial`）。会话增长超过标记后重新入选，模型看到 `new events after seq N`。
+- 宿主确认当前范围的每页都有处理结果后保存会话进度。会话增长超过标记后可重新入选。`runtime.dreamCoverage(pctx)` / 状态里的 `dreamTasks` 列出本工作区每个对话的状态：`done`/`new`/`review`/`partial`/`todo`/`excluded`。
 - 否决：`pending.proposals` 为每个改动文件一行可读描述；`discard`/部分否决写入 `dreamRejected`，下次 Dream 的 prompt 列出最近 20 条，要求无新证据不得再提。
 - 运行状态：`<runId>/manifest.json` 记录 `status`（running/ready/failed/cancelled/skipped）、`stage`、模型、用量、最近错误。
 - 证据：核对结果只做标记，不阻止切换；证据随 pending 交给人工，UI/`dreamDiff` 展示 `session #seq — quote` 和 `verified`。每页判定记作 `citation`、`preserved`、`description` 或 `missing`：事实不变而只改 `description` 记作 `description`，与 `preserved` 一样无需引文。
@@ -255,7 +266,7 @@ export class DreamAgent {
 export function registerCommands(ctx, runtime): () => void
 export function parseCommandLine(rawInput): { verb, args }   // 纯函数，便于测试
 ```
-`/memory` 子命令：`json`、`list`、`show <file>`、`index`、`on`/`off`、`dream on|off`、`dream status [runId]`、`dream cancel [runId]`、`dream run [--focus]`、`dream switch`、`dream discard`、`dream undo`、`delete <file>`。`/remember [--type=..] [--scope=..] <text>`。
+`/memory` 子命令：`session [status|use on|off|learn on|off]`、`recall dismiss <file> [--scope user]`、`json`、`list`、`show <file>`、`index`、`on`/`off`、`dream on|off`、`dream status [runId]`、`dream cancel [runId]`、`dream run [--focus]`、`dream switch`、`dream discard`、`dream undo`、`delete <file>`。`/remember [--type=..] [--scope=..] <text>`。
 - 返回 `{kind:'success', text}` 或 `{kind:'error', text}`；`json` 返回可被 `JSON.parse` 的文本。
 - 开关状态持久化：`/memory on|off` 与 `/memory dream on|off` 需要写回插件配置。用 `ctx.fiber.entry` + `ctx.get('configEditor')` 按 host-plugin.md 的方法改行 config；若 editor/entry 不可用，返回 error 说明「cannot persist」。改完提示「takes effect after plugin reload」。
 - `/memory dream run` 调用 `runtime.dream({agent, force:true, trigger:'manual', focus})`；`switch` 调 `runtime.switchDream({agent})`，`discard` 调 `runtime.discardDream({agent})`。JSON 输出用于 UI。

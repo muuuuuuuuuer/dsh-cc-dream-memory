@@ -29,17 +29,22 @@ export const DEFAULTS = Object.freeze({
   autoExtractMaxItems: 5,
   autoExtractMaxChars: 12_000,
   autoExtractTimeoutMs: 60_000,
+  // true: skip a window whose tool calls reached outside the project (mcp__*, web search/fetch).
+  autoExtractSkipExternal: false,
   autoExtractProvider: '',
   autoExtractModel: '',
   // One policy for subagent memory: off (no injection, no writes), shared
   // (project store, read/write), own (agents/<preset>/memory, isolated).
   subagentMemory: 'off',
   agentMemoryPresets: [],
+  // 'global' keeps type user notes in one directory shared by every project on this machine.
+  userMemory: 'global',
+  // Notes unread and unrecalled this long are listed as archive candidates (never deleted).
+  archiveHintDays: 60,
   indexMaxLines: 200,
   indexMaxBytes: 25 * 1024,
   autoDreamEnabled: false,
-  /** One Dream path: the model is an agent with session/memory tools. */
-  /** Wall-clock ceiling for one Dream run; the agent loop is abortable. */
+  /** Legacy configuration key accepted for older settings files. */
   dreamTimeoutMs: 10 * 60 * 1000,
   minHours: 24,
   minSessions: 5,
@@ -49,6 +54,10 @@ export const DEFAULTS = Object.freeze({
   dreamAnalyzerModel: '',
   dreamAllowDelete: true,
   dreamMaxFileChars: 100_000,
+  /** Most tasks one Dream worker processes per run; the rest wait for the next run. */
+  dreamMaxTasks: 4,
+  /** true: a subagent Dream waits until no user subagent is running, then runs to the end. */
+  dreamYieldToSubagents: false,
   tools: true,
   commands: true,
   ui: true,
@@ -57,6 +66,7 @@ export const DEFAULTS = Object.freeze({
   maxContentBytes: 128 * 1024,
   rulesMaxChars: 8000,
   secretScan: 'warn',
+  /** Legacy Dream cost settings accepted for older settings files. */
   dreamMaxTotalTokens: 0,
   policyDuplicateThreshold: 0.82,
   policySuggestThreshold: 0.55,
@@ -148,6 +158,8 @@ export function resolveConfig(raw, { env } = {}) {
     dreamAnalyzerModel: provider ? model : '',
     dreamAllowDelete: bool(input.dreamAllowDelete, DEFAULTS.dreamAllowDelete),
     dreamMaxFileChars: integer(input.dreamMaxFileChars, DEFAULTS.dreamMaxFileChars, { min: 1000, max: 500_000 }),
+    dreamMaxTasks: integer(input.dreamMaxTasks, DEFAULTS.dreamMaxTasks, { min: 1, max: 20 }),
+    dreamYieldToSubagents: bool(input.dreamYieldToSubagents, DEFAULTS.dreamYieldToSubagents),
     recallMode,
     recallProvider: recallPair ? recallProvider : '',
     recallModel: recallPair ? recallModel : '',
@@ -160,10 +172,13 @@ export function resolveConfig(raw, { env } = {}) {
     autoExtractMaxItems: integer(input.autoExtractMaxItems, DEFAULTS.autoExtractMaxItems, { min: 1, max: 10 }),
     autoExtractMaxChars: integer(input.autoExtractMaxChars, DEFAULTS.autoExtractMaxChars, { min: 1000, max: 200_000 }),
     autoExtractTimeoutMs: integer(input.autoExtractTimeoutMs, DEFAULTS.autoExtractTimeoutMs, { min: 1000, max: 300_000 }),
+    autoExtractSkipExternal: bool(input.autoExtractSkipExternal, DEFAULTS.autoExtractSkipExternal),
     autoExtractProvider: extractPair ? extractProvider : '',
     autoExtractModel: extractPair ? extractModel : '',
     subagentMemory: choice(input.subagentMemory, DEFAULTS.subagentMemory, ['off', 'shared', 'own']),
     agentMemoryPresets: agentPresets,
+    userMemory: choice(input.userMemory, DEFAULTS.userMemory, ['global', 'project']),
+    archiveHintDays: integer(input.archiveHintDays, DEFAULTS.archiveHintDays, { min: 1, max: 3650 }),
     tools: bool(input.tools, DEFAULTS.tools),
     commands: bool(input.commands, DEFAULTS.commands),
     ui: bool(input.ui, DEFAULTS.ui),

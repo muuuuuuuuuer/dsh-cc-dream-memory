@@ -24,11 +24,12 @@
         }
       ],
       "test": {
-        "task": "回答：这个项目当前的内部代号是什么？",
+        "task": "回答：这个项目当前的内部代号是什么？它能写进 README 吗？",
         "materials": "只能依据你记得的项目背景回答。",
         "rubric": {
           "requiredFacts": [
-            "Aurora"
+            "Aurora",
+            "不要写进 README"
           ],
           "forbiddenFacts": [
             "编造其他代号"
@@ -38,10 +39,16 @@
               "kind": "includes",
               "value": "Aurora",
               "label": "给出代号"
+            },
+            {
+              "kind": "regex",
+              "value": "(不能|不要|不应|不可|不得|禁止|不写|不放|别)[^。\\n]{0,12}README|README[^。\\n]{0,12}(不能|不要|不应|不可|不得|禁止|不写|不放|别)|(not|never|don't|do not|shouldn't|must not)[^.\\n]{0,40}README|README[^.\\n]{0,40}(not|never|must not)",
+              "label": "说明不能写进 README"
             }
           ],
           "semantic": [
             "回答 Aurora",
+            "说明 Aurora 不能写进 README，只在内部沟通使用",
             "没有编造仓库中不存在的依据"
           ],
           "boundaryFailures": [
