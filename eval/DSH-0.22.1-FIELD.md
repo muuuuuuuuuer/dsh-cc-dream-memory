@@ -64,3 +64,31 @@ The NIXEL release identifier is TORCH-8746.
 | 发布命令纠正 | 默认命令改为 pnpm release，保留 staging 的 npm release | 两个命令及其适用范围均正确 | 46,070 |
 
 开放整理的 `dev-09-dream-session` 和 `dev-02-correction` 仍产生过带未支持标题、解释或改写的草稿。证据检查拒绝应用，这两次 C 组不可比较。上述两个成功用例用于验证基于证据的落盘链路。条件交换和跨句拼接的拒绝路径另有自动回归覆盖。
+
+## 0.24.0 桌面实测
+
+2026-11-18，Windows 上的 DSH 0.2.2-rc.3 桌面版，隔离的 DSH_HOME 和窗口配置，profile 只启用 base、web-app 和本插件，模型为 DeepSeek-V4.1-Flash。测试仓库只有 `src/server.js`（含 `DEV_PORT = 4317`）。预置三条项目笔记和一条用户层笔记（要求回答以 FIELDOK 结尾）。
+
+- **用户层**。新会话问开发端口，回答「4317（定义在 src/server.js）FIELDOK」。用户层索引注入生效。端口来自索引简介，选择器没有附加笔记，metrics 召回次数为 0，符合 0.23.1 的选择规则。
+- **召回行**。答案只在正文里的发布检查清单问题答对了（`npm run smoke -- --region=eu-west-3 --keep=7`），会话日志里有对应的 `plugin:cc-memory-recall` 消息，但聊天里看不到召回行。用控制台诊断确认：定义注册、匹配、构建和渲染都执行了，渲染出的行在已完成轮次的过程折叠组里，带 `hidden`。原因是节点没有声明 `groupTree`，Chat 把 Step 级节点收进过程组。给节点加 `groupTree: 'turn'` 后，行显示在回答上方：「已召回 1 条记忆: project_release_checklist.md」，展开可见正文。点「不相关」后按钮变为「已标记为不相关」，metrics 记录 `dismissed: 1`，对应笔记 `dismissals: 1`。
+- **会话开关**。`/memory session status` 输出两个开关。在新会话先执行 `/memory session use off`，状态文件记录 `use: false`；同一会话问端口，回答「不知道」，没有 FIELDOK。
+- **记忆面板**。深色主题下列表和标签显示正常。面板标题显示 `default-workspace`，原因是测试 profile 固定了 `projectId`，所有工作区共用一个项目；未在默认配置下复查。
+- **未测**。出处失效笔记的 `memory_read` 提示、自动 Dream 的焦点清单和 `learn off` 只有自动测试覆盖，本次没有在窗口里触发。
+
+## 0.25.0 桌面实测
+
+2026-11-18，同一个隔离的 DSH 0.2.2-rc.3 桌面实例，去掉了测试 profile 固定的 `projectId`，记忆面板因此按工作区区分（标题为 `dsh-0240-fixture`）。该工作区有 0.24.0 实测留下的两个对话。模型为 DeepSeek-V4.1-Flash。
+
+- **任务列表**。Dream 页显示「本工作区的 Dream 任务」：进度条、按状态计数、全部/未整理/已整理筛选和对话列表。行标题起初只显示「对话 session-」，因为会话列表记录里没有标题；改为读宿主 `sessionQuery.readTitleSnapshots` 后显示对话标题。
+- **子智能体 Dream**。估算后开始，标题栏显示子智能体数从 1 变为 2，两个 `standard` 预设子智能体依次完成，结构化输出被宿主接受（`done:true` 和改动列表），两个会话均检查点。子会话日志里有插件写入的 `sandbox/mode: workspace-write`（另一条来自父会话继承）和 `approval/policy: never`；子智能体读了仓库文件，只用 write/edit 写影子副本。用量从子会话的 `assistant/message` 读出：输入 22,342，输出 9,106，缓存读取 261,376，合计 292,824 token。原先的估算 30,000 偏低约十倍，已按实测改为每个任务约 140k token。
+- **证据**。第一次任务说明没有要求照抄原句，子智能体用英文改写事实，3 处改动全部「没有可核对的来源」。加上「每个事实照抄来源原句、原语言、一行一句」和 `<type>_<topic>.md` 命名后重跑，`project_dev_server_port.md` 和 `project_release_smoke.md` 通过证据检查，`feedback_direct_answers.md` 仍无来源。
+- **部分切换**。应用通过的两项后，两个对话都回到「未整理」：未绑定证据的暂缓改动会让整轮的会话都保持未审阅。现在待审副本记录每个文件来自哪个会话的任务，部分切换只保留暂缓改动所属的会话；这一点有自动测试，窗口里没有再现同样的组合。之后再跑一轮，子智能体复查两个对话后没有改动（约 113,597 token），任务列表变为「已整理 2」。截图见 `eval/dream-tasks-0250.jpg`。
+- **未测**。`dreamYieldToSubagents` 的等待、宿主并发名额满时的重试、子智能体中途失败后的续跑，只有自动测试覆盖。
+
+### 0.25.0 修正后复测
+
+用户在真实项目里跑 Dream 时，一个子智能体（Dream 1/4）用了 2.6M token、40 步、约 8 分钟：它自己解压会话日志、读插件源码和状态文件、研究复查规则；来源文件 1000 行，含工具结果原文。另有三处问题：用户在宿主里暂停子智能体后 Dream 卡住；插件为子智能体的工作目录（影子副本路径）建了一个空的记忆项目，子会话的记忆页一直在加载；仓库里 `eval/runs/` 下的旧评测会话被当成项目会话挑进 Dream。
+
+修正：子智能体只留 read/write/edit/glob/grep，来源文件只保留对话，任务说明限定读写范围；子回合结束 15 秒仍无结果按中断处理；记忆根目录下的会话不建项目；git 忽略目录里的会话不进 Dream。在隔离实例里用新对话（一句交接文档格式偏好）复测：4 步，调用只有 read、glob、write、structured_output，21,248 token，9.7 秒；第二次 30,504 token，15.8 秒。来源文件 9 行。
+
+复测还发现主对话保存记忆时把 `feedback_handover_doc_format` 存成 `feedback_feedback_handover_doc_format.md`（类型前缀重复），已修正。Dream 子智能体把这条笔记改成用户原句，去掉的 Why/How 行没有来源，审阅时需要人工确认，符合证据规则。
