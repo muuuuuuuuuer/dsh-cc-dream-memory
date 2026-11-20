@@ -1,5 +1,70 @@
 # Changelog — dsh-cc-dream-memory
 
+## 0.26.0
+
+- Dream screens long conversations with a compact overview and opens the source pages needed for decisions or evidence. For conversations organized around numbered task cards, the overview points to each card's first request, follow-ups, and latest reply.
+- Short conversations can pass their source page directly to the next task. Batches containing only recognized greetings or sessions without dialogue can finish locally without starting a subagent.
+- Dream uses source-event dates for historical observations and checks those dates against the cited event. Project progress files remain the source for test counts, commit IDs, and temporary blockers.
+- The worker can add a fact or replace a specific passage in an existing note. The host checks the batch before writing and gives the worker one chance to narrow or correct unsupported changes. The review panel shows when source text was found but some claims still need confirmation.
+- Dream gives unreviewed conversations priority over deferred ones. Automatic runs wait for new activity before reconsidering a deferred conversation.
+
+## 0.25.0
+
+- Dream uses one `standard` host subagent per run. Each task repeats the full rules, reads redacted source pages through a scoped tool and submits proposed note edits with citations. The plugin checks and checkpoints each task before passing on the next one. A paused run can resume from its saved work.
+- The in-plugin model loop and its session tools (`session_search`, `session_read`, `memory_index`, `memory_search` for Dream) are removed. Without the host subagent service or a live conversation of the project to parent the children, Dream skips with `subagent-unavailable`; a paused run stays resumable. Dream now needs the host to read whole transcripts (`sessionQuery.readSession`).
+- `dreamMaxTasks` (default 4) caps how many tasks the child processes in one run. At the host's activation limit Dream waits for a subagent to end and retries. A cancelled run stops waiting at once.
+- `dreamYieldToSubagents` (default off): Dream starts only once no subagent the user started is running, then runs to the end even if the user starts more. Off, Dream takes a slot like any other subagent.
+- Dream children cannot use the memory tools or receive memory injection, whatever `subagentMemory` says. Their token usage is read from the child session and added to the run record.
+- The Dream tab shows the conversations of the current workspace: a bar and a list of which ones Dream reviewed, which wait for your switch, which went on since, which are not dreamed yet, and which are kept out with `learn off`. The status payload carries it as `dreamTasks`. Conversations of other workspaces are not listed; memory and the list follow the same project identity.
+- A pending copy records which session's task changed each file. When a deferred change has no bound evidence, a partial switch now holds only those sessions and settles the rest, instead of holding every session of the run.
+- The child brief asks for source sentences copied verbatim, one per line in their original language, and `<type>_<topic>.md` names. In the desktop check, the first brief produced English paraphrases that bound no quote; with this one two of three notes passed the evidence check.
+- The worker uses scoped tools to read the current task's source and the shadow notes. The plugin tracks which source pages it delivered and does not export raw transcript copies.
+- A child paused or interrupted from the host no longer leaves Dream waiting: 15 seconds after its turn ends without a result, the task counts as aborted and the run pauses (resumable). A cancelled run waits at most 5 seconds for the host to tear a child down.
+- Dream children (and any session whose directory is inside the memory root) get no memory project: the plugin used to open one for the shadow-copy path. The memory tab in such a session says it is a Dream task session.
+- Conversations started in a git-ignored folder of the project (for example `eval/runs/`) are not Dream tasks; Dream and the task list leave them out.
+- A note saved with a name that already carries its type (`feedback_handover`) keeps one prefix instead of `feedback_feedback_handover.md`.
+- The Dream estimate uses a rough 30k tokens per task based on earlier measurements.
+- A task that submits `done:false` with drafts ends the batch: no later task is handed out, so no later task's checkpoint can carry its unchecked drafts. With finished tasks before it the run pauses (`unchecked-draft`) and resumes from the last finished task; alone, its drafts reach review as an incomplete review. A `done:false` without drafts still moves on, and its session stays unreviewed.
+- `dreamAnalyzerProvider` / `dreamAnalyzerModel`, when both are set, are passed to the child as its model route; otherwise the child uses the conversation's model.
+
+## 0.24.0
+
+- Corrections land in the live note. The instructions and the auto-extract prompt tell the model to fix the matching passage with `memory_update` instead of writing a new note. The host records which notes a live session corrected.
+- The automatic Dream runs only when the host can name what to look at: notes corrected since the last Dream, notes whose `sources` changed, notes recalled since then, and archive candidates last. Otherwise it skips with `no-focus`. Manual runs are unchanged. A successful switch clears only the corrections that run saw; later ones wait for the next Dream.
+- Recall shows in the chat as one compact row ("Recalled N memories: a.md · b.md") that expands to the attached text. **Not relevant** excludes that note from automatic recall in the conversation, including after reopening it. `/memory recall dismiss <file> [--scope user]` and `POST /recall-dismiss` use the same saved dismissal. Repeated requests count as one dismissal.
+- A long note can surface its best matching unseen passage even when the new question also mentions a passage already shown.
+- Notes can carry `sources` (repo-relative paths, optionally `path#symbol`, at most 10) through `memory_save` / `memory_update`. The host checks them against the project root with file reads only. Recall does not attach a note whose sources are broken, `memory_read` adds a check and a note, and write receipts warn.
+- `userMemory: global` (default) keeps type `user` notes in `<memoryRoot>/user/memory`, shared by every project on the machine, with its own index and its own injected block. Read, update, search and recall look in the project first, then the user layer. Dream never touches it, and `own` subagent stores have none. `userMemory: project` keeps the old layout. Existing user notes are not migrated.
+- `/memory session [status | use on|off | learn on|off]`: `use off` loads no memory and recalls nothing in that conversation; `learn off` skips auto-extract and keeps it out of Dream. `autoExtractSkipExternal` (default off) skips a window with `mcp__*` or web search/fetch tool calls. The status payload carries the two switches.
+- An over-budget `MEMORY.md` injects its most used entries (reads plus recalls) first; the file on disk is unchanged. `/memory status` and the status payload list notes unread and unrecalled for `archiveHintDays` (default 60) as archive candidates. Nothing is deleted automatically.
+- The panel and the composer chip use `--dsw-alias-*` theme tokens only.
+- Not changed: the runtime switches still live in `.plugin-state.json`. Declaring a `Config` schema with `.volatile()` fields needs the Harness schema package. This bundle imports only Node builtins, and loading that package from a local bundle has not been verified.
+
+## 0.23.1
+
+- Dream finds sessions from the repository root, its subdirectories and linked worktrees in either open order. A profile-wide memory directory override does not bring unrelated repositories into the transcript review.
+- The composer badge follows the active conversation and requests a compact project summary. The Memory panel can reconnect without reloading DSH.
+- Concurrent edits of different runtime switches now survive together on disk.
+- The recall selector is told that the agent already sees the memory index and that an empty selection is the usual answer. In a live check with DeepSeek Flash, seven queries run twice, unrelated messages pulled in 2 notes instead of 11, and every target note was still selected. `eval/recall-selector.mjs` reruns it.
+
+## 0.23.0
+
+- Dream checks which recommendation each applicability condition belongs to. New descriptions require support from the current page or a checked source.
+- Dream binds quotes that span multiple sentences and reports unsupported claims while the model can still revise the draft. Review rechecks the final bytes before applying.
+- Runs that stop with unread sessions report incomplete review. Run status records application, deferral, rejection and undo. The panel identifies memory versions confirmed through manual saves.
+- Recall keeps Chinese exceptions with clipped passages and preserves literal Markdown examples. The evaluation harness passes the original prompt and requires a successful switch for any Dream draft before scoring the Dream condition.
+
+## 0.22.1
+
+- Recall uses the latest user message for ranking and selection. Concurrent steps for that turn use one selector request. A truncated reply is discarded, and timeout or cancellation releases the turn even if the provider stalls.
+- Attaching a clipped note only deduplicates the matched paragraph for that file revision. A later turn can recall another paragraph from the same note. Complete notes are still deduplicated by revision.
+- Automatic recall skips candidates whose descriptions or current bodies match the credential scanner, including notes edited directly on disk.
+- Dream checks the saved checkpoint before offering resume. Missing or damaged checkpoints in paused runs are reported as failed. Repeating resume while that run is active returns the existing run.
+
+## 0.22.0
+
+- When a selected note is too long to attach, recall delivers the matched paragraph with its heading and adjacent applicability, verification, and exception lines. Short notes keep their original order. If the matched passage and its conditions exceed the budget, the attachment points to `memory_read` for the full note.
+
 ## 0.21.0
 
 - Automatic recall now ranks current note text alongside titles and descriptions. An error code, command, or applicability condition in an older note can reach the selector even when its description omits it. The selector receives bounded excerpts, excludes superseded text from body matches, and can only choose files in the manifest. Recall still uses one selector call per user turn.

@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { toolsEnv, makeEnv, sleep, seedUserMessages } from './v10-helpers.mjs';
 
 test('v11 policy: a very short body is written directly (no low-confidence gate)', async (t) => {
-  const env = await toolsEnv(t);
+  const env = await toolsEnv(t, { userMemory: 'project' });
   seedUserMessages(env, '用户要求回答简短。');
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
@@ -39,7 +39,7 @@ test('v11 policy: "vitest --run ..." short bodies are written directly', async (
 });
 
 test('policy: conflicting writes stop and identify the owning memory', async (t) => {
-  const env = await toolsEnv(t);
+  const env = await toolsEnv(t, { userMemory: 'project' });
   seedUserMessages(env, '用户喜欢中文回复。', '用户讨厌中文回复。');
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };

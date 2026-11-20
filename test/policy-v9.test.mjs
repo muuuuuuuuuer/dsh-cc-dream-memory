@@ -351,7 +351,7 @@ test('v9 policy: evaluateWrite returns allow/duplicate/possible-duplicate/confli
 // ---------------------------------------------------------------------------
 
 test('v9 tools: memory_save stops duplicates and conflicts, writes everything else', async (t) => {
-  const env = await toolsEnv(t);
+  const env = await toolsEnv(t, { userMemory: 'project' });
   seedUserMessages(env, '用户喜欢用中文回复所有问题。', '用户讨厌中文回复。', 'a clean durable note body');
   await env.pctx.store.saveEntry({
     name: '回复语言',

@@ -209,3 +209,13 @@ export function isInside(parent, child) {
   const rel = path.relative(path.resolve(parent), path.resolve(child));
   return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
+
+/**
+ * Paths of the cross-project user memory layer: `<memoryRoot>/user/memory` with
+ * its own index, history and trash, shared by every project on this machine.
+ * @param {{memoryRoot?: string, homeDir?: string}} [input]
+ */
+export function buildUserPaths({ memoryRoot = '', homeDir = '' } = {}) {
+  const root = resolveMemoryRoot(memoryRoot, homeDir);
+  return { root, projectRoot: '', ...projectLayout(path.join(root, 'user')) };
+}

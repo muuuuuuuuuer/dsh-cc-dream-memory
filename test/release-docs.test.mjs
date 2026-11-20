@@ -1,7 +1,8 @@
 /**
  * The public README promises things to people deciding whether to install. These
  * checks pin the parts that can drift: the name, the install command, the
- * not-affiliated note, images that also work on npm, and real commands.
+ * not-affiliated note, links that also work on npm, honest test results, and
+ * real commands.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -16,12 +17,14 @@ const readmeZh = await read('README.zh.md');
 const commandsDoc = await read('docs/commands.md');
 const commandsSource = await read('src/commands.js');
 
-const IMAGE_BASE = 'https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/';
+const REPO_BASE = 'https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/';
+const pkg = JSON.parse(await read('package.json'));
 
 for (const [name, doc] of [['README.md', readme], ['README.zh.md', readmeZh]]) {
   test(`${name} gives the install command and the not-affiliated note`, () => {
-    assert.match(doc, /dsh plugin --profile web add dsh-cc-dream-memory/);
-    assert.match(doc, /npx @deepseek-ai\/dsh plugin --profile web add dsh-cc-dream-memory/, 'desktop users have no dsh on PATH');
+    const source = `github:muuuuuuuuuer/dsh-cc-dream-memory#v${pkg.version}`;
+    assert.ok(doc.includes(`\ndsh plugin --profile web add ${source}\n`), `install the current version (${source})`);
+    assert.ok(doc.includes(`npx @deepseek-ai/dsh plugin --profile web add ${source}`), 'desktop users have no dsh on PATH');
     assert.match(doc, /Anthropic/);
     assert.match(doc, /DeepSeek/);
   });
@@ -31,12 +34,15 @@ for (const [name, doc] of [['README.md', readme], ['README.zh.md', readmeZh]]) {
     assert.doesNotMatch(doc, /\b(official|officially)\b(?! plugin)/i);
   });
 
-  test(`${name} images use absolute URLs and exist in the repository`, () => {
-    const urls = [...doc.matchAll(/(?:src="|\]\()(https:\/\/raw\.githubusercontent\.com[^")]+|assets\/[^")]+)/g)].map((m) => m[1]);
-    assert.ok(urls.length >= 2, 'the page needs its icon and a screenshot');
-    for (const url of urls) {
-      assert.ok(url.startsWith(IMAGE_BASE), `${url} must be absolute so npm can show it`);
-      assert.ok(existsSync(localPath(url.slice(IMAGE_BASE.length))), `${url} is missing`);
+  test(`${name} links are absolute and point at files in the repository`, () => {
+    assert.doesNotMatch(doc, /<img|\.png\b/, 'the README carries no screenshots');
+    const links = [...doc.matchAll(/\]\(([^)]+)\)/g)].map((m) => m[1]);
+    for (const link of links) {
+      assert.match(link, /^https:\/\//, `${link} must be absolute so npm can follow it`);
+      if (link.startsWith(REPO_BASE)) {
+        const file = link.slice(REPO_BASE.length).split('#')[0];
+        assert.ok(existsSync(localPath(file)), `${link} is missing`);
+      }
     }
   });
 
@@ -45,17 +51,14 @@ for (const [name, doc] of [['README.md', readme], ['README.zh.md', readmeZh]]) {
   });
 }
 
-const SHOWCASE = [
-  ['README.md', readme, /not a benchmark/i],
-  ['README.zh.md', readmeZh, /不是评测/],
+const RESULTS = [
+  ['README.md', readme, '## Test results', /not the full 500/],
+  ['README.zh.md', readmeZh, '## 测试结果', /不是完整的 500 题/],
 ];
-for (const [name, doc, disclaimer] of SHOWCASE) {
-  test(`${name} shows the interface and a real before-and-after`, () => {
-    const images = [...doc.matchAll(/src="([^"]+)"/g)].map((m) => m[1]);
-    for (const shot of ['before-after', 'dream-before-after', 'memory-tab', 'dream-plan', 'settings', 'memory-light']) {
-      assert.ok(images.some((url) => url.endsWith(`/assets/${shot}.png`)), `${name} needs ${shot}.png`);
-    }
-    assert.match(doc, disclaimer, 'the comparison is one example and must say so');
+for (const [name, doc, heading, sampleLimit] of RESULTS) {
+  test(`${name} reports test results with their limits`, () => {
+    assert.ok(doc.includes(`\n${heading}\n`), `${name} needs ${heading}`);
+    assert.match(doc, sampleLimit, 'a 30-question sample must say it is not the full benchmark');
   });
 }
 

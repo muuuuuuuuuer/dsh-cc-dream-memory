@@ -78,7 +78,7 @@ test('a run with nothing to change does not mark unread sessions reviewed', asyn
   const env = await dreamEnv(t);
   script(env, [[]]);
   const first = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-review-1' });
-  assert.equal(first.skipReason, 'nothing-new');
+  assert.equal(first.skipReason, 'incomplete-review');
   const mark = env.pctx.state.snapshot().dreamProcessedSessions.find((item) => item.id === 's1');
   assert.equal(mark, undefined, 'without work_done the session stays unread');
 
@@ -161,7 +161,8 @@ test('a live edit to a page Dream rewrote still blocks the run', async (t) => {
     },
   });
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-edit' });
-  assert.equal(result.error, 'conflict');
+  // Every run keeps a checkpoint, so the conflict ends it as a checkpoint conflict.
+  assert.equal(result.error, 'checkpoint-conflict');
 });
 
 test('shadow deletes and rewrites stay out of the live trash and history', async (t) => {

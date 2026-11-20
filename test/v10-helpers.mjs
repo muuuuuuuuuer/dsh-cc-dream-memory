@@ -69,10 +69,127 @@ export async function importExportModule() {
   });
 }
 
+/**
+ * Play existing Dream model fixtures against one task in the host worker.
+ */
+async function scriptedDreamTask(host, spec, callTool) {
+  const changes = new Map();
+  // A script reviews every session at once; each session is its own task here, so a
+  // work_done for another session is held for that session's task.
+  const session = /session_id=(\S+?),/u.exec(spec.prompt[0].text)?.[1];
+  host.dreamDone ??= new Set();
+  let done = Boolean(session && host.dreamDone.delete(session));
+  let summary = '';
+  const messages = [{ role: 'user', content: [{ type: 'text', text: spec.prompt[0].text }] }];
+  for (let turn = 0; turn < 60; turn += 1) {
+    const calls = [];
+    for await (const chunk of host.services.llm.stream({ provider: 'fake', model: 'fake', messages, purpose: 'cc-memory-dream', signal: spec.signal })) {
+      if (chunk?.type === 'block-end' && chunk.block?.type === 'tool-call') calls.push(chunk.block);
+      // The host keeps a child's token usage on its assistant/message events.
+      if (chunk?.type === 'usage' && chunk.usage) {
+        const total = host.dreamUsage.get(spec.childId) ?? {};
+        for (const [key, value] of Object.entries(chunk.usage)) total[key] = (total[key] ?? 0) + value;
+        host.dreamUsage.set(spec.childId, total);
+      }
+      if (chunk?.type === 'finish' && !['stop', 'tool-calls'].includes(chunk.reason?.kind)) return { stopReason: 'error', output: [] };
+    }
+    if (calls.length === 0) break;
+    messages.push({ role: 'assistant', content: calls.map((call) => ({ type: 'tool-call', ...call })) });
+    for (const call of calls) {
+      const args = typeof call.arguments === 'string' ? JSON.parse(call.arguments || '{}') : call.arguments ?? {};
+      const file = String(args.file ?? '');
+      let out = 'OK';
+      if (call.name === 'memory_write' && file) {
+        changes.set(file, { ...args, op: 'write', citations: args.citations ?? [] });
+        out = 'WROTE ' + file;
+      } else if (call.name === 'memory_delete' && file) {
+        changes.set(file, { ...args, op: 'delete', citations: args.citations ?? [] });
+        out = 'DELETED ' + file;
+      } else if (call.name === 'memory_read' && file) {
+        out = await callTool('dream_read_note', args);
+      } else if (call.name === 'work_done') {
+        if (!session || args.session_id === session) done = true;
+        else host.dreamDone.add(args.session_id);
+        summary = String(args.summary ?? summary);
+      }
+      messages.push({ role: 'tool', toolCallId: call.id, toolName: call.name, content: [{ type: 'text', text: out }] });
+    }
+  }
+  return { stopReason: 'completed', output: [], structured: { done, summary: summary || 'done', changes: [...changes.values()] } };
+}
+
+/** Real scoped definitions with a minimal DSH tool renderer and finalizer. */
+export function mountDreamFixture(host, spec, { append = () => {}, restrict = () => {} } = {}) {
+  const definitions = new Map();
+  host.emit('agent/created', {
+    agent: {
+      id: spec.childId,
+      session: { append },
+      ctx: { tools: { restrict, register: (definition) => {
+        definitions.set(definition.name, definition);
+        return () => definitions.delete(definition.name);
+      } } },
+    },
+  });
+  return async (name, args, transform = (content) => content) => {
+    const definition = definitions.get(name);
+    const exec = { arguments: args, signal: spec.signal };
+    const value = await definition.execute(args, exec);
+    const content = transform(definition.output.render(args, value));
+    definition.finalizeContent?.(exec, { content, isError: false });
+    return content[0].text;
+  };
+}
+
+export async function playDreamTasks(host, spec, invoke, playTask) {
+  let prompt = spec.prompt[0].text;
+  // The host ends the batch when it is finished or when a task is left unfinished.
+  while (!prompt.includes('Call structured_output with {"finished":true}')) {
+    const task = Number(/\nTask (\d+) of \d+[.]/u.exec(prompt)?.[1]);
+    if (!task) throw new Error(prompt);
+    if (/session_id=\S+?,/u.test(prompt) && !prompt.startsWith('Review before writing:')) {
+      const lastLine = prompt.split('\n').at(-1);
+      const inline = lastLine.startsWith('{"task":') ? JSON.parse(lastLine) : null;
+      const material = inline?.task === task ? [inline.source] : [];
+      for (let page = material.length ? null : 0; page !== null;) {
+        const read = await invoke('dream_read_source', { task, page });
+        material.push(read);
+        page = JSON.parse(read.split('\n')[0]).next_page;
+      }
+      host.dreamSourcePages = material;
+    }
+    const result = await playTask({ ...spec, prompt: [{ type: 'text', text: prompt }] }, invoke);
+    if (result.stopReason !== 'completed' || !result.structured) return result;
+    prompt = await invoke('dream_submit_task', { task, ...result.structured });
+  }
+  return { stopReason: 'completed', output: [], structured: { finished: true } };
+}
+
+function withReadSession(query) {
+  if (!query || typeof query.readSession === 'function' || typeof query.listEvents !== 'function') return query;
+  return {
+    ...query,
+    async readSession(sessionId) {
+      const events = [];
+      for (const header of await query.listEvents(sessionId)) {
+        const { seq } = header;
+        const page = typeof query.readEvent === 'function'
+          ? await query.readEvent({ sessionId, seq, before: 0, after: 0 }) : null;
+        const list = Array.isArray(page?.events) ? page.events : Array.isArray(page) ? page : [];
+        events.push(list.find((event) => event?.seq === seq) ?? header);
+      }
+      return { events };
+    },
+  };
+}
+
 /** Fake Cordis plugin context (optional services + event bus + llm mock). */
 export function fakeHost({ workspaceDir, plan = null, usage = null } = {}) {
   const listeners = new Map();
   const llmCalls = [];
+  // A live conversation for Dream to parent its children.
+  const dreamParent = { id: 'dream-parent', session: { header: { id: 'dream-parent', cwd: workspaceDir } } };
+  const dreamStarts = [];
   const services = {
     workingDirectory: { ensure: async () => workspaceDir },
     llm: {
@@ -90,10 +207,37 @@ export function fakeHost({ workspaceDir, plan = null, usage = null } = {}) {
     },
     agentDefaultModel: { currentSelection: () => ({ provider: 'fake', model: 'fake' }) },
     sessionQuery: { filterSessions: async () => [], readSession: async () => undefined },
+    agents: { get: (id) => (id === dreamParent.id ? dreamParent : undefined), list: () => [] },
+    subagents: {
+      async startActivation(spec) {
+        dreamStarts.push(spec);
+        const invoke = mountDreamFixture(host, spec);
+        const result = playDreamTasks(host, spec, invoke, (task, callTool) => scriptedDreamTask(host, task, callTool));
+        return { childId: spec.childId, name: spec.name, result, dispose: async () => {} };
+      },
+    },
   };
-  return {
+  // Dream reads whole transcripts. A test host written for event-by-event
+  // reads gets a readSession built from its listEvents/readEvent.
+  const dreamUsage = new Map();
+  const withChildren = (query) => (!query || typeof query.readSession !== 'function' ? query : {
+    ...query,
+    readSession: (id, ...rest) => (dreamUsage.has(id)
+      ? Promise.resolve({ events: [{ seq: 0, type: 'assistant/message', data: { usage: dreamUsage.get(id) } }] })
+      : query.readSession(id, ...rest)),
+  });
+  let sessionQuery = withChildren(services.sessionQuery);
+  Object.defineProperty(services, 'sessionQuery', {
+    enumerable: true,
+    get: () => sessionQuery,
+    set: (value) => { sessionQuery = withChildren(withReadSession(value)); },
+  });
+  const host = {
     services,
     llmCalls,
+    dreamParent,
+    dreamStarts,
+    dreamUsage,
     get: (name) => services[name],
     on(event, handler) {
       const set = listeners.get(event) ?? new Set();
@@ -111,6 +255,7 @@ export function fakeHost({ workspaceDir, plan = null, usage = null } = {}) {
       };
     },
   };
+  return host;
 }
 
 /**
@@ -168,7 +313,9 @@ export async function runtimeEnv(t, configOverrides = {}, llmOptions = {}) {
   const env = await makeEnv(t, configOverrides);
   const host = fakeHost({ workspaceDir: env.workspaceDir, ...llmOptions });
   const runtime = new env.mods.runtime.MemoryRuntime(host, env.config);
+  t.after(runtime.subagents.attach(host));
   const pctx = await runtime.storeFor(env.workspaceDir);
+  pctx.agent ??= host.dreamParent;
   return { ...env, host, runtime, pctx };
 }
 

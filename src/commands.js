@@ -30,7 +30,7 @@ const MEMORY_TYPES = Object.freeze(['user', 'feedback', 'project', 'reference'])
 const TYPE_SET = new Set(MEMORY_TYPES);
 
 const MEMORY_HINT =
-  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|refresh|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|inbox list|inbox show <id>|inbox accept <id>|inbox discard <id>|dream on|off|dream status|dream estimate|dream history|dream undo|dream run [--focus <text>] [--memory-only]|dream diff <file>|dream switch [--reject <file,...>] [--defer <file,...>] [--confirm <file,...>]|dream discard]';
+  '[json|status|list|index|metrics|search <query>|show <file>|history <file>|edit <file> [--name/--type/--description/--content]|merge <file1> <file2> [...]|refresh|session [status|use on|off|learn on|off]|recall dismiss <file> [--scope user]|import <path>|export <path>|on|off|plugin on|off|delete <file>|rules [reset]|backups|trash|restore <backup|trash> <id> [file]|inbox list|inbox show <id>|inbox accept <id>|inbox discard <id>|dream on|off|dream status|dream estimate|dream history|dream undo|dream run [--focus <text>] [--memory-only]|dream diff <file>|dream switch [--reject <file,...>] [--defer <file,...>] [--confirm <file,...>]|dream discard]';
 /** Notes this similar to a /remember are listed for the user to compare. */
 const RELATED_SIMILARITY = 0.35;
 const REMEMBER_HINT = '[--type=user|feedback|project|reference] [--force] <text>';
@@ -606,6 +606,20 @@ export function registerCommands(ctx, runtime) {
     lines.push(
       `entries: ${entries.length}   trash: ${Number(trashCount) || 0} file(s)`,
     );
+    const userMemory = status.payload?.userMemory;
+    lines.push(
+      userMemory?.mode === 'global'
+        ? `user memory: ${userMemory.entries.length} note(s) shared by all projects  ${userMemory.memoryDir}`
+        : 'user memory: project only (userMemory: project)',
+    );
+    const archive = status.payload?.archive;
+    if (archive?.candidates?.length > 0) {
+      lines.push(`archive candidates (not read or recalled for ${archive.days}+ days; nothing is deleted automatically): ${archive.candidates.slice(0, 8).map((item) => item.file).join(', ')}${archive.candidates.length > 8 ? ' …' : ''}`);
+    }
+    const session = status.payload?.session;
+    if (session) {
+      lines.push(`this conversation: use memory ${session.use ? 'ON' : 'OFF'}   learn from it ${session.learn ? 'ON' : 'OFF'}   (/memory session use|learn on|off)`);
+    }
     if (Number.isFinite(Number(status.healthScore))) {
       lines.push(`memory health: ${Number(status.healthScore)}/100`);
     }
@@ -643,6 +657,7 @@ export function registerCommands(ctx, runtime) {
     if (Number(snapshot.lastDreamSessions) > 0) {
       lines.push(`last dream sessions: ${snapshot.lastDreamSessions}`);
     }
+    if (snapshot.lastDreamSkipReason) lines.push(`last automatic dream skipped: ${snapshot.lastDreamSkipReason}`);
     if (snapshot.shadowPending && typeof snapshot.shadowPending === 'object') {
       const files = Array.isArray(snapshot.shadowPending.files) ? snapshot.shadowPending.files.length : 0;
       lines.push(`pending dream result: ${files} file(s) to switch to (apply with /memory dream switch [--reject <file,...>] [--defer <file,...>] [--confirm <file,...>], defer with /memory dream discard)`);
@@ -977,7 +992,7 @@ export function registerCommands(ctx, runtime) {
         const response = await service.dream(status.pctx, { action: 'estimate', noSessions: flags['memory-only'] === true });
         if (!response.ok) return fail(`dream estimate: ${response.message || response.error}`);
         const estimate = response.result;
-        return ok(`Dream rough input estimate: ${estimate.estimatedTokens} tokens\nConfigured token limit: ${estimate.limit > 0 ? estimate.limit : 'unlimited'} (${estimate.costMode})\nActual total usage can be higher; this estimate is not a spending cap. No model was called and no memory was changed.`);
+        return ok(`Dream rough input estimate: ${estimate.estimatedTokens} tokens\nActual usage depends on the work needed to finish.`);
       } catch (error) { return fail(`dream estimate: ${errorText(error)}`); }
     }
     if (sub === 'status' && !positional[1] && typeof flags.run !== 'string') {
@@ -993,9 +1008,6 @@ export function registerCommands(ctx, runtime) {
       );
       lines.push(
         `gates: last dream >= ${config.minHours}h ago, >= ${config.minSessions} sessions since, scan throttle ${Math.round((Number(config.scanThrottleMs) || 0) / 60000)}m`,
-      );
-      lines.push(
-        `cost cap: ${Number(config.dreamMaxTotalTokens) > 0 ? `${Number(config.dreamMaxTotalTokens)} total tokens (the run stops there; ${config.dreamCostMode === 'block' ? 'block: the copy is thrown away' : 'warn: the copy is kept and flagged'})` : 'off (dreamMaxTotalTokens: 0)'}`,
       );
       lines.push(
         `last dream: ${formatTime(snapshot.lastDreamAt)}${Number(snapshot.lastDreamAt) > 0 ? ` (${formatAge(snapshot.lastDreamAt)})` : ''}`,
@@ -1588,6 +1600,37 @@ export function registerCommands(ctx, runtime) {
     return fail(`unknown inbox action "${action}". usage: /memory inbox list|show <id>|accept <id>|discard <id>`);
   }
 
+  /** `/memory session [status | use on|off | learn on|off]`: per-conversation switches. */
+  async function memorySession(invocation, args) {
+    const sessionId = invocation?.agent?.id;
+    if (typeof sessionId !== 'string' || sessionId === '') return fail('session: there is no active conversation');
+    const [sub = 'status', value] = args.map((item) => String(item).toLowerCase());
+    const usage = 'usage: /memory session [status | use on|off | learn on|off]';
+    const pctx = await requireProject(invocation);
+    if (sub !== 'status') {
+      if (!['use', 'learn'].includes(sub) || !['on', 'off'].includes(value)) return fail(usage);
+      await service.setSessionFlag(pctx, { sessionId, key: sub, value: value === 'on' });
+    }
+    const flags = runtime.sessionFlags(pctx, sessionId);
+    return ok([
+      `use memory: ${flags.use ? 'ON' : 'OFF'}   (OFF: this conversation loads no memory and recalls nothing)`,
+      `learn from this conversation: ${flags.learn ? 'ON' : 'OFF'}   (OFF: no auto-extract and Dream skips it; memory_save still works)`,
+    ].join('\n'));
+  }
+
+  /** `/memory recall dismiss <file> [--scope user]`: the note is not relevant; recall stops attaching it here. */
+  async function memoryRecall(invocation, args) {
+    const { flags, positional } = splitFlags(args);
+    if (positional[0] !== 'dismiss' || !positional[1]) return fail('usage: /memory recall dismiss <file> [--scope user]');
+    const pctx = await requireProject(invocation);
+    const result = await service.dismissRecall(pctx, {
+      sessionId: invocation?.agent?.id,
+      file: positional[1],
+      scope: typeof flags.scope === 'string' ? flags.scope : undefined,
+    });
+    return ok(`recall: ${result.scope}/${result.file} will not be attached again in this conversation`);
+  }
+
   // -- dispatch --------------------------------------------------------------
 
   async function handleMemory(invocation) {
@@ -1609,6 +1652,8 @@ export function registerCommands(ctx, runtime) {
               '       /memory import <path> | export <path>   (Claude Code memory interoperability)',
               '       /memory inbox list | show <id> | accept <id> | discard <id>   (review manually staged proposals)',
               '       /memory refresh',
+              '       /memory session [status | use on|off | learn on|off]   (per-conversation switches)',
+              '       /memory recall dismiss <file> [--scope user]   (a recalled note was not relevant)',
               '       /memory rules [reset]',
               `       /remember ${REMEMBER_HINT}`,
               '       /memory on|off toggles autoMemoryEnabled; /memory plugin on|off toggles the plugin at runtime (override, no reload).',
@@ -1638,6 +1683,10 @@ export function registerCommands(ctx, runtime) {
           return await memoryExport(invocation, args);
         case 'refresh':
           return await memoryRefresh(invocation);
+        case 'session':
+          return await memorySession(invocation, args);
+        case 'recall':
+          return await memoryRecall(invocation, args);
         case 'backups':
           return await memoryBackups(invocation);
         case 'trash':
@@ -1747,11 +1796,19 @@ function formatDreamRunStatus(run) {
   const lines = [];
   lines.push(`dream run ${run.runId || '(unknown)'} — ${run.status || 'unknown'}${run.stage ? ` at ${run.stage}` : ''}`);
   lines.push(runProgressLine(run));
+  for (const range of run.reviewRanges ?? []) {
+    if ((range.throughSeq ?? -1) < range.lastSeq) {
+      lines.push(`remaining ${range.id}: seq ${(range.throughSeq ?? -1) + 1}–${range.lastSeq}`);
+    }
+  }
+  if (run.decision) lines.push(`review decision: ${run.decision}`);
   if (run.coverageComplete === true) lines.push('coverage: complete');
   if (run.coverageComplete === false) lines.push('coverage: incomplete — apply stays blocked until every unit finishes');
   if (run.planPath) lines.push(`plan: ${run.planPath}${run.status === 'review' ? ' (apply with /memory dream switch)' : ''}`);
   if (run.blockedReason) lines.push(`blocked: ${truncate(run.blockedReason, 300)}`);
-  if (run.error) lines.push(`error: ${truncate(run.error, 300)}`);
+  if (run.error) lines.push(run.error === 'checkpoint-unavailable'
+    ? 'The saved checkpoint is missing or damaged.'
+    : `error: ${truncate(run.error, 300)}`);
   if (run.skipReason) lines.push(`skipped: ${run.skipReason}`);
   const sessions = Array.isArray(run.sessions) ? run.sessions : [];
   for (const session of sessions.filter((item) => item.units > 0).slice(0, 5)) {

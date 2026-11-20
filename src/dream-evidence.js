@@ -8,7 +8,7 @@
  * into a loose substring test.
  */
 
-import { currentBody, currentFactsInContext, memoryStatusOf } from './memory-body.js';
+import { currentBody, currentFactLines, MEMORY_CAVEAT_RE, memoryStatusOf } from './memory-body.js';
 import { contradictsClaim, supportConflict, supportsStatement, supportTokens } from './support.js';
 import { memoryHash } from './write-review.js';
 
@@ -17,21 +17,67 @@ const TRANSCRIPT_TAG = /^\[(user|user-pasted|assistant|tool-call|tool-result|too
 const DATE_MARKER = /^--- (\d{4}-\d{2}-\d{2}) ---$/;
 const RETIREMENT = /\b(?:remove|delete|retir(?:e|ed)|obsolete|deprecated|replac(?:e|ed)|superseded)\b|删除|移除|废弃|停用|淘汰|已替换/iu;
 const UNCERTAIN_RETIREMENT = /[?？]|\b(?:not|never|don't|if|unless|should|could|may|might)\b|不要|不可|尚未|未被|如果|是否/iu;
-const MODALITY = /\b(?:must|should|may|can|will|always|never|required|optional)\b/giu;
+const MODALITY = /\b(?:must|should|may|might|could|would|can|will|always|never|required|optional|consider(?:ing|ed)?|plan(?:s|ned|ning)? to|thinking (?:of|about)|intend(?:s|ed)? to|hop(?:e|es|ing) to)\b|打算|考虑|计划|可能|也许/giu;
 const REPLACEMENT = /^(?:please\s+)?replace (.+?) with (.+)$/iu;
 
 const normalizePassage = (value) => String(value ?? '').replace(/\s+/gu, ' ').trim().toLowerCase();
-const splitPassages = (text) => text.split(/\r?\n|(?<=[.!?])\s+|(?<=[。！？；])\s*|;\s+/u)
+const splitPassages = (text) => text.split(/\r?\n|(?<=[.!?;])\s+|(?<=[。！？；])\s*/u)
   .map((part) => part.trim()).filter(Boolean);
 
 /** Check the enclosing passage so a clipped quote cannot omit negation or conditions. */
 export function sourcePassages(text, quote) {
-  const wanted = normalizePassage(quote).replace(/…+$/u, '');
-  return wanted ? splitPassages(text).filter((part) => normalizePassage(part).includes(wanted)) : [];
+  const wanted = normalizeForMatch(quote);
+  if (!wanted) return [];
+  const parts = splitPassages(text);
+  const normalized = parts.map(normalizeForMatch);
+  const matches = [];
+  for (let start = 0; start < parts.length; start++) {
+    let span = '';
+    for (let end = start; end < parts.length; end++) {
+      span += normalized[end];
+      const offset = span.indexOf(wanted);
+      if (offset >= 0 && offset < normalized[start].length) {
+        let first = start;
+        let last = end + 1;
+        while (first > 0 && MEMORY_CAVEAT_RE.test(parts[first])) first--;
+        while (last < parts.length && MEMORY_CAVEAT_RE.test(parts[last])) last++;
+        matches.push(parts.slice(first, last).join('\n'));
+        break;
+      }
+      if (span.length - normalized[start].length >= wanted.length) break;
+    }
+  }
+  return [...new Set(matches)];
 }
 
-function supportsClaim(claim, passage) {
+/** Narrow first-to-third person rendering for a direct user statement. Keep
+ * the complete predicate and its qualifiers, including all names and numbers. */
+const USER_VERBS = Object.freeze({ prefer: 'prefers', use: 'uses', live: 'lives', work: 'works', want: 'wants',
+  have: 'has', am: 'is', moved: 'moved', decided: 'decided', plan: 'plans' });
+
+function userRestatement(claim, passage) {
+  const plain = (s) => s.trim().replace(/\s+/gu, ' ').replace(/[.!。！]$/u, '');
+  const source = plain(passage).replace(/^(?:by the way,\s+|顺便(?:说|提)一下[，,]\s*)/iu, '');
+  const note = plain(claim);
+  if (/^我(?!们)/u.test(source) && note.startsWith('用户')) {
+    return !/[我你咱]/u.test(source.slice(1)) && source.slice(1) === note.slice(2);
+  }
+  const match = /^[Ii] (\w+) (.+)$/u.exec(source);
+  const predicate = /^(?:the )?user (.+)$/iu.exec(note)?.[1];
+  return Boolean(match && Object.hasOwn(USER_VERBS, match[1]) && !/\b(?:i|we|me|us|my|our|you|your)\b/iu.test(match[2])
+    && predicate === USER_VERBS[match[1]] + ' ' + match[2]);
+}
+
+function supportsClaim(claim, passage, fromUser) {
+  const separator = claim.lastIndexOf(' » ');
+  if (separator >= 0) {
+    const heading = claim.slice(0, separator);
+    if (!supportsStatement(heading, passage, { minRatio: 1, minMatched: 1 })) return false;
+    claim = claim.slice(separator + 3);
+  }
   if (normalizePassage(claim) === normalizePassage(passage)) return true;
+  if (fromUser && userRestatement(claim, passage)) return true;
+  if (/[?？]$/u.test(passage.trim()) && !/[?？]$/u.test(claim.trim())) return false;
   const replacement = REPLACEMENT.exec(passage);
   const source = replacement && !UNCERTAIN_RETIREMENT.test(passage) ? replacement[2] : passage;
   if (source === passage && RETIREMENT.test(passage) && !RETIREMENT.test(claim)) return false;
@@ -45,6 +91,62 @@ function supportsClaim(claim, passage) {
     offset = tokens.indexOf(token, offset + 1);
     return offset !== -1;
   });
+}
+
+/** A quote can span sentences. Each new claim must still have one local source. */
+function supportsBoundClaim(claim, passage, fromUser = false) {
+  if (!supportsClaim(claim, passage, fromUser)) return false;
+  const parts = splitPassages(passage);
+  return parts.some((_, start) => {
+    let end = start + 1;
+    while (end < parts.length && MEMORY_CAVEAT_RE.test(parts[end])) end++;
+    return supportsClaim(claim, parts.slice(start, end).join('\n'), fromUser);
+  });
+}
+
+function supportsCitedClaim(claim, passage, evidence) {
+  const text = claim.replace(/^Description: /u, '');
+  const recorded = /^(?:Recorded|记录于) (\d{4}-\d{2}-\d{2}) UTC[:：]\s*/u.exec(text);
+  if (!recorded || evidence.source === 'memory') return supportsBoundClaim(text, passage, evidence.eventType === 'user/message');
+  if (!Number.isSafeInteger(evidence.eventTime) || Math.abs(evidence.eventTime) > 8.64e15
+    || new Date(evidence.eventTime).toISOString().slice(0, 10) !== recorded[1]) return false;
+  return supportsBoundClaim(text.slice(recorded[0].length), passage, evidence.eventType === 'user/message');
+}
+
+/** Feedback only: a narrower citation might bind this edit. The actual write
+ * still resolves every quote against its complete passage in the frozen source. */
+export function canRefineCitation(claim, quotes) {
+  if (quotes.some((quote) => supportsBoundClaim(claim, quote))) return false;
+  return quotes.some((quote) => {
+    const parts = splitPassages(quote);
+    return parts.length > 1 && parts.some((part) => supportsBoundClaim(claim, part));
+  });
+}
+
+/** Compare facts as written, retaining the heading and adjacent qualifiers. */
+function factsOf(entry) {
+  const facts = [];
+  let paragraph = [];
+  let previous;
+  let hasConditions = false;
+  for (const fact of currentFactLines(entry?.body)) {
+    const text = fact.text.slice(fact.heading ? fact.heading.length + 3 : 0).replace(/\^\[[^\]]*\]/gu, '').trim();
+    if (!text) continue;
+    const sameSection = previous?.sectionStart === fact.sectionStart;
+    if (sameSection && paragraph.length > 0 && !fact.fenced && MEMORY_CAVEAT_RE.test(text)) {
+      for (const base of paragraph) base.conditions.push(text);
+      hasConditions = true;
+      continue;
+    }
+    if (!sameSection || previous?.paragraphStart !== fact.paragraphStart || hasConditions) paragraph = [];
+    const base = { heading: fact.heading, text, conditions: [] };
+    paragraph.push(base);
+    facts.push(base);
+    previous = fact;
+    hasConditions = false;
+  }
+  return facts.map(({ heading, text, conditions }) =>
+    [heading ? heading + ' » ' + text : text, ...conditions].join('\n'));
 }
 
 function supportsRemoval(claim, passage, file) {
@@ -122,12 +224,11 @@ export async function reviewProofs({ diff, store, shadowStore, links, evidence }
   });
   // Facts are compared with the headings above them: renaming "Likes" to
   // "Dislikes" changes every line below it even when those lines are equal.
-  const facts = (entry) => currentFactsInContext(entry?.body);
   const claims = (lines) => lines.flatMap((line) => {
-    const at = line.lastIndexOf(' » ');
-    const context = at === -1 ? '' : line.slice(0, at + 3);
-    const text = line.slice(context.length).replace(/\^\[[^\]]*\]/gu, '');
-    return splitPassages(text).map((part) => context + part);
+    const [fact, ...conditions] = line.split('\n');
+    const at = fact.lastIndexOf(' » ');
+    const context = at === -1 ? '' : fact.slice(0, at + 3);
+    return splitPassages(fact.slice(context.length)).map((part) => [context + part, ...conditions].join('\n'));
   });
   const contains = (all, subset) => subset.every((line) => all.includes(line));
   const endOfMove = (file) => {
@@ -160,40 +261,46 @@ export async function reviewProofs({ diff, store, shadowStore, links, evidence }
     for (const [index, item] of evidence.entries()) {
       if (item.file !== file || item.revision !== revision || item.verified !== true) continue;
       const passages = await passagesOf(item);
-      if (passages.length > 0) checked.push({ index, passages: [item.quote, ...passages], claims: [] });
+      if (passages.length > 0) checked.push({ index, passages, claims: [] });
     }
     let preserved = false;
     let descriptionOnly = false;
     let dependsOn;
     let added = [];
-    let removed = claims(facts(prior));
+    let removed = claims(factsOf(prior));
     if (next) {
       const moved = await Promise.all(Object.keys(links).filter((source) => endOfMove(source) === file).map(before));
-      const priorFacts = facts(prior);
-      const nextFacts = facts(next);
-      const oldClaims = new Set(claims([...priorFacts, ...moved.flatMap(facts)]));
+      const priorFacts = factsOf(prior);
+      const nextFacts = factsOf(next);
+      const movedFacts = moved.flatMap(factsOf);
+      const oldClaims = new Set(claims([...priorFacts, ...movedFacts]));
       const newClaims = new Set(claims(nextFacts));
       added = [...newClaims].filter((claim) => !oldClaims.has(claim));
       removed = removed.filter((claim) => !newClaims.has(claim));
       const sameFacts = Boolean(prior || moved.some(Boolean))
         && contains(nextFacts, priorFacts)
-        && contains([...priorFacts, ...moved.flatMap(facts)], nextFacts)
+        && contains([...priorFacts, ...movedFacts], nextFacts)
         && moved.filter(Boolean).every((entry) => memoryStatusOf(entry.body) === memoryStatusOf(next.body)
           && entry.frontmatter.type === next.frontmatter.type)
         && (!prior || (memoryStatusOf(prior.body) === memoryStatusOf(next.body)
           && prior.frontmatter.type === next.frontmatter.type));
-      // A description states which questions the page answers, and recall shows
-      // nothing but its first characters. Rewriting it while the facts stay put
-      // loses nothing, so it gets its own kind instead of demanding a citation
-      // no page can supply for a rewording.
-      const sameDescription = next.frontmatter.description === prior?.frontmatter.description
-        || !next.frontmatter.description || moved.some((entry) => entry?.frontmatter.description === next.frontmatter.description);
+      const sameDescription = next.frontmatter.description === prior?.frontmatter.description || !next.frontmatter.description;
+      // A description reaches the recall selector. Require each new sentence
+      // to be supported by a current fact or by evidence checked below.
+      const descriptionClaims = sameDescription ? [] : splitPassages(next.frontmatter.description);
+      const unsupportedDescription = descriptionClaims.filter((claim) => !nextFacts.some((fact) => {
+        const at = fact.indexOf(' » ');
+        if (at >= 0 && !supportsStatement(fact.slice(0, at), claim, { minMatched: 1, minRatio: 1 })) return false;
+        const bareFact = at >= 0 ? fact.slice(at + 3) : fact;
+        return supportsBoundClaim(claim, bareFact);
+      }));
+      added.push(...unsupportedDescription.map((claim) => 'Description: ' + claim));
       preserved = sameFacts && sameDescription;
-      descriptionOnly = sameFacts && !sameDescription;
+      descriptionOnly = sameFacts && !sameDescription && unsupportedDescription.length === 0;
     } else if (prior && Object.hasOwn(links, file)) {
       const dest = endOfMove(file);
       const entry = dest ? await after(dest) : null;
-      preserved = Boolean(entry) && contains(facts(entry), facts(prior))
+      preserved = Boolean(entry) && contains(factsOf(entry), factsOf(prior))
         && memoryStatusOf(prior.body) === memoryStatusOf(entry.body)
         && prior.frontmatter.type === entry.frontmatter.type;
       if (preserved) dependsOn = dest;
@@ -201,9 +308,17 @@ export async function reviewProofs({ diff, store, shadowStore, links, evidence }
     const changes = [...new Set([...added, ...removed])];
     for (const item of checked) {
       item.claims = [
-        ...added.filter((claim) => item.passages.every((passage) => supportsClaim(claim, passage))),
-        ...removed.filter((claim) => item.passages.every((passage) => supportsRemoval(claim, passage, next ? '' : file))),
+        ...added.filter((claim) => item.passages.every((passage) => supportsCitedClaim(claim, passage, evidence[item.index]))),
+        ...removed.filter((claim) => item.passages.every((passage) => {
+          const target = next ? '' : file;
+          return supportsRemoval(claim, passage, target)
+            && splitPassages(passage).some((part) => supportsRemoval(claim, part, target));
+        })),
       ];
+      // A targeted edit may carry support for previously bound, unchanged
+      // claims. New or reworded claims need citations for this revision.
+      const bound = evidence[item.index].boundClaims;
+      if (bound) item.claims = item.claims.filter((claim) => bound.includes(claim));
     }
     const covered = new Set(checked.flatMap((item) => item.claims));
     const unsupportedClaims = preserved || descriptionOnly ? [] : changes.filter((claim) => !covered.has(claim));

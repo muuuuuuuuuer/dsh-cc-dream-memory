@@ -89,20 +89,50 @@ function decodeScalar(raw) {
   return value;
 }
 
+/** The one list-valued field: repo-relative anchors a note depends on. */
+const LIST_FIELD = 'sources';
+
+/** Decode `[a, "b"]`: a JSON array, or a flow list of plain scalars. */
+function decodeList(raw) {
+  const value = raw.trim();
+  if (!value.startsWith('[') || !value.endsWith(']')) return decodeScalar(value) === '' ? [] : [decodeScalar(value)];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.map(String);
+  } catch {
+    /* plain scalars below */
+  }
+  return value.slice(1, -1).split(',').map(decodeScalar).filter((item) => item !== '');
+}
+
 /**
  * Parse the `key: value` lines of a frontmatter block.
- * Unsupported lines (nested mappings, lists, block scalars, comments) are
+ * `sources` may be a flow list or a block list of `- item` lines. Other
+ * unsupported lines (nested mappings, lists, block scalars, comments) are
  * ignored on purpose: this plugin never writes them.
  * @param {string} block frontmatter text without the `---` fences.
- * @returns {Record<string, string>}
+ * @returns {Record<string, string|string[]>}
  */
 function parseFields(block) {
   /** @type {Record<string, string>} */
   const data = {};
+  let list = null;
   for (const line of block.split('\n')) {
     if (line.trim() === '' || line.trimStart().startsWith('#')) continue;
+    const item = list === null ? null : /^[ \t]*-[ \t]+(.*)$/.exec(line);
+    if (item !== null) {
+      const text = decodeScalar(item[1]);
+      if (text !== '') list.push(text);
+      continue;
+    }
+    list = null;
     const match = KEY_VALUE.exec(line);
     if (match === null) continue;
+    if (match[1] === LIST_FIELD) {
+      data[LIST_FIELD] = match[2].trim() === '' ? [] : decodeList(match[2]);
+      if (match[2].trim() === '') list = data[LIST_FIELD];
+      continue;
+    }
     data[match[1]] = decodeScalar(match[2]);
   }
   return data;
@@ -206,7 +236,10 @@ export function stringifyFrontmatter(dataOrParsed, body) {
       fields.push([key, data[key]]);
     }
   }
-  const header = fields.map(([key, value]) => `${key}: ${encodeScalar(value)}`).join('\n');
+  const header = fields
+    .filter(([, value]) => !Array.isArray(value) || value.length > 0)
+    .map(([key, value]) => `${key}: ${Array.isArray(value) ? JSON.stringify(value.map(String)) : encodeScalar(value)}`)
+    .join('\n');
   const prefix = header === '' ? '---\n---\n' : `---\n${header}\n---\n`;
   const text = normalizeNewlines(String(content ?? '')).replace(/^\n+/, '').replace(/\n+$/, '');
   return text === '' ? prefix : `${prefix}\n${text}\n`;

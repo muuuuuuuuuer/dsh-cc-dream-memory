@@ -14,8 +14,25 @@ import assert from 'node:assert/strict';
 import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { toolsEnv } from './v10-helpers.mjs';
+import { currentBody, currentFactsInContext, isCurrentPage } from '../src/memory-body.js';
 
 const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
+
+test('memory_read keeps current text after a fenced history example', async (t) => {
+  const env = await toolsEnv(t);
+  const active = [
+    'An example:', '~~~~markdown', '## History', 'STATUS: retired', '- Superseded: sample',
+    '~~~', '```', '~~~~', '', 'The current identifier is TORCH-8746.',
+  ].join('\n');
+  const body = active + '\n\n## History\n\n- Superseded: TORCH-OLD';
+  const file = 'project_template.md';
+  await env.pctx.store.writeRawEntry(file, { name: 'Template', type: 'project', body });
+  const read = await env.definitions.get('memory_read').execute({ file }, exec);
+  assert.equal(read.body.trimEnd(), active);
+  assert.equal(isCurrentPage(body), true);
+  assert.match(currentBody(body), /TORCH-8746/u);
+  assert.ok(currentFactsInContext(body).includes('The current identifier is TORCH-8746.'));
+});
 
 const ENGINEERING_NOTES = [
   'APPLIES WHEN: changing dependencies or lockfiles',

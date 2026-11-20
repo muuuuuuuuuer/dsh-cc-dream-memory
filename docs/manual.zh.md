@@ -159,7 +159,7 @@ API 端点：`GET /status`、`GET /file`、`GET /rules`、`GET /log`、`GET /bac
 
 1. **收集（纯读取）**：先取状态中登记的主线会话，再查同一工作目录的未处理会话；同时读取 topic 文件。读取失败会记录错误。
 2. **转写**：宿主注入的内容（指令、runtime context、技能目录、自动召回）一律不进转写。每段带标签：`[user]` 是用户打的字，`[user-pasted]` 是用户转发的长材料，`[assistant]` / `[tool-call]` / `[tool-result]` / `[tool-error]` 是过程记录，并带 `--- YYYY-MM-DD ---` 日期标记。
-3. **分块分析**：会话按顺序切成单元，逐块提取带原文引用的事实。超过本轮总输入预算的会话延期，处理完成的范围才推进水位。
+3. **分批复查**：按已选对话范围提取带原文引用的事实。Dream 完成一批就提交，处理完成的连续范围才推进会话游标。
 4. **整理**：模型输出要写入哪些笔记（name/description/type/body）与哪些笔记该退休，可用 `--focus` 指定这一轮优先关注的主题。
 5. **校验**：路径必须在 memory 目录内、只允许 `.md`、笔记数与正文长度有上限；单条正文超过 `dreamMaxFileChars` 的不写入。
 6. **证据检查**：读过会话时，新事实须有操作级引用，宿主核对引用是否存在并记录真实来源；新 `user`/`feedback` 事实仍须有 `[user]` 来源。完整既有用户类记忆的原句可跨文件搬运，不必重读旧会话；项目/参考记忆不能借此升级成用户偏好。引用存在不证明语义正确。宿主列出正文删行并告警；任何写入被过滤，相关批次的删除改动一并停用。
@@ -173,7 +173,7 @@ API 端点：`GET /status`、`GET /file`、`GET /rules`、`GET /log`、`GET /bac
 
 **水位线**：每个会话读到哪一步（`seq`）、是否读完，都记在 state 里，**只有切换成功才推进**。没切换、失败都不移动水位线；撤销一次切换会把那批会话放回待处理，下一轮重新覆盖；只读了一部分的长会话下一轮从断点继续；已读完的会话有新内容时只读新增部分。
 
-开始前可以用 `POST /dream {action:'estimate'}`（界面的估算按钮）查看粗略的输入 token 用量。启动时会选择当时可用的会话。Dream 用 `work_done` 保存已经分析的连续会话片段及草稿。运行暂停且检查点有效时，可以用 `/memory dream resume <runId>` 继续。来源变动导致检查点失效时，需启动一轮新的 Dream。
+开始前可以用 `POST /dream {action:'estimate'}`（界面的估算按钮）查看粗略的输入 token 用量。每轮 Dream 用一个宿主子智能体（`standard` 预设）依次处理最多 `dreamMaxTasks` 个会话。每段任务都重发完整规则，插件在确认来源页面已提供、草稿通过检查后保存检查点。运行暂停且检查点有效时，可以用 `/memory dream resume <runId>` 继续。来源变动导致检查点失效时，需启动一轮新的 Dream。
 
 安全默认：自动 dream 关闭；删除默认开启但只做软删除（进 `.trash/`，可恢复）；每次改动有备份与 changelog；记忆只是背景上下文（注入文本明确「可能过时，不覆盖 AGENTS.md/CLAUDE.md 等指令」）。
 
@@ -225,7 +225,7 @@ API 端点：`GET /status`、`GET /file`、`GET /rules`、`GET /log`、`GET /bac
 - **就绪度**：`/memory dream status` 与 UI Dream 卡显示 `eligible`、`nextEligibleAt`、阻塞原因（auto 关闭/未到 24h/会话数不足/节流/退避/有等待切换的副本/锁）；`/status.readiness` 可机读。
 - **健康度**：0–100 分 + 维度（索引预算、neverRead 比例、dream 是否过久、截断文件、规则、身份共享）+ suggestions（over-budget / many-never-read / non-git-sharing / rules-truncated）；UI 徽标 + 折叠建议。
 - **副本不过期**：Dream 写出的副本一直等你处理，不会自动消失，也不阻塞自动 Dream 以外的任何东西。
-- **成本两模式** `dreamCostMode`：agent 循环用量到 `dreamMaxTotalTokens` 就停；`warn`（默认，仍出已写的副本+告警）/ `block`（首个 prompt 估算超限直接不调 LLM；跑超则不写副本、记失败）；超限都写 `costExceeded` 到 state，UI 显示徽标。
+- Dream 以本批工作完成为结束条件，状态会记录模型用量。自动运行由 `/memory dream on|off` 管理。用 `/memory dream cancel <runId>` 停止正在运行的任务。
 
 ## P1 新增：恢复/编辑/检索/指标/互通/一致性（v10）
 
@@ -301,13 +301,10 @@ node eval/run.mjs --runs 1
 | `minHours` / `minSessions` | `24` / `5` | 自动 dream 闸门 |
 | `scanThrottleMs` | `600000` | 扫描节流 |
 | `lockTtlMs` | `3600000` | 锁过期回收 |
-| `dreamTimeoutMs` | `600000` | 单次 Dream 工具循环的总超时；超时清掉副本，不计失败退避 |
 | `dreamAllowDelete` | `true` | 允许 Dream 在副本里删掉笔记（切换时进 `.trash/`，可恢复） |
 | `dreamMaxFileChars` | `100000` | 单次写入的正文上限；模型想写的正文超了就拒绝这条写入 |
 | `rulesMaxChars` | `8000` | 注入规则（memory-rules.md）允许的最大字符数，超出拒绝保存 |
 | `secretScan` | `warn` | 写记忆/dream 写文件/改 rules 前的机密扫描：`warn`（写入但带 warnings）/ `deny`（拒绝）/ `off` |
-| `dreamMaxTotalTokens` | `0` | dream 单次 total token 上限（0=off）；到上限 agent 循环停止，warn 模式仍出副本，block 不写副本 |
-| `dreamCostMode` | `warn` | 超成本上限的行为：`warn` / `block`（预检超限不调 LLM、事后不写副本） |
 | `policyDuplicateThreshold` / `policySuggestThreshold` | `0.82` / `0.55` | 重复阈值 / 相似候选阈值 |
 | `projectId` | `''` | **v9** 显式项目身份（优先级最高）；空则读 workspace 标记 > git root > workspace |
 | `tools` / `commands` / `ui` | `true` | 各面开关 |
@@ -324,7 +321,7 @@ node eval/run.mjs --runs 1
 - **可恢复**：`.dreams/<ts>` 备份与 `.trash/<ts>` 回收站可通过 `/memory backups|trash`、UI「备份与回收站」卡或 `POST /restore` 恢复整批/单文件（写 changelog + reconcile）。
 - **provenance**：新写入的记忆 frontmatter 带 `created`/`source_session`/`via`（tool/command/dream），可追溯来源；`/memory list` 与 UI 文件行展示。
 - **机密扫描**：写记忆/改规则/dream 写文件前扫描 19 条规则（AWS key、私钥块、sk-*/sk-proj-/sk-ant-、github_pat_/gho_/ghp_、AIza、JWT、密码连接串、中文「密码：」、slack 等明确格式 → **deny 拒写**；Bearer、`api_key=`/`password=` 赋值、高熵 base64 → **warn**）；`secretScan: warn|deny|off`（默认 warn，明确格式的密钥即使在 warn 下也拒绝；deny 全部拒绝；off 跳过），只记录前 12 字符摘要，不入日志。
-- **效果指标与成本**：`<projectDir>/.metrics.json` 记录注入/读写/search/dream 接受率/最近成本（跨进程安全）；`/status.metrics`、`GET /metrics`、`/memory metrics` 与 UI「效果」卡可查；`dreamMaxTotalTokens` 超限告警（不阻止应用）。
+- `<projectDir>/.metrics.json` 记录注入、读写、搜索、Dream 接受率和最近用量。`/status.metrics`、`GET /metrics`、`/memory metrics` 与 UI「效果」卡均可查询。
 
 ## 与 Claude Code 的差异（有意为之）
 
@@ -397,7 +394,7 @@ node scripts/verify.mjs
 - 召回默认由模型选择器执行，每轮附加条数受 `autoRecallMaxFiles` 限制。失败或超时则本轮跳过自动召回。
 - 子代理默认不注入（与官方一致）；`subagentMemory:'own'` 时带 `agentPreset` 的子代理有独立的 `agents/<preset>/memory`，只注入/只写自己的目录，但没有官方的 `memory` frontmatter、user/project/local 三种 scope 与快照合并。
 - 没有团队记忆（`team/` 服务器同步、secret scanner、团队 scope 规则）与 `autoMemoryDirectory`/每项目开关；只有全局 `memoryRoot`/`projectId`。
-- Dream 是单个 agent：宿主只给候选 session id，模型用 `session_search/read` 定点搜转写、用 `memory_read/search` 按需读记忆，改动只写 shadow；Review 时能看到每处改动对应的 `session #seq — quote` 证据，最终由人 switch/discard/undo。它不是官方的 forked agent，也不做 CLAUDE.md 对账；shadow、人工 switch 与证据面板是有意保留的安全差异。
+- Dream 由宿主子智能体执行（0.25）。每轮复用一个子智能体，按页读取脱敏来源并逐段提交草稿。Dream 页列出本工作区各对话的整理状态。审阅时能看到改动对应的 `session #seq — quote` 证据，最终由人切换、放弃或撤销。
 - 系统提示是 19 行紧凑手册，覆盖四类型、保存/不保存、`**Why:**`/`**How to apply:**`、绝对日期与“推荐前先核验”，但不是官方完整 auto-memory 段的等价实现。
 - Worktree 已共享主仓库记忆；Windows 盘符大小写已归一。
 - 超预算时只注入头部，超出部分不加载；回执要求重写索引，索引行超过约 200 字符会截断 hook，模型可用 `memory_update` 合并与删除。

@@ -11,6 +11,7 @@
  * live Agent/session, so `turn/end` cannot recurse into the scheduler.
  */
 import { runToolLoop } from './tool-loop.js';
+import { MEMORY_SELECTION } from './rules.js';
 import { resolveModel, describeLlmError } from './llm-call.js';
 import { buildSessionTranscript, chunkTranscript } from './dream-session-text.js';
 
@@ -20,6 +21,8 @@ const TOOL_CHARS = 4_000;
 const DESCRIPTION_MAX = 240;
 const NAME_MAX = 120;
 const TOOL_NAMES = ['memory_read', 'memory_search', 'memory_save', 'memory_update'];
+/** Tools that reach outside the project: MCP servers and the web tools. */
+const EXTERNAL_TOOL_RE = /^(mcp__|web_search$|web_fetch$)/;
 
 function warn(scope, error) {
   // eslint-disable-next-line no-console
@@ -36,8 +39,11 @@ const EXTRACT_SYSTEM_PROMPT = [
   '',
   'You have memory_read, memory_search, memory_save and memory_update. Use them like the main assistant does:',
   '- Read or search an existing note before writing; update or merge it instead of creating a near-duplicate.',
+  '- Corrections first: when the user corrected something an existing note says, edit the matching passage of that note via memory_update instead of writing a new note. Change only the wrong passage and keep the conditions that still hold.',
   '- Save only knowledge a future session cannot recover from the repository, its history, or its instruction files.',
-  '- Types: user (who the user is: role/expertise), feedback (how the user wants you to work: a correction, a confirmed approach, or answer style; state the rule, then **Why:** and **How to apply:**), project (goals/decisions/deadlines/release or run facts the repo does not record), reference (where external information lives).',
+  MEMORY_SELECTION,
+  'If the transcript has no candidate, finish without reading the index entries or calling tools.',
+  '- Types: user (role, expertise or durable background), feedback (how the user wants you to work, a correction or confirmed approach), project (goals, decisions, deadlines or run facts absent from the repo), reference (where external information lives). Keep a simple preference to one sentence. Add **Why:** or **How to apply:** only for a stated reason or a non-obvious application the user confirmed.',
   '- Never save secrets, credentials, one-off task chatter, code patterns, file paths, repository structure, git history, or generic debugging recipes.',
   '- Write dates as absolute dates. Do not invent facts: use only the transcript and the notes you read.',
   '- At most ' + '{{MAX_ITEMS}}' + ' memory_save calls. If nothing is durable, save nothing and reply DONE.',
@@ -151,6 +157,14 @@ export async function runAutoExtract({ ctx, runtime, pctx, sessionId, agent, tri
   const tail = chunk?.text ?? '';
   if (!tail.trim()) return { ok: false, reason: 'empty-transcript' };
   const maxSeq = Math.max(since, chunk.lastSeq);
+  // `autoExtractSkipExternal`: a window that called outside tools is not mined.
+  // The cursor still moves, so the same window is not offered again.
+  if (config.autoExtractSkipExternal === true && fresh.some((event) => (Number(event?.seq) || 0) <= maxSeq
+    && event?.type === 'tool/call' && EXTERNAL_TOOL_RE.test(String(event.data?.name ?? '')))) {
+    await pctx?.state?.noteExtractSeq?.(sessionId, maxSeq, chunk.nextOffset);
+    runtime.extractCursors?.set(sessionId, maxSeq);
+    return { ok: false, reason: 'external-tools', maxSeq };
+  }
 
   const model = resolveModel(hostCtx, {
     provider: config.autoExtractProvider,
@@ -161,10 +175,12 @@ export async function runAutoExtract({ ctx, runtime, pctx, sessionId, agent, tri
   if (tools.length === 0) return { ok: false, reason: 'no-tools' };
 
   let indexText = '';
+  let userIndexText = '';
   try {
     indexText = (await pctx.store.injectedIndex('project')).text || '';
+    userIndexText = (await (await runtime.userContext?.(pctx))?.store.injectedIndex('project'))?.text || '';
   } catch {
-    indexText = '';
+    /* an unreadable index only means less context for the extractor */
   }
 
   const maxItems = Math.max(1, Number(config.autoExtractMaxItems) || 5);
@@ -176,6 +192,12 @@ export async function runAutoExtract({ ctx, runtime, pctx, sessionId, agent, tri
     indexText.trim() === ''
       ? 'The existing index is empty.'
       : `Existing memory index (read a note before editing it):\n<existing-index>\n${indexText.slice(0, 4_000)}\n</existing-index>`,
+    userIndexText.trim() === ''
+      ? ''
+      : `User notes shared by every project (type user is saved there):
+<user-index>
+${userIndexText.slice(0, 2_000)}
+</user-index>`,
     '',
     '<transcript>',
     tail,

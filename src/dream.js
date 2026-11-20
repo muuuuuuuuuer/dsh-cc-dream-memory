@@ -80,39 +80,6 @@ export function totalTokensOf(usage) {
   return null;
 }
 
-/**
- * Compare one usage record with `config.dreamMaxTotalTokens` (0 = off).
- * @returns {{exceeded:boolean, limit:number, totalTokens?:number, warning:string}}
- */
-export function costLimitStatus(config, usage) {
-  const limit = maxTotalTokensLimit(config);
-  if (limit === 0) return { exceeded: false, limit: 0, warning: '' };
-  const total = totalTokensOf(usage);
-  if (!Number.isFinite(total) || total <= limit) return { exceeded: false, limit, warning: '' };
-  return {
-    exceeded: true,
-    limit,
-    totalTokens: total,
-    warning: `cost-limit-exceeded: totalTokens ${total} > limit ${limit}`,
-  };
-}
-
-/** Effective cost mode (`warn` continues, `block` refuses before writing). */
-export function dreamCostModeOf(config) {
-  return config?.dreamCostMode === 'block' ? 'block' : 'warn';
-}
-
-/** Configured total-token ceiling; 0 means the limit is off. */
-export function maxTotalTokensLimit(config) {
-  const raw = Number(config && typeof config === 'object' ? config.dreamMaxTotalTokens : 0);
-  return Number.isFinite(raw) && raw > 0 ? Math.trunc(raw) : 0;
-}
-
-/** Preflight estimate used before the model call (contract: ceil(chars/4) + 1024). */
-export function estimateInputTokens(inputChars) {
-  return Math.ceil(Math.max(0, Number(inputChars) || 0) / 4) + 1024;
-}
-
 /** Drop one session's cached injection so the next turn re-reads memory. */
 function invalidate(runtime, agent) {
   try {
@@ -233,12 +200,14 @@ export class DreamEngine {
     const evidence = pending.evidence ?? [];
     const boundEvidence = evidence.filter((item) => item?.verified && item.claims?.length);
     const deferredFiles = changedFiles.filter((file) => deferred.has(file));
+    // Without bound evidence, the sessions whose Dream task changed the file hold it.
+    const originOf = (file) => (Array.isArray(pending.origins?.[file]) ? pending.origins[file] : null);
     const sourcesOf = (file) => {
       const proof = proofs.get(file);
       if (['preserved', 'description'].includes(proof?.kind)) return [];
-      if (proof?.kind !== 'citation' || proof.unsupportedClaims?.length !== 0) return null;
+      if (proof?.kind !== 'citation' || proof.unsupportedClaims?.length !== 0) return originOf(file);
       const sources = boundEvidence.filter((item) => item.file === file);
-      return sources.length > 0 ? sources.flatMap((item) => item.sessionId ? [item.sessionId] : []) : null;
+      return sources.length > 0 ? sources.flatMap((item) => item.sessionId ? [item.sessionId] : []) : originOf(file);
     };
     const deferredSources = deferredFiles.map(sourcesOf);
     const heldSessions = new Set(deferredSources.flat());
@@ -463,7 +432,7 @@ export class DreamEngine {
     await store.refreshIndex('project');
     // The run consumed these sessions; an undo makes them eligible again so the
     // human can dream them once more.
-    await state.restoreDreamProcessed(Array.isArray(meta.sessions) ? meta.sessions : []);
+    await state.restoreDreamProcessed(Array.isArray(meta.sessions) ? meta.sessions : [], { runId: meta.runId });
     await saveUndoMeta({ undoRemoving: [...removing], undone: true, undoneAt: Date.now() });
     const batch = path.basename(path.dirname(backupDir));
     await recordDreamEvent(paths, { event: 'undone', ops: restored.length + trashed.length });

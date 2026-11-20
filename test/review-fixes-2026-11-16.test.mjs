@@ -108,8 +108,11 @@ test('editing a page the dream cited stops the switch', async (t) => {
     name: 'release policy', type: 'project', content: 'Ask the release owner first.\n',
   });
   const version = memoryHash((await env.pctx.store.readEntry(target.file)).raw);
-  env.host.services.llm.stream = () =>
-    streamOf([
+  let wrote = false;
+  env.host.services.llm.stream = () => {
+    if (wrote) return streamOf([{ type: 'finish', reason: { kind: 'stop' } }]);
+    wrote = true;
+    return streamOf([
       {
         type: 'block-end',
         block: {
@@ -126,6 +129,7 @@ test('editing a page the dream cited stops the switch', async (t) => {
       },
       { type: 'finish', reason: { kind: 'tool-calls' } },
     ]);
+  };
   assert.equal((await dream(env)).ready, true);
   const pending = env.pctx.state.snapshot().shadowPending;
   assert.ok(

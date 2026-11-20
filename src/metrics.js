@@ -165,6 +165,7 @@ export function normalizeMetrics(raw) {
       count: nonNegativeInt(source.recalls.count, 0),
       files: nonNegativeInt(source.recalls.files, 0),
       lastAt: nonNegativeInt(source.recalls.lastAt, 0),
+      ...(source.recalls.dismissed > 0 ? { dismissed: nonNegativeInt(source.recalls.dismissed, 0) } : {}),
     };
   }
   metrics.dreams = {
@@ -199,6 +200,9 @@ export function normalizeMetrics(raw) {
       writes: nonNegativeInt(value.writes, 0),
       lastReadAt: nonNegativeInt(value.lastReadAt, 0),
       lastWriteAt: nonNegativeInt(value.lastWriteAt, 0),
+      // Added by the first recall / "not relevant" of this file.
+      ...(value.recalls > 0 ? { recalls: nonNegativeInt(value.recalls, 0), lastRecallAt: nonNegativeInt(value.lastRecallAt, 0) } : {}),
+      ...(value.dismissals > 0 ? { dismissals: nonNegativeInt(value.dismissals, 0) } : {}),
     };
   }
   const dailySource =
@@ -481,14 +485,33 @@ export async function recordInjection(paths) {
   });
 }
 
-/** Count one automatic recall and the memories it attached. */
-export async function recordRecall(paths, fileCount) {
+/** Count one automatic recall and the memories it attached (`files`: their names). */
+export async function recordRecall(paths, fileCount, files = []) {
   return mutate(paths, (metrics) => {
     const recalls = metrics.recalls ?? { count: 0, files: 0, lastAt: 0 };
     recalls.count += 1;
     recalls.files += Math.max(0, Number(fileCount) || 0);
     recalls.lastAt = Date.now();
     metrics.recalls = recalls;
+    for (const file of Array.isArray(files) ? files : []) {
+      if (typeof file !== 'string' || file === '') continue;
+      const entry = entryOf(metrics, file);
+      entry.recalls = nonNegativeInt(entry.recalls, 0) + 1;
+      entry.lastRecallAt = recalls.lastAt;
+    }
+    return metrics;
+  });
+}
+
+/** Count one "not relevant" action on a recalled file. */
+export async function recordDismissal(paths, file) {
+  if (typeof file !== 'string' || file === '') return readMetrics(paths);
+  return mutate(paths, (metrics) => {
+    const recalls = metrics.recalls ?? { count: 0, files: 0, lastAt: 0 };
+    recalls.dismissed = nonNegativeInt(recalls.dismissed, 0) + 1;
+    metrics.recalls = recalls;
+    const entry = entryOf(metrics, file);
+    entry.dismissals = nonNegativeInt(entry.dismissals, 0) + 1;
     return metrics;
   });
 }
@@ -653,6 +676,7 @@ export function metricsSummary(metrics, options = {}) {
       count: normalized.recalls?.count ?? 0,
       files: normalized.recalls?.files ?? 0,
       lastAt: normalized.recalls?.lastAt ?? 0,
+      ...(normalized.recalls?.dismissed > 0 ? { dismissed: normalized.recalls.dismissed } : {}),
     },
     adoptions: { count: normalized.adoptions.count, lastAt: normalized.adoptions.lastAt },
     dreams: {

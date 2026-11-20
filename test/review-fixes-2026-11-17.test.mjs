@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { toolsEnv, streamOf } from './v10-helpers.mjs';
+import { mountDreamFixture, toolsEnv, streamOf } from './v10-helpers.mjs';
 import { ProjectState } from '../src/state.js';
 import { listSwitches } from '../src/dream.js';
 import { attachRecall } from '../src/recall.js';
 
 const finish = (kind) => ({ type: 'finish', reason: { kind } });
+const groundedDescription = 'Keep blue deployment.';
 const toolCall = (name, args) => ({
   type: 'block-end', block: { type: 'tool-call', id: randomUUID(), name, arguments: args },
 });
@@ -24,7 +25,7 @@ async function pendingDream(t, runId) {
     name: 'Deploy', type: 'project', description: 'Old deploy hook', content: 'Keep blue deployment.',
   });
   script(env, [[
-    toolCall('memory_write', { file: page.file, description: 'New deploy hook', body: 'Keep blue deployment.' }),
+    toolCall('memory_write', { file: page.file, description: groundedDescription, body: 'Keep blue deployment.' }),
     finish('tool-calls'),
   ]]);
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, memoryOnly: true, runId });
@@ -51,7 +52,7 @@ test('a failed switch state write rolls back pages and index and allows the same
   assert.equal(pctx.state.snapshot().shadowPending.runId, runId);
   assert.deepEqual(await listSwitches(pctx.paths), [], 'rolled-back writes must not become undoable switches');
   assert.equal((await runtime.switchDream({ pctx, runId })).ok, true);
-  assert.equal((await pctx.store.readEntry(page.file)).frontmatter.description, 'New deploy hook');
+  assert.equal((await pctx.store.readEntry(page.file)).frontmatter.description, groundedDescription);
   assert.equal(pctx.state.snapshot().shadowPending, null);
 });
 
@@ -67,7 +68,7 @@ test('undo restores the changed index hook while preserving unrelated index edit
   assert.equal((await pctx.store.readEntry(page.file)).frontmatter.description, 'Old deploy hook');
   const index = await pctx.store.indexText();
   assert.ok(index.includes('- [Deploy](project_deploy.md) — Old deploy hook'));
-  assert.ok(!index.includes('New deploy hook'));
+  assert.ok(!index.includes(groundedDescription));
   assert.ok(index.includes(`- [Other](${other.file}) — Human edited hook`));
 });
 
@@ -80,7 +81,7 @@ test('failed settlement also restores removed pages and removes newly created pa
   const beforeOld = (await pctx.store.readEntry(old.file)).raw;
   const beforePage = (await pctx.store.readEntry(page.file)).raw;
   script(env, [[
-    toolCall('memory_write', { file: page.file, description: 'New deploy hook', body: 'Keep blue deployment.' }),
+    toolCall('memory_write', { file: page.file, description: groundedDescription, body: 'Keep blue deployment.' }),
     toolCall('memory_write', { file: 'project_new.md', body: 'New durable fact.' }),
     toolCall('memory_delete', { file: old.file }),
     finish('tool-calls'),
@@ -126,31 +127,28 @@ test('undo can retry index restoration after its first index write fails', async
   assert.equal(result.ok, false);
   assert.equal((await runtime.undoLastDream(pctx)).ok, true);
   assert.ok((await pctx.store.indexText()).includes('Old deploy hook'));
-  assert.ok(!(await pctx.store.indexText()).includes('New deploy hook'));
+  assert.ok(!(await pctx.store.indexText()).includes(groundedDescription));
 });
 
-for (const ending of ['incomplete-stream', 'length', 'incomplete-tool-call']) {
+for (const stopReason of ['error', 'max-tokens']) {
   for (const changed of [false, true]) {
-    test(`Dream preserves unread work after ${ending} with changed=${changed}`, async (t) => {
+    test(`Dream preserves unread work when its child stops with ${stopReason}, changed=${changed}`, async (t) => {
       const env = await toolsEnv(t, { autoDreamEnabled: false });
       const event = { seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: 'Use blue deployment.' }] } };
       env.host.services.sessionQuery = {
         filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir, createdAt: Date.now() - 1000 } }],
-        listEvents: async () => [event],
-        readEvent: async () => ({ events: [event] }),
+        readSession: async () => ({ events: [event] }),
       };
       await env.pctx.state.ensureSession('s1', Date.now() - 1000);
-      const calls = [
-        toolCall('session_read', { session_id: 's1', seq: 1 }),
-      ];
-      if (changed) calls.push(toolCall('memory_write', { file: 'project_deploy.md', body: 'Use blue deployment.' }));
-      calls.push(toolCall('work_done', { session_id: 's1', through_seq: 1, summary: 'Reviewed deployment.' }));
-      const last = ending === 'incomplete-stream' ? [] : [finish(ending === 'incomplete-tool-call' ? 'tool-calls' : ending)];
-      script(env, [[...calls, finish('tool-calls')], last]);
-      const runId = `run-${ending}-${changed}`;
+      env.host.services.subagents.startActivation = async (spec) => {
+        mountDreamFixture(env.host, spec);
+        if (changed) await fs.writeFile(path.join(spec.cwd, 'project_deploy.md'), '---\nname: Deploy\ntype: project\n---\n\nUse blue deployment.\n');
+        return { childId: spec.childId, result: Promise.resolve({ stopReason, output: [] }), dispose: async () => {} };
+      };
+      const runId = `run-${stopReason}-${changed}`;
       const result = await env.runtime.dream({ pctx: env.pctx, force: true, runId });
       assert.equal(result.status, 'paused');
-      assert.equal(result.error, ending);
+      assert.equal(result.error, 'subagent-' + stopReason);
       const state = env.pctx.state.snapshot();
       assert.equal(state.shadowPending, null);
       assert.deepEqual(state.dreamProcessedSessions, []);

@@ -1,6 +1,6 @@
 /** Body composition shared by every memory write (corrections, hashes). */
 import { createHash } from 'node:crypto';
-import { CURRENT_STATUS_LINE, ensureCurrentStatus } from './memory-body.js';
+import { CURRENT_STATUS_LINE, ensureCurrentStatus, HISTORY_HEADING_RE, memoryBodyLines, SUPERSEDED_LINE_RE } from './memory-body.js';
 
 /** Re-exported for the write callers; the definition lives with the other body
  * markers in `memory-body.js`. */
@@ -10,10 +10,7 @@ export const memoryHash = (raw) => createHash('sha256').update(raw).digest('hex'
 
 /** Heading separating the current value from superseded values (v21). */
 export const HISTORY_HEADING = '## History';
-const HISTORY_HEADING_RE = /^##\s+history\s*$/iu;
 const STATUS_LINE_RE = /^\s*status:\s*([a-z-]+)\s*$/iu;
-/** Superseded values may be inline bullets (Dream pipeline) or under `## History`. */
-const SUPERSEDED_LINE_RE = /^\s*[-*]\s+Superseded:/iu;
 /** Engineering-note lines that stay with the current value across a correction. */
 /** Includes the `**Why:**` / `**How to apply:**` lines the save prompt asks for. */
 const NOTE_LINE_RE = /^\s*(?:\*\*)?(APPLIES WHEN|HOW TO VERIFY|HOW TO APPLY|VERIFY|OBSERVED|EXCEPTION|WHY):(?:\*\*)?\s*(.+)$/iu;
@@ -47,7 +44,6 @@ function oneLine(text) {
  * @returns {{status:string, value:string, notes:string[], history:string[]}}
  */
 export function splitMemoryBody(body) {
-  const lines = normalizeNewlines(body).split('\n');
   // Collect superseded values from both shapes the plugin writes:
   //  - the Dream pipeline keeps them as inline `- Superseded: ... (until ...)`
   //    bullets next to the replacement;
@@ -55,8 +51,8 @@ export function splitMemoryBody(body) {
   const history = [];
   const activeLines = [];
   let inHistory = false;
-  for (const line of lines) {
-    if (HISTORY_HEADING_RE.test(line.trim())) {
+  for (const { line, fenced } of memoryBodyLines(body)) {
+    if (!fenced && HISTORY_HEADING_RE.test(line.trim())) {
       inHistory = true;
       continue;
     }
@@ -64,21 +60,21 @@ export function splitMemoryBody(body) {
       if (line.trim() !== '') history.push(line.trim());
       continue;
     }
-    if (SUPERSEDED_LINE_RE.test(line)) {
+    if (!fenced && SUPERSEDED_LINE_RE.test(line)) {
       history.push(line.trim());
       continue;
     }
-    activeLines.push(line);
+    activeLines.push({ line, fenced });
   }
   const notes = [];
   const valueLines = [];
   let status = '';
-  for (const line of activeLines) {
-    if (status === '' && STATUS_LINE_RE.test(line.trim())) {
+  for (const { line, fenced } of activeLines) {
+    if (!fenced && status === '' && STATUS_LINE_RE.test(line.trim())) {
       status = line.trim();
       continue;
     }
-    if (NOTE_LINE_RE.test(line)) {
+    if (!fenced && NOTE_LINE_RE.test(line)) {
       notes.push(line.trim());
       continue;
     }

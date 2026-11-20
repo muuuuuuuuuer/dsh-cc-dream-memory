@@ -175,6 +175,9 @@ export function createHttpHandler({ runtime, token }) {
     if (explicit !== '') {
       const projectContext = await runtime.forSessionId(explicit);
       if (projectContext) return projectContext;
+      if (await runtime.isDreamSession(explicit)) {
+        throw Object.assign(new Error('a Dream task session has no memory of its own'), { code: 'dream-task-session' });
+      }
       throw Object.assign(new Error(`session ${explicit} is not loaded in this process`), {
         code: 'UNKNOWN_SESSION',
       });
@@ -309,6 +312,9 @@ export function createHttpHandler({ runtime, token }) {
       if (route === '/status' && method === 'GET') {
         const projectContext = await resolveProject(url.searchParams.get('sessionId') ?? undefined);
         if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
+        if (url.searchParams.get('view') === 'chip') {
+          return sendJson(res, 200, await service.chipStatus(projectContext));
+        }
         return sendJson(
           res,
           200,
@@ -531,6 +537,16 @@ export function createHttpHandler({ runtime, token }) {
           });
         } catch (error) {
           return sendCoded(res, error, 'restore-failed');
+        }
+      }
+      if (route === '/recall-dismiss' && method === 'POST') {
+        const body = await readBody(req);
+        const projectContext = await resolveProject(body.sessionId);
+        if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
+        try {
+          return sendJson(res, 200, await service.dismissRecall(projectContext, body));
+        } catch (error) {
+          return sendCoded(res, error, 'dismiss-failed');
         }
       }
       if (route === '/dream' && method === 'POST') {

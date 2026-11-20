@@ -129,7 +129,9 @@ test('Dream records session reads as complete when the last seq is reached', asy
   let call = 0;
   env.host.services.llm.stream = () => {
     call += 1;
-    if (call === 1) {
+    // The unsourced replacement is intentionally kept for human review when
+    // the worker gets its one chance to revise it.
+    if (call === 1 || call === 3) {
       return streamOf([
         toolCall('c1', 'session_read', { session_id: 's1', seq: 7 }),
         toolCall('c3', 'memory_write', {
@@ -203,39 +205,7 @@ test('auto-extract never forwards a delete to memory_update', async (t) => {
   assert.equal(env.pctx.state.snapshot().extractSeqs.s1, 1, 'cursor should persist in project state');
 });
 
-test('Dream session tools reject ids outside the candidate set', async (t) => {
-  const env = await toolsEnv(t, { autoDreamEnabled: false });
-  let searches = 0;
-  env.host.services.sessionQuery = {
-    filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir, createdAt: now - 1000, lastSeq: 7 } }],
-    searchEvents: async () => {
-      searches += 1;
-      return { items: [] };
-    },
-    readEvent: async () => ({ events: [] }),
-  };
-  const calls = [];
-  let call = 0;
-  env.host.services.llm.stream = (options) => {
-    calls.push(options);
-    call += 1;
-    if (call === 1) {
-      return streamOf([
-        toolCall('x1', 'session_search', { session_id: 's2', query: 'secret' }),
-        { type: 'finish', reason: { kind: 'tool-calls' } },
-      ]);
-    }
-    return streamOf([{ type: 'text-delta', text: 'DONE' }, stop()]);
-  };
-
-  await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-candidate-1' });
-  assert.equal(searches, 0, 'non-candidate session must not be searched');
-  const lastTool = calls[1].messages.at(-1);
-  const text = lastTool.content.map((block) => block.text || '').join(' ');
-  assert.match(text, /not a candidate/);
-});
-
-test('Dream timeout aborts the tool loop, clears the shadow, and does not count as a failure', async (t) => {
+test('Dream uses the model result when a request outlasts the legacy timeout', async (t) => {
   const env = await toolsEnv(t, {
     autoDreamEnabled: false,
     dreamTimeoutMs: 1_000,
@@ -243,13 +213,12 @@ test('Dream timeout aborts the tool loop, clears the shadow, and does not count 
   });
   env.host.services.sessionQuery = {
     filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir, createdAt: now - 1000, lastSeq: 7 } }],
-    searchEvents: async () => ({ items: [] }),
-    readEvent: async () => ({ events: [] }),
+    readSession: async () => ({ events: [{ seq: 1, type: 'user/message', data: { content: [{ type: 'text', text: 'Keep answers short.' }] } }] }),
   };
   env.host.services.llm.stream = (options) => (async function* stream() {
     yield { type: 'block-start', index: 0, blockType: 'text' };
     await new Promise((resolve, reject) => {
-      const timer = setTimeout(resolve, 2_000);
+      const timer = setTimeout(resolve, 1_100);
       const abort = () => {
         clearTimeout(timer);
         reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
@@ -262,7 +231,8 @@ test('Dream timeout aborts the tool loop, clears the shadow, and does not count 
   })();
 
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-timeout-1' });
-  assert.equal(result.error, 'timeout');
+  assert.equal(result.ok, true);
+  assert.equal(result.skipReason, 'incomplete-review');
   assert.equal(await exists(path.join(env.pctx.paths.dreamsDir, 'shadow')), false);
   assert.equal(env.pctx.state.snapshot().consecutiveFailures, 0);
 });
@@ -271,8 +241,7 @@ test('Dream status reads the run manifest after the process forgets it', async (
   const env = await toolsEnv(t, { autoDreamEnabled: false });
   env.host.services.sessionQuery = {
     filterSessions: async () => [],
-    searchEvents: async () => ({ items: [] }),
-    readEvent: async () => ({ events: [] }),
+    readSession: async () => ({ events: [] }),
   };
   env.host.services.llm.stream = () => streamOf([{ type: 'text-delta', text: 'DONE' }, stop()]);
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-status-1' });
@@ -289,14 +258,10 @@ test('Dream uses the configured provider and model', async (t) => {
     dreamAnalyzerProvider: 'dream-prov',
     dreamAnalyzerModel: 'dream-model',
   });
-  const calls = [];
-  env.host.services.llm.stream = (options) => {
-    calls.push(options);
-    return streamOf([{ type: 'text-delta', text: 'DONE' }, stop()]);
-  };
+  env.host.services.llm.stream = () => streamOf([{ type: 'text-delta', text: 'DONE' }, stop()]);
   await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-model-1' });
-  assert.equal(calls[0].provider, 'dream-prov');
-  assert.equal(calls[0].model, 'dream-model');
+  // The child runs on the configured route instead of the conversation's.
+  assert.deepEqual(env.host.dreamStarts[0].agentOptions, { provider: 'dream-prov', model: 'dream-model' });
 });
 
 test('the legacy dreamAgent config toggle is gone', async () => {

@@ -25,7 +25,8 @@ import { dreamRunOutcome, listRunManifests, summarizeRun } from './dream-run.js'
 import { listSwitches } from './dream.js';
 import { bodyLineChanges } from './dream-evidence.js';
 import { shadowPathsOf } from './dream-shadow.js';
-import { NEVER_READ_LIMIT, metricsSummary, metricsTrend, readMetrics, recordWrite } from './metrics.js';
+import { NEVER_READ_LIMIT, metricsSummary, metricsTrend, readMetrics, recordDismissal, recordWrite } from './metrics.js';
+import { archiveCandidates } from './dream-focus.js';
 import {
   SECRET_DETECTED,
   scanSecrets,
@@ -35,7 +36,7 @@ import {
 } from './secrets.js';
 import { MEMORY_TYPES, MemoryStore, entryVersion, normalizeScope } from './store.js';
 import { memoryHash } from './write-review.js';
-import { currentBody, HISTORY_HEADING_RE, isCurrentPage, stripVerification, SUPERSEDED_LINE_RE } from './memory-body.js';
+import { currentBody, HISTORY_HEADING_RE, isCurrentPage, memoryBodyLines, stripVerification, SUPERSEDED_LINE_RE } from './memory-body.js';
 import { applyProposals } from './auto-extract.js';
 import { listProposals, readProposal, removeProposal } from './inbox.js';
 import { matchesRecord, readLedger, recordVerifiedEntry } from './verification-ledger.js';
@@ -69,7 +70,12 @@ export const CONFIG_FIELDS = Object.freeze([
   'autoExtractMaxItems',
   'subagentMemory',
   'agentMemoryPresets',
+  'userMemory',
+  'archiveHintDays',
+  'autoExtractSkipExternal',
   'dreamAllowDelete',
+  'dreamMaxTasks',
+  'dreamYieldToSubagents',
   'rulesMaxChars',
   'dreamMaxTotalTokens',
   'policyDuplicateThreshold',
@@ -101,6 +107,8 @@ export const STATE_FIELDS = Object.freeze([
   'lastExtractReason',
   'lastExtractError',
   'lastExtractTrigger',
+  'lastDreamSkipReason',
+  'correctedFiles',
   'counters',
   'sessionsSince',
 ]);
@@ -698,10 +706,11 @@ export function createStatusService(runtime) {
         const text = stripVerification(entry.body);
         if (isCurrentPage(text)) {
           sections.push(`${heading}\n\n${currentBody(text).trim()}`);
-          const lines = text.split(/\r?\n/u);
-          const index = lines.findIndex((line) => HISTORY_HEADING_RE.test(line.trim()));
+          const lines = [...memoryBodyLines(text)];
+          const index = lines.findIndex(({ line, fenced }) => !fenced && HISTORY_HEADING_RE.test(line.trim()));
           const older = index < 0 ? [] : lines.splice(index + 1);
-          const historyText = [...lines.filter((line) => SUPERSEDED_LINE_RE.test(line)), ...older].join('\n').trim();
+          const historyText = [...lines.filter(({ line, fenced }) => !fenced && SUPERSEDED_LINE_RE.test(line)), ...older]
+            .map(({ line }) => line).join('\n').trim();
           if (historyText) history.push(`### ${entry.frontmatter.name}\n\n${historyText}`);
         } else {
           history.push(`### ${entry.frontmatter.name}\n\n${text}`);
@@ -974,6 +983,11 @@ export function createStatusService(runtime) {
     const metricsTrendValue = metricsTrend(await readMetrics(pctx?.paths), { days: DEFAULT_TREND_DAYS });
     const metricsView = { ...metricsValue, trend: metricsTrendValue };
     const inboxValue = await inboxSnapshot(pctx);
+    // The cross-project user layer and notes nobody has used for a long time.
+    const user = await rt.userContext?.(pctx);
+    const userEntries = user ? await user.store.listEntries('project') : [];
+    const archive = archiveCandidates(entries, await readMetrics(pctx?.paths), config.archiveHintDays);
+    const sessionId = typeof options.sessionId === 'string' ? options.sessionId : '';
 
     // Per-entry trust (ledger, STATUS).
     let trustedEntries = entries;
@@ -994,6 +1008,14 @@ export function createStatusService(runtime) {
       }));
     } catch {
       dreamRuns = [];
+    }
+
+    // Which conversations of this project Dream has reviewed, and which not yet.
+    let dreamTasks = { total: 0, counts: {}, sessions: [] };
+    try {
+      dreamTasks = await rt.dreamCoverage(pctx);
+    } catch {
+      /* the panel shows the list only when the host can list sessions */
     }
 
     return {
@@ -1028,9 +1050,17 @@ export function createStatusService(runtime) {
         subagentMemory: config.subagentMemory === 'shared' || config.subagentMemory === 'own' ? config.subagentMemory : 'off',
       },
       entries: trustedEntries,
+      userMemory: {
+        mode: config.userMemory === 'project' ? 'project' : 'global',
+        memoryDir: user ? String(user.paths.memoryDir) : '',
+        entries: userEntries.map(({ file, name, description, type, modified }) => ({ file, name, description, type, modified })),
+      },
+      archive: { days: Number(config.archiveHintDays) || 60, candidates: archive },
+      ...(sessionId === '' ? {} : { session: { id: sessionId, ...rt.sessionFlags(pctx, sessionId) } }),
       inbox: inboxValue,
       state: stateView,
       dreamRuns,
+      dreamTasks,
       changelogTail,
       trashCount,
       rules: rulesValue,
@@ -1043,6 +1073,51 @@ export function createStatusService(runtime) {
       },
       health: healthValue,
     };
+  }
+
+  async function chipStatus(pctx) {
+    const config = pick(configOf(), ['enabled', 'autoMemoryEnabled', 'indexMaxLines']);
+    const store = requireStore(pctx);
+    const [index, entries] = await Promise.all([store.injectedIndex('project'), store.listEntries('project')]);
+    return {
+      ok: true,
+      config,
+      index: pick(index, ['lines', 'overflow']),
+      entryCount: entries.length,
+      needsReview: Boolean(pctx.state?.snapshot()?.pendingSwitch?.dir),
+    };
+  }
+
+  /**
+   * The user marked a recalled note not relevant: recall never attaches it again
+   * in that session, and the dismissal is counted. One operation for the chat
+   * action (HTTP) and `/memory recall dismiss`.
+   */
+  async function dismissRecall(pctx, request = {}) {
+    const sessionId = typeof request.sessionId === 'string' ? request.sessionId.trim() : '';
+    if (sessionId === '') throw coded('invalid-id', 'a session id is required');
+    const file = typeof request.file === 'string' ? request.file.trim() : '';
+    if (!/^[^/\\]+\.md$/u.test(file)) throw coded('invalid-file', 'a memory file name is required');
+    const scope = request.scope === undefined || request.scope === '' ? 'project' : request.scope;
+    if (scope !== 'project' && scope !== 'user') throw coded('invalid-scope', 'scope must be project or user');
+    const target = scope === 'user' ? await rt.userContext?.(pctx) : pctx;
+    if (!target) throw coded('invalid-scope', 'the user memory layer is off');
+    if (await pctx.state.dismissRecall(sessionId, `${scope}/${file}`)) {
+      await recordDismissal(target.paths, file);
+    }
+    return { ok: true, dismissed: true, file, scope, sessionId };
+  }
+
+  /** Switch one per-session flag: `use` (load and recall memory) or `learn` (auto-extract and Dream). */
+  async function setSessionFlag(pctx, request = {}) {
+    const sessionId = typeof request.sessionId === 'string' ? request.sessionId.trim() : '';
+    if (sessionId === '') throw coded('invalid-id', 'a session id is required');
+    if (request.key !== 'use' && request.key !== 'learn') throw coded('invalid-name', 'flag must be use or learn');
+    if (typeof request.value !== 'boolean') throw coded('invalid-kind', 'value must be true or false');
+    await pctx.state.setSessionFlag(sessionId, request.key, request.value);
+    // A frozen snapshot only rebuilds on an explicit user action: this is one.
+    if (request.key === 'use') rt.invalidateInjection(sessionId, 'manual');
+    return { ok: true, sessionId, ...rt.sessionFlags(pctx, sessionId) };
   }
 
   /** Full contents of one memory file (provenance included in `frontmatter`). */
@@ -1342,6 +1417,9 @@ export function createStatusService(runtime) {
 
   return {
     status,
+    chipStatus,
+    dismissRecall,
+    setSessionFlag,
     file,
     rules,
     saveRules,

@@ -8,6 +8,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { attachRecall, RECALL_SOURCE_KIND } from '../src/recall.js';
 import { stringifyFrontmatter } from '../src/frontmatter.js';
+import { createStatusService } from '../src/status.js';
 import { runtimeEnv, streamOf } from './v10-helpers.mjs';
 
 const userMessage = (text) => ({ role: 'user', id: 'u1', content: [{ type: 'text', text }], source: { kind: 'user' } });
@@ -20,9 +21,9 @@ function fakeAgentCtx() {
       handlers.push(handler);
       return () => handlers.splice(handlers.indexOf(handler), 1);
     },
-    async preStep(messages, base = { kind: 'enter', messages: [...messages] }) {
+    async preStep(messages, base = { kind: 'enter', messages: [...messages] }, signal = new AbortController().signal) {
       const run = (index) => (index < handlers.length
-        ? handlers[index]({ messages, signal: new AbortController().signal }, () => run(index + 1))
+        ? handlers[index]({ messages, signal }, () => run(index + 1))
         : Promise.resolve(base));
       return run(0);
     },
@@ -83,6 +84,83 @@ test('an invalid selector reply attaches nothing (no second ranker)', async (t) 
   const { agentCtx } = await modelRecallEnv(t, { __reply: 'not json at all' });
   const decision = await agentCtx.preStep([userMessage('把服务部署到 cloud run 要注意什么')]);
   assert.equal(decision.messages.length, 1);
+});
+
+test('recall uses the latest typed message even after a long earlier request', async (t) => {
+  const { agentCtx, calls } = await modelRecallEnv(t);
+  await agentCtx.preStep([
+    userMessage('old request '.repeat(500)),
+    { ...userMessage('How do I deploy to Cloud Run?'), id: 'u2' },
+  ]);
+  const prompt = calls[0].messages[0].content[0].text;
+  assert.match(prompt, /^User message:\nHow do I deploy to Cloud Run\?\n/u);
+  assert.doesNotMatch(prompt, /old request/u);
+});
+
+test('concurrent steps for the same user message share a selector attempt', async (t) => {
+  const { agentCtx, calls } = await modelRecallEnv(t);
+  const messages = [userMessage('Cloud Run')];
+  const decisions = await Promise.all([agentCtx.preStep(messages), agentCtx.preStep(messages)]);
+  assert.equal(calls.length, 1);
+  assert.deepEqual(decisions.map(({ messages }) => messages.length).sort(), [1, 2]);
+});
+
+test('a truncated selector reply is discarded without retrying', async (t) => {
+  const { env, agentCtx, file } = await modelRecallEnv(t);
+  let calls = 0;
+  env.host.services.llm.stream = () => {
+    calls++;
+    return streamOf([
+      { type: 'text-delta', text: JSON.stringify({ selected_memories: [file] }) },
+      { type: 'finish', reason: { kind: 'max-tokens' } },
+    ]);
+  };
+  assert.equal((await agentCtx.preStep([userMessage('Cloud Run')])).messages.length, 1);
+  assert.equal(calls, 1);
+});
+
+test('the recall deadline releases the turn even when the stream ignores abort', { timeout: 2000 }, async (t) => {
+  const { env, agentCtx } = await modelRecallEnv(t, { recallTimeoutMs: 100 });
+  const { promise, resolve } = Promise.withResolvers();
+  let signal;
+  let timer;
+  env.host.services.llm.stream = async function* (options) {
+    signal = options.signal;
+    await promise;
+    yield* reply('{"selected_memories":[]}');
+  };
+  try {
+    const watchdog = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error('recall blocked on an uncooperative stream')), 750);
+    });
+    const decision = await Promise.race([agentCtx.preStep([userMessage('Cloud Run')]), watchdog]);
+    assert.equal(decision.messages.length, 1);
+    assert.equal(signal?.aborted, true);
+  } finally {
+    clearTimeout(timer);
+    resolve();
+  }
+});
+
+test('cancelling a turn aborts its selector without waiting for the recall deadline', { timeout: 2000 }, async (t) => {
+  const { env, agentCtx } = await modelRecallEnv(t);
+  const controller = new AbortController();
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  env.host.services.llm.stream = async function* ({ signal }) {
+    started.resolve(signal);
+    await release.promise;
+    yield* reply('{"selected_memories":[]}');
+  };
+  const pending = agentCtx.preStep([userMessage('Cloud Run')], undefined, controller.signal);
+  try {
+    const signal = await started.promise;
+    controller.abort();
+    assert.equal((await pending).messages.length, 1);
+    assert.equal(signal.aborted, true);
+  } finally {
+    release.resolve();
+  }
 });
 
 test('a selector transport error attaches nothing', async (t) => {
@@ -238,6 +316,129 @@ test('recall does not attach bytes edited after the selector saw a candidate', a
   };
   const decision = await agentCtx.preStep([userMessage('Cloud Run')]);
   assert.equal(decision.messages.length, 1);
+});
+
+test('dismissing a note during selection keeps it out of that turn', async (t) => {
+  const { env, agentCtx, file } = await modelRecallEnv(t);
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  env.host.services.llm.stream = async function* () {
+    started.resolve();
+    await release.promise;
+    yield* reply(JSON.stringify({ selected_memories: [file] }));
+  };
+  const step = agentCtx.preStep([userMessage('Cloud Run')]);
+  await started.promise;
+  try {
+    await createStatusService(env.runtime).dismissRecall(env.pctx, { sessionId: 'session-1', file });
+  } finally {
+    release.resolve();
+  }
+  assert.equal((await step).messages.length, 1);
+});
+
+test('handwritten credentials in active bodies or descriptions stay out of automatic recall', async (t) => {
+  const { env, agentCtx, file } = await modelRecallEnv(t);
+  const bodyFile = 'project_private_body.md';
+  const descriptionFile = 'project_private_description.md';
+  const credential = 'password: synthetic-credential-123';
+  const write = (name, description, body) => fs.writeFile(path.join(env.pctx.paths.memoryDir, name),
+    stringifyFrontmatter({ name: 'Operations', type: 'project', description }, body));
+  await write(bodyFile, 'Deployment instructions', 'Deploy the service.\n' + credential);
+  await write(descriptionFile, credential, 'Deploy the service.');
+  let prompt;
+  env.host.services.llm.stream = (options) => {
+    prompt = options.messages[0].content[0].text;
+    return reply(JSON.stringify({ selected_memories: [bodyFile, descriptionFile, file] }));
+  };
+  const decision = await agentCtx.preStep([userMessage('Cloud Run deployment')]);
+  assert.equal(decision.messages.length, 2);
+  assert.doesNotMatch(prompt, /project_private_|synthetic-credential/u);
+  assert.doesNotMatch(decision.messages[1].content[0].text, /project_private_|synthetic-credential/u);
+});
+
+test('a selected long note attaches the matched passage with its own conditions', async (t) => {
+  const { env, agentCtx, file } = await modelRecallEnv(t, { autoRecallMaxChars: 620 });
+  await env.pctx.store.updateEntry(file, { content: [
+    '## Background', '', 'Administrative context. '.repeat(180), '',
+    '## Windows staging', '', 'For EALIAS use resolver-fix-v7.', 'Applies when: corporate VPN is connected.',
+    'Exception: leave production untouched.', '',
+    '## Linux production', '', 'For a different symptom use reboot-v1.', 'Applies when: VPN is disconnected.',
+    '', '## History', '', 'An earlier EALIAS fix used retired-v2.',
+  ].join('\n') });
+  const decision = await agentCtx.preStep([userMessage('EALIAS on Windows staging')]);
+  const text = decision.messages[1]?.content[0].text ?? '';
+  assert.match(text, /Windows staging[\s\S]*resolver-fix-v7\.[\s\S]*Applies when: corporate VPN is connected\.[\s\S]*Exception: leave production untouched\./);
+  assert.match(text, /use memory_read for the rest/);
+  assert.doesNotMatch(text, /reboot-v1|VPN is disconnected|retired-v2/);
+  assert.ok(text.length <= 620);
+});
+
+test('recall keeps a localized exception with the matching paragraph', async (t) => {
+  const { env, agentCtx, file } = await modelRecallEnv(t, { autoRecallMaxChars: 620 });
+  await env.pctx.store.updateEntry(file, { content: [
+    '## Background', '', 'Administrative context. '.repeat(180), '',
+    '## Procedure', '', 'For EALIAS in shared mode run amber-bolt-76.', '',
+    '**例外：**On shared resolvers use violet-fan-93 instead.',
+  ].join('\n') });
+  const decision = await agentCtx.preStep([userMessage('EALIAS in shared mode')]);
+  assert.match(decision.messages[1]?.content[0].text ?? '', /amber-bolt-76[\s\S]*例外：[\s\S]*violet-fan-93/u);
+});
+
+test('recall can attach a different passage from a long note in the same session', async (t) => {
+  const { env, agentCtx, calls, file } = await modelRecallEnv(t, { autoRecallMaxChars: 620 });
+  await env.pctx.store.updateEntry(file, { content: [
+    '## Routing', '', 'For EALIAS use resolver-fix-v7.', 'Confirm by checking healthcheck-v3.', '',
+    'Administrative context. '.repeat(200), '',
+    '## Releases', '', 'For manifest rotation run archive-v5.',
+  ].join('\n') });
+  const ask = (id, text) => agentCtx.preStep([{ ...userMessage(text), id }]);
+  assert.match((await ask('u1', 'EALIAS')).messages[1]?.content[0].text ?? '', /resolver-fix-v7/u);
+  assert.equal((await ask('u2', 'healthcheck-v3')).messages.length, 1);
+  const later = (await ask('u3', 'After checking Routing EALIAS with healthcheck-v3, what do I run for manifest rotation?')).messages[1]?.content[0].text ?? '';
+  assert.match(later, /archive-v5/u);
+  assert.doesNotMatch(later, /resolver-fix-v7/u);
+  assert.equal(calls.length, 2);
+});
+
+test('recall keeps a short multi-section note in source order', async (t) => {
+  const { env, agentCtx, file } = await modelRecallEnv(t);
+  await env.pctx.store.updateEntry(file, { content: [
+    '## Windows', 'Run win-fix.', 'Applies when: Windows node.', '',
+    '## Linux', 'Run linux-fix.', 'Applies when: Linux node.',
+  ].join('\n') });
+  const decision = await agentCtx.preStep([userMessage('Compare the Windows and Linux commands')]);
+  const text = decision.messages[1]?.content[0].text ?? '';
+  assert.match(text, /## Windows\nRun win-fix\.\nApplies when: Windows node\.[\s\S]*## Linux\nRun linux-fix\.\nApplies when: Linux node\./);
+});
+
+test('a tight budget does not detach a recommendation from its long exception', async (t) => {
+  const { env, agentCtx, file } = await modelRecallEnv(t, { autoRecallMaxChars: 430 });
+  await env.pctx.store.updateEntry(file, { content: [
+    'Use resolver-fix-v7 for EALIAS.',
+    'Exception: ' + 'Do not use this if the host is acting as the shared resolver. '.repeat(8),
+  ].join('\n') });
+  const decision = await agentCtx.preStep([userMessage('EALIAS')]);
+  const text = decision.messages[1]?.content[0].text ?? '';
+  assert.match(text, /use memory_read for the rest/);
+  assert.doesNotMatch(text, /resolver-fix-v7/);
+  assert.ok(text.length <= 430);
+});
+
+test('a tight multi-file budget keeps a usable read pointer instead of bare file headers', async (t) => {
+  const { env, agentCtx, file } = await modelRecallEnv(t, { autoRecallMaxChars: 430 });
+  const store = env.pctx.store;
+  await store.updateEntry(file, { content: 'Use resolver-fix-v7 for EALIAS.\nException: ' + 'Never use on shared resolvers. '.repeat(20) });
+  const files = [file, 'project_maintenance_guidance.md', 'project_other_recovery_notes.md'];
+  for (const name of files.slice(1)) {
+    await store.writeRawEntry(name, { type: 'project', body: 'Unrelated maintenance information. '.repeat(30) });
+  }
+  env.host.services.llm.stream = () => reply(JSON.stringify({ selected_memories: files }));
+  const decision = await agentCtx.preStep([userMessage('EALIAS')]);
+  const text = decision.messages[1]?.content[0].text ?? '';
+  assert.match(text, /project_deployment\.md[^\n]*\n…\(use memory_read for the rest\)/);
+  assert.doesNotMatch(text, /resolver-fix-v7/);
+  assert.ok(text.length <= 430);
 });
 
 test('recallMode off disables the selector', async (t) => {

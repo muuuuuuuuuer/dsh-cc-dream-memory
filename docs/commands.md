@@ -16,6 +16,10 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 | `/memory merge <file1> <file2>` | Merge notes into the first file |
 | `/memory delete <file>` | Move a memory to the trash |
 | `/memory metrics` | Show injections, reads, writes, recalls and Dream usage |
+| `/memory session [status]` | Show whether this conversation loads memory (`use`) and is learned from (`learn`) |
+| `/memory session use on\|off` | `off`: this conversation loads no memory and recalls nothing |
+| `/memory session learn on\|off` | `off`: auto-extract skips this conversation and Dream leaves it out; `memory_save` still works |
+| `/memory recall dismiss <file> [--scope user]` | A recalled note was not relevant: it is not attached again in this conversation. The chat row's **Not relevant** button does the same |
 
 ## Dream
 
@@ -24,7 +28,7 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 | Command | What it does |
 |---|---|
 | `/memory dream run` | Start a background run; it writes a cleaned-up copy of your memory under `.dreams/shadow/` and leaves the real notes untouched; `/memory dream status [runId]` shows progress, `cancel` stops it (a stopped or failed run is started again with `run`) |
-| `/memory dream run --focus "<topic>"` | Prefer one topic in this round |
+| `/memory dream run --focus "<topic>"` | Prefer one topic in this round. Automatic Dreams always run with a focus the host builds (corrected notes, changed sources, recalled notes, archive candidates) and skip when it is empty |
 | `/memory dream diff <file>` | Show one pending change: removed and added lines, whether its source was checked, its evidence, and what you rejected on that page before |
 | `/memory dream switch [--reject <file,...>] [--defer <file,...>] [--confirm <file,...>]` | Apply the copy Dream wrote (backed up first; `undo` returns). `--reject` keeps those files and remembers the exact change so it is not proposed again without new evidence; `--defer` keeps them without remembering anything. A change without a checked source applies only with `--confirm`, after you read its diff |
 | `/memory dream discard` | Reject every change; memory stays exactly as it is and these facts are never proposed again |

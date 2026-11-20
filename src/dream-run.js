@@ -30,16 +30,27 @@ export function validRunId(runId) {
 
 const checkpointFile = (dir) => path.join(dir, 'checkpoint.json');
 
-export async function hasRunCheckpoint(dir) {
-  return fs.stat(checkpointFile(dir)).then((stat) => stat.isFile(), () => false);
-}
-
 export async function readRunCheckpoint(dir) {
   try {
     const record = JSON.parse(await fs.readFile(checkpointFile(dir), 'utf8'));
-    return record?.version === 1 && Array.isArray(record.work) && record.work.length > 0
-      && Array.isArray(record.sessionIds) && Array.isArray(record.bases) && Array.isArray(record.draft?.pages)
-      && typeof record.draft.index === 'string' && Array.isArray(record.evidence) ? record : null;
+    if (![1, 2].includes(record?.version) || !Array.isArray(record.work) || (record.version === 1 && record.work.length === 0)
+      || !Array.isArray(record.sessionIds) || !Array.isArray(record.bases) || !Array.isArray(record.draft?.pages)
+      || typeof record.draft.index !== 'string' || !Array.isArray(record.evidence)) return null;
+    const valid = record.sessionIds.every((id) => typeof id === 'string' && id !== '')
+      && record.work.every((item) => record.sessionIds.includes(item?.id) && Number.isSafeInteger(item.seq)
+        && (item.readSeq === null || Number.isSafeInteger(item.readSeq))
+        && typeof item.sourceHash === 'string' && typeof item.summary === 'string')
+      && record.bases.every((item) => Array.isArray(item) && item.length === 2 && typeof item[0] === 'string'
+        && (item[1] === null || typeof item[1] === 'string'))
+      && record.draft.pages.every((item) => typeof item?.file === 'string' && (item.raw === null || typeof item.raw === 'string'))
+      && record.evidence.every((item) => item && typeof item.quote === 'string');
+    const frozen = record.version === 1 || (Number.isFinite(record.capturedAt) && record.capturedAt > 0
+      && Array.isArray(record.ranges) && record.ranges.length === record.sessionIds.length
+      && new Set(record.ranges.map(({ id }) => id)).size === record.sessionIds.length
+      && record.ranges.every(({ id, lastSeq, fingerprint, readSeq }) => record.sessionIds.includes(id)
+        && Number.isSafeInteger(lastSeq) && lastSeq >= 0 && typeof fingerprint === 'string'
+        && (readSeq === null || Number.isSafeInteger(readSeq))));
+    return valid && frozen ? record : null;
   } catch {
     return null;
   }
@@ -58,12 +69,14 @@ export async function reconcileRunOutcomes(paths, state) {
   for (const outcome of state?.snapshot?.().dreamRunOutcomes ?? []) {
     if (!validRunId(outcome.runId)) continue;
     const dir = runDirOf(paths, outcome.runId);
-    if (!await hasRunCheckpoint(dir)) continue;
+    const hasCheckpoint = await fs.stat(checkpointFile(dir)).then((stat) => stat.isFile(), () => false);
+    if (!outcome.decision && !hasCheckpoint) continue;
     const manifest = await readRunManifest(dir);
-    if (manifest && ['running', 'paused'].includes(manifest.status)) {
+    if (manifest && (['running', 'paused'].includes(manifest.status)
+      || (outcome.decision && manifest.decision !== outcome.decision))) {
       await writeRunManifest(dir, { ...manifest, ...outcome, stage: 'done' });
     }
-    await clearRunCheckpoint(dir);
+    if (hasCheckpoint) await clearRunCheckpoint(dir);
   }
 }
 
@@ -126,7 +139,7 @@ export async function listRunManifests(paths, limit = 20) {
     const manifest = await readRunManifest(dir);
     if (!manifest) continue;
     out.push({ dir, runId: manifest.runId || name, manifest,
-      checkpoint: ['running', 'paused'].includes(manifest.status) && await hasRunCheckpoint(dir) });
+      checkpoint: ['running', 'paused'].includes(manifest.status) && Boolean(await readRunCheckpoint(dir)) });
   }
   return out;
 }
@@ -155,14 +168,24 @@ export function shapeManifest(base = {}) {
 }
 
 export function dreamRunOutcome(state, runId) {
-  return state?.snapshot?.().dreamRunOutcomes?.find((item) => item.runId === runId);
+  const snapshot = state?.snapshot?.();
+  const outcome = snapshot?.dreamRunOutcomes?.find((item) => item.runId === runId);
+  const last = snapshot?.lastDreamDecision;
+  if (outcome?.decision || last?.runId !== runId) return outcome;
+  return { ...outcome, runId, status: 'done', decision: last.decision,
+    applied: last.decision === 'applied' || last.decision === 'partially-applied' };
 }
 
 export function summarizeRun(manifest, { running = false, checkpoint = false, outcome } = {}) {
   if (!manifest) return null;
-  if (outcome && ['running', 'paused'].includes(manifest.status)) manifest = { ...manifest, ...outcome, stage: 'done' };
-  // Older versions left invalid checkpoints marked as paused.
-  if (manifest.status === 'paused' && manifest.error === 'checkpoint-conflict') manifest = { ...manifest, status: 'failed' };
+  if (outcome && (outcome.decision || ['running', 'paused'].includes(manifest.status))) {
+    manifest = { ...manifest, ...outcome, stage: 'done' };
+  }
+  // A paused run requires a readable checkpoint. Honor conflicts written by older versions.
+  if (manifest.status === 'paused' && (!checkpoint || manifest.error === 'checkpoint-conflict')) {
+    manifest = { ...manifest, status: 'failed',
+      error: manifest.error === 'checkpoint-conflict' ? manifest.error : 'checkpoint-unavailable' };
+  }
   // A manifest still marked running with no worker behind it was left by a
   // process that stopped mid-run. A published checkpoint lets it resume.
   const interrupted = manifest.status === 'running' && !running;
@@ -189,11 +212,13 @@ export function summarizeRun(manifest, { running = false, checkpoint = false, ou
     coverageComplete: manifest.coverageComplete,
     planPath: manifest.planPath,
     applied: manifest.applied,
+    decision: manifest.decision,
     error: interrupted && !resumable && !manifest.error ? 'stopped before finishing (the host process ended); run Dream again' : manifest.error,
     blockedReason: manifest.blockedReason,
     skipReason: manifest.skipReason,
     sessionsReviewed: Number(manifest.sessionsReviewed) || 0,
     usage: manifest.usage,
+    reviewRanges: manifest.reviewRanges,
     errors: manifest.errors ?? [],
     sessions: (manifest.input?.sessions ?? []).map((session) => ({
       id: session.id,

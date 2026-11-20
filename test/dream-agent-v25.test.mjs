@@ -48,6 +48,9 @@ async function dreamEnv(t) {
     readEvent: async () => ({
       events: [{ seq: 7, type: 'user/message', data: { content: [{ type: 'text', text: TRANSITION }] } }],
     }),
+    readSession: async () => ({
+      events: [{ seq: 7, type: 'user/message', data: { content: [{ type: 'text', text: TRANSITION }] } }],
+    }),
   };
   return env;
 }
@@ -69,7 +72,7 @@ test('agent searches sessions, reads memory on demand, and writes only the shado
             file: 'project_deploy.md',
             name: 'Deploy',
             type: 'project',
-            description: 'Release process uses pnpm',
+            description: 'Use pnpm for installs.',
             body: 'Use pnpm for installs. ^[s1#7, 2026-11-15]',
             citations: [{ session_id: 's1', seq: 7, quote: TRANSITION }],
           },
@@ -84,10 +87,9 @@ test('agent searches sessions, reads memory on demand, and writes only the shado
   assert.equal(result.ready, true);
   assert.equal(result.runId, 'run-agent-1');
 
-  // The first prompt must not contain the page body: Dream reads it via tool.
-  assert.ok(prompts[0].includes('s1'));
+  // The brief names the session; the child reads note bodies from its working directory.
+  assert.ok(prompts[0].includes('session_id=s1'));
   assert.ok(!prompts[0].includes('Use npm for installs.'));
-  assert.ok(prompts[0].includes('Release process'));
 
   const live = await env.pctx.store.readEntry('project_deploy.md');
   assert.equal(live.body.includes('Use npm for installs.'), true);
@@ -150,7 +152,7 @@ test('Dream records human-readable evidence for a shadow write', async (t) => {
 test('agent with nothing to change leaves no pending shadow', async (t) => {
   const env = await dreamEnv(t);
   script(env, [{ tools: [], text: 'DONE' }]);
-  const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-agent-2' });
+  const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', noSessions: true, runId: 'run-agent-2' });
   assert.equal(result.ok, true);
   assert.equal(result.skipped, true);
   assert.equal(result.skipReason, 'nothing-new');

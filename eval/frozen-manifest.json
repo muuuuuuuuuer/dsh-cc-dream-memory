@@ -1,7 +1,7 @@
 {
-  "frozenAt": "2026-11-18T17:03:48.389Z",
-  "harnessContract": "v14",
-  "pluginVersion": "0.21.0",
+  "frozenAt": "2026-11-20T19:40:23.752Z",
+  "harnessContract": "v16",
+  "pluginVersion": "0.26.0",
   "target": {
     "profile": "cc-memory-eval",
     "model": "profile default (deepseek-flash)",
@@ -12,7 +12,7 @@
   "scenarioFiles": {
     "scenarios.coding.dev.json": "sha256:35091a60284bdddae5c7ad84970b78e956a3c6c5295f72a26283eec39242e216",
     "scenarios.dev.json": "sha256:9966b644c4a6194a2828b2d66b40d51f1584ea80aa76f0f481e3da3638246cea",
-    "scenarios.dream-session.dev.json": "sha256:419cfced10c984ae46fb377503f7d8f6e7e1e583476f4dfb3a585241f1b65fec"
+    "scenarios.dream-session.dev.json": "sha256:d8852e59b454984e86e4a544abd7fba472064ac01d992e354e58b82e8b5aa338"
   },
   "rubrics": {
     "dev-01-current-instruction.v1.json": "sha256:3486689a1682afb74b2e2bec181cf3648e69f65f0f09187fcc52aca765d1952f",

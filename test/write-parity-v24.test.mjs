@@ -125,7 +125,7 @@ test('v24 first turn: every note shows its summary, written by the model or not'
 });
 
 test('v24 first turn: a user-type note shows its summary like any other', async (t) => {
-  const env = await toolsEnv(t);
+  const env = await toolsEnv(t, { userMemory: 'project' });
   await env.definitions.get('memory_save').execute(
     { name: 'reply language', type: 'user', description: 'Replies in Chinese', content: 'Answer in Chinese.' },
     exec,

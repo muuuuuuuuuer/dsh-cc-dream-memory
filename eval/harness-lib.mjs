@@ -11,7 +11,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /** Bump when the runner contract changes; frozen-manifest records it. */
-export const HARNESS_CONTRACT = 'v14';
+export const HARNESS_CONTRACT = 'v16';
 
 /**
  * Plugin config for one condition. Each condition has its own workspace path, so
@@ -29,7 +29,6 @@ export function conditionConfig(condition, memoryRoot, extra = {}) {
     injectionMode: 'session',
     userMemoryEnabled: false,
     autoDreamEnabled: false,
-    dreamMode: 'apply',
     evalMode: false,
     ...extra,
   };
@@ -38,9 +37,11 @@ export function conditionConfig(condition, memoryRoot, extra = {}) {
 /** A pure consolidation must read no sessions; a transcript scenario must read some. */
 export function dreamPurityError(result, scenario) {
   if (!result) return null;
-  const reviewed = Number(result.sessionsRead ?? result.sessionsReviewed) || 0;
+  if (result.ready === true && result.applied !== true) return 'Dream has an unapplied proposal';
+  const reviewed = Number(result.sessionsReviewed) || 0;
+  const read = Number(result.sessionsRead ?? result.sessionsReviewed) || 0;
   if (scenario?.dreamSessions === true) return reviewed > 0 ? null : `sessionsReviewed=${reviewed}, expected transcripts to be read`;
-  return reviewed === 0 ? null : `sessionsReviewed=${reviewed}, expected a pure consolidation`;
+  return read === 0 && reviewed === 0 ? null : `sessionsReviewed=${reviewed}, sessionsRead=${read}, expected a pure consolidation`;
 }
 
 /**

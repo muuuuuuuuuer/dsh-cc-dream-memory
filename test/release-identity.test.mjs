@@ -14,7 +14,7 @@ const zh = JSON.parse(await read('locale/zh.json'));
 
 test('package.json carries the public identity', () => {
   assert.equal(pkg.name, 'dsh-cc-dream-memory');
-  assert.equal(pkg.version, '0.21.0');
+  assert.equal(pkg.version, '0.26.0');
   assert.equal(
     pkg.description,
     'Claude Code-style auto memory and reviewable Dream consolidation for DeepSeek Harness. Community plugin, not affiliated with Anthropic.',

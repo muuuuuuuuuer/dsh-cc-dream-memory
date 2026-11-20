@@ -19,8 +19,9 @@
  *
  * @module dsh-cc-dream-memory/inject
  */
-import { recordInjection } from './metrics.js';
+import { readMetrics, recordInjection } from './metrics.js';
 import { attachRecall } from './recall.js';
+import { MEMORY_SELECTION } from './rules.js';
 
 export const CONTEXT_NAME = 'cc-memory';
 const DEFAULT_ORDER = 850;
@@ -46,16 +47,19 @@ export const MEMORY_INSTRUCTIONS = [
   'type: user | feedback | project | reference',
   '---',
   'Use the four types deliberately:',
-  '- user: who the user is: role, expertise, background. Private to this project.',
-  '- feedback: how the user wants you to work: a correction, an approach the user confirmed, or how answers should be written. State the rule, then **Why:** and **How to apply:**.',
+  '- user: who the user is: role, expertise, background. Shared by every project on this machine.',
+  '- feedback: how the user wants you to work: a correction, an approach the user confirmed, or how answers should be written. Keep a simple preference to one sentence. Include **Why:** or **How to apply:** only for a stated reason or non-obvious application the user confirmed.',
   '- project: facts about this project that the repository does not record: goals, deadlines, decisions, constraints, and how it is released or run. Add **Why:** and **How to apply:** when they are not obvious.',
   '- reference: where external information lives (URLs, dashboards, docs) and what it is for.',
   'Save only durable facts that cannot be read off the repository or from memory-rules.md: user preferences and corrections, decisions, and pointers to external information.',
+  MEMORY_SELECTION,
   'Do not save secrets, one-off tasks, code patterns, architecture notes, file paths, project structure, git history, debugging recipes, or anything a session can re-derive.',
   'Do not save what memory-rules.md or this instruction block already states. Update an existing note instead of adding a near-duplicate; merge duplicates and delete notes that are no longer true.',
+  'When the user corrects something a note says, update that note now with memory_update: change only the wrong passage and keep the conditions that still hold.',
+  'Give `sources` (repo-relative paths, optionally `path#symbol`, at most 10) when a fact depends on specific files; they anchor the note, they are not a summary of the code. The host warns when a source is gone.',
   'Write dates as absolute dates (2026-11-13), never "today" or "yesterday".',
   'Before recommending from memory, verify the file, function, or flag still exists. If memory conflicts with what you observe, trust the observation and update the note.',
-  'Memories are private to this project and are shared by its git worktrees; do not assume another project can see them.',
+  'Notes other than type user are private to this project and shared by its git worktrees; user notes are shared across all projects on this machine. Do not assume another project can see the rest.',
 ].join('\n');
 
 function warn(scope, error) {
@@ -72,6 +76,7 @@ function warn(scope, error) {
  * @param {{
  *   index?: {text?:string,lines?:number,bytes?:number,overflow?:boolean,
  *     maxLines?:number,maxBytes?:number,totalLines?:number,totalBytes?:number},
+ *   userIndex?: {text?:string},
  *   rules?: string,
  *   rulesSource?: string,
  * }} input
@@ -111,6 +116,12 @@ export function buildInjectionText(input = {}) {
   const head = typeof index.text === 'string' ? index.text : '';
   lines.push(head === '' ? '(empty — no memories saved yet)' : head.replace(/\n$/, ''));
   lines.push('</index>');
+  const userHead = typeof input.userIndex?.text === 'string' ? input.userIndex.text.trim() : '';
+  if (userHead !== '') {
+    lines.push('<user-index scope="all projects on this machine">');
+    lines.push(userHead);
+    lines.push('</user-index>');
+  }
   const actualLines = Number(index.totalLines ?? index.lines ?? 0);
   const actualBytes = Number(index.totalBytes ?? index.bytes ?? 0);
   if (index.overflow === true) {
@@ -160,6 +171,13 @@ export function registerInjection(ctx, runtime) {
 
   const agentsService = () => ctx.get('agents');
 
+  /** The injected index head; an over-budget index keeps its most used entries (reads + recalls) first. */
+  const injectedHead = async ({ store, paths }) => {
+    const { entries } = await readMetrics(paths);
+    const usage = Object.fromEntries(Object.entries(entries).map(([file, row]) => [file, row.reads + (row.recalls ?? 0)]));
+    return store.injectedIndex('project', { usage });
+  };
+
   /** Build one agent's injected text from the current store contents. */
   const buildText = async (agent) => {
     const effective = configNow();
@@ -167,9 +185,13 @@ export function registerInjection(ctx, runtime) {
     if (!runtime.canWriteMemory(agent)) return '';
     const projectContext = await runtime.forAgent(agent);
     if (!projectContext || disposed) return '';
-    const index = await projectContext.store.injectedIndex('project');
+    // `/memory session use off`: this session loads no memory at all.
+    if (runtime.sessionFlags?.(projectContext, agent.id).use === false) return '';
+    const index = await injectedHead(projectContext);
+    const user = await runtime.userContext?.(projectContext);
+    const userIndex = user ? await injectedHead(user) : undefined;
     const rules = runtime.rulesFor(projectContext);
-    const text = buildInjectionText({ index, rules: rules?.text, rulesSource: rules?.source });
+    const text = buildInjectionText({ index, userIndex, rules: rules?.text, rulesSource: rules?.source });
     // A metrics failure never blocks or changes the injected text.
     runtime.track(recordInjection(projectContext.paths));
     return text;

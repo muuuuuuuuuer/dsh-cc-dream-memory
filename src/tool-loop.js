@@ -13,7 +13,8 @@
  * - stops at `maxTurns` or when the model stops calling tools.
  */
 
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { untilAborted } from './dream-transcript.js';
 
 const MAX_TOOL_RESULT_CHARS = 12_000;
 
@@ -29,14 +30,6 @@ function mergeUsage(total, usage) {
     if (Number.isFinite(Number(usage[key]))) out[key] = (Number(out[key]) || 0) + Number(usage[key]);
   }
   return out;
-}
-
-/** Total tokens of a merged usage record (total, else input + output). */
-function totalOf(usage) {
-  if (!usage) return 0;
-  const total = Number(usage.totalTokens);
-  if (Number.isFinite(total) && total > 0) return total;
-  return (Number(usage.inputTokens) || 0) + (Number(usage.outputTokens) || 0);
 }
 
 function clip(value, max = MAX_TOOL_RESULT_CHARS) {
@@ -75,13 +68,13 @@ const TRANSPORT_RETRY_DELAY_MS = 1_000;
  *   tools: Array<object>,
  *   executeTool: (call:{id:string,name:string,arguments:object}) => Promise<unknown>|unknown,
  *   maxTurns?: number,
- *   maxTokens?: number,
+ *   maxTokens?: number|null,
  *   purpose?: string,
  *   signal?: AbortSignal,
  *   onUsage?: (usage:object|undefined)=>void,
- *   maxTotalTokens?: number,
- * }} options `maxTotalTokens` (0 = off) stops before the next model call once
- *   the reported usage reaches it; the tools of the last turn still ran.
+ *   stopOnRepeat?: boolean,
+ *   isComplete?: ()=>boolean,
+ * }} options A null maxTokens leaves the response limit to the provider.
  * @returns {Promise<{text:string, turns:number, toolCalls:Array<object>, usage:object|null, stopped:string}>}
  */
 export async function runToolLoop({
@@ -96,7 +89,8 @@ export async function runToolLoop({
   purpose = 'cc-memory',
   signal,
   onUsage,
-  maxTotalTokens = 0,
+  stopOnRepeat = false,
+  isComplete,
 } = {}) {
   const llm = ctx && typeof ctx.get === 'function' ? ctx.get('llm') : undefined;
   if (!llm || typeof llm.stream !== 'function') throw new Error('llm service unavailable');
@@ -112,26 +106,27 @@ export async function runToolLoop({
   let turns = 0;
   const cap = Math.max(1, Math.trunc(Number(maxTurns) || 5));
 
-  const budget = Math.max(0, Math.trunc(Number(maxTotalTokens) || 0));
+  let previousExchange;
 
   while (turns < cap) {
     signal?.throwIfAborted();
-    if (budget > 0 && totalOf(usage) >= budget) return { text, turns, toolCalls: calls, usage, stopped: 'budget' };
     turns += 1;
     // One model turn. A transport failure (dropped connection, gateway error)
     // is retried once; the partial turn is thrown away, so nothing is doubled.
     const streamTurn = async () => {
-      const stream = llm.stream({
+      const request = {
         provider: model.provider,
         model: model.model,
         messages,
-        maxTokens,
+        ...(maxTokens === null ? {} : { maxTokens }),
         purpose,
         ...(system ? { system } : {}),
         ...(tools.length > 0 ? { tools } : {}),
         ...(signal ? { signal } : {}),
         ...(model.reasoningEffort !== undefined ? { reasoningEffort: model.reasoningEffort } : {}),
-      });
+      };
+      signal?.throwIfAborted();
+      const stream = llm.stream(request);
       if (!stream || typeof stream[Symbol.asyncIterator] !== 'function') {
         throw new Error('llm.stream did not return an async iterable');
       }
@@ -140,6 +135,7 @@ export async function runToolLoop({
       let assistantText = '';
       let finishKind = '';
       for await (const chunk of stream) {
+        signal?.throwIfAborted();
         if (!chunk || typeof chunk !== 'object') continue;
         if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
           assistantText += chunk.text;
@@ -176,12 +172,12 @@ export async function runToolLoop({
     };
     let turn;
     try {
-      turn = await streamTurn();
+      turn = await untilAborted(streamTurn(), signal);
     } catch (error) {
       if (error?.name === 'AbortError' || signal?.aborted || !TRANSPORT_FAILURE_RE.test(String(error?.message ?? ''))) throw error;
-      await new Promise((resolve) => setTimeout(resolve, TRANSPORT_RETRY_DELAY_MS));
+      await untilAborted(new Promise((resolve) => setTimeout(resolve, TRANSPORT_RETRY_DELAY_MS)), signal);
       signal?.throwIfAborted();
-      turn = await streamTurn();
+      turn = await untilAborted(streamTurn(), signal);
     }
     const { blocks, assistantText, finishKind } = turn;
 
@@ -216,6 +212,7 @@ export async function runToolLoop({
       ],
     });
 
+    const exchange = stopOnRepeat ? createHash('sha256') : null;
     for (const call of toolCalls) {
       signal?.throwIfAborted();
       calls.push(call);
@@ -227,6 +224,7 @@ export async function runToolLoop({
         result = { ok: false, error: 'TOOL_FAILED', message: String(error?.message ?? error) };
       }
       const content = clip(result);
+      exchange?.update(JSON.stringify([call.name, call.arguments, content]));
       messages.push({
         id: randomUUID(),
         role: 'tool',
@@ -234,6 +232,12 @@ export async function runToolLoop({
         toolCallId: call.id,
         content: [{ type: 'text', text: content }],
       });
+    }
+    if (isComplete?.()) return { text, turns, toolCalls: calls, usage, stopped: 'stop' };
+    if (exchange) {
+      const hash = exchange.digest('hex');
+      if (previousExchange === hash) return { text, turns, toolCalls: calls, usage, stopped: 'stalled' };
+      previousExchange = hash;
     }
   }
 

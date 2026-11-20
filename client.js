@@ -43,9 +43,9 @@ window.__ModuleLoader__.load({
   'about.version': 'Plugin version {v}',
   'banner.autoMemoryOff': 'Auto memory is off: new conversations don\'t load memory and the agent can\'t save memories.',
   'banner.backendStale': 'The memory plugin is still running older code than this page, so newer parts (trust marks, write details) fail. Quit DeepSeek Harness completely and open it again.',
-  'banner.noBackend': 'The memory service isn\'t available on this page. Reload the page; if it still fails, check that the plugin is installed.',
+  'banner.noBackend': 'The memory service is unavailable. Try connecting again.',
   'banner.pluginOff': 'Memory is turned off: nothing is loaded, saved or dreamed.',
-  'banner.tokenExpired': 'The connection to the memory service expired. Reload the page to reconnect.',
+  'banner.tokenExpired': 'The connection to the memory service expired. Retry to reconnect.',
   'btn.back': 'Back',
   'btn.cancel': 'Cancel',
   'btn.clear': 'Clear search',
@@ -57,7 +57,6 @@ window.__ModuleLoader__.load({
   'btn.edit': 'Edit',
   'btn.new': 'New',
   'btn.refresh': 'Refresh',
-  'btn.reload': 'Reload page',
   'btn.retry': 'Retry',
   'btn.review': 'Review',
   'btn.save': 'Save',
@@ -83,6 +82,7 @@ window.__ModuleLoader__.load({
   'detail.unverifiedIndex': 'Not verified by a Dream yet.',
   'detail.updated': 'Updated {time}',
   'detail.verified': 'Verified {date}: a Dream checked this exact text against the conversations it came from.',
+  'detail.userConfirmed': 'Confirmed by you on {date}.',
   'edit.conflict': 'Another window saved this note first. Your draft is still here; reload to see the newer version.',
   'edit.content': 'Details',
   'edit.contentPlaceholder': 'Markdown is supported. Ctrl+Enter saves.',
@@ -103,6 +103,7 @@ window.__ModuleLoader__.load({
   'err.deleteDisabled': 'Deleting is turned off in the plugin config (dreamAllowDelete).',
   'err.evidenceRejected': 'Some changes lack a checkable source, so nothing was applied:',
   'err.locked': 'Another dream is running. Try again in a moment.',
+  'err.dreamTaskSession': 'This is a Dream task session. It only works on a shadow copy of the workspace notes and has no memory of its own.',
   'err.more': '… and {n} more',
   'err.stale': 'Memory changed after this plan was made. Create a new plan.',
   'error.load': 'Couldn\'t load memory',
@@ -142,6 +143,13 @@ window.__ModuleLoader__.load({
   'reason.unsupported': 'The line says something other than the quote it cites: “{line}”',
   'reason.userAttribution': 'It presents a requirement as the user’s without the user’s own words.',
   'reason.userClass': 'A user or feedback note needs a quote the user typed; forwarded material does not count.',
+  'recall.dismiss': 'Not relevant',
+  'recall.dismissFailed': 'Could not save that: {error}',
+  'recall.dismissed': 'Marked not relevant',
+  'recall.hint': 'It will not be attached again in this conversation.',
+  'recall.scopeUser': 'all projects',
+  'recall.title.one': 'Recalled 1 memory',
+  'recall.title.other': 'Recalled {n} memories',
   'restore.all': 'Restore all',
   'restore.backups': 'Before dreams',
   'restore.empty': 'Nothing here.',
@@ -205,6 +213,22 @@ window.__ModuleLoader__.load({
   'tidy.focusPlaceholder': 'e.g. deployment notes, or the reply-language preference',
   'tidy.generate': 'Estimate the run',
   'tidy.historyTitle': 'Recent dreams',
+  'tasks.title': 'Dream tasks in this workspace',
+  'tasks.summary': '{done} of {total} conversations dreamed · {left} not yet',
+  'tasks.empty': 'No conversations in this workspace yet.',
+  'tasks.status.done': 'Dreamed',
+  'tasks.status.review': 'Awaiting your switch',
+  'tasks.status.new': 'New turns since',
+  'tasks.status.partial': 'Partly dreamed',
+  'tasks.status.todo': 'Not dreamed',
+  'tasks.status.excluded': 'Learning off',
+  'tasks.filter.all': 'All',
+  'tasks.filter.left': 'Not yet',
+  'tasks.filter.done': 'Dreamed',
+  'tasks.more': 'Show all {n}',
+  'tasks.less': 'Show fewer',
+  'tasks.untitled': 'Conversation {id}',
+  'tasks.dreamedAt': 'dreamed {time}',
   'tidy.indexMeta': '{lines} / {maxLines} lines · {bytes} / {maxBytes}',
   'tidy.intro': 'Dream runs as an agent: it reads the sessions it has not reviewed yet, compares your memory pages with each other, and writes changes to a copy. You see each diff and its evidence before anything is applied.',
   'tidy.linked': 'goes together with {file}',
@@ -227,6 +251,8 @@ window.__ModuleLoader__.load({
   'tidy.defer': 'Defer',
   'tidy.sourceMissing': 'No checked source. Open the diff; after reading it you can pass this change. Otherwise it is left out this time, not rejected.',
   'tidy.sourceConfirmed': 'No checked source; you are accepting it after reading the diff.',
+  'tidy.sourcePartial': 'Source text was found. Some statements still need confirmation. Open the diff to review them.',
+  'tidy.sourcePartialConfirmed': 'You reviewed the statements that still needed confirmation and accepted this change.',
   'tidy.passUnsourced': 'Accept',
   'tidy.readDiffFirst': 'Open the diff first',
   'tidy.rejectedBefore': 'You rejected on this page before',
@@ -251,11 +277,18 @@ window.__ModuleLoader__.load({
   'tidy.runState.skipped': 'skipped',
   'tidy.runState.done': 'done',
   'tidy.runState.paused': 'paused',
+  'tidy.decision.applied': 'Applied',
+  'tidy.decision.partially-applied': 'Partially applied',
+  'tidy.decision.rejected': 'Rejected',
+  'tidy.decision.deferred': 'Deferred',
+  'tidy.decision.undone': 'Undone',
   'tidy.runNoChanges': 'Reviewed {sessions} of {offered} session(s) and found nothing to change. Used about {tokens} tokens.',
   'tidy.runSkipped': 'Skipped: {reason}',
-  'tidy.runUnfinished': 'Stopped at the turn limit before proposing any change. Run Dream again to continue; it picks up the sessions it did not finish. Used about {tokens} tokens.',
+  'tidy.runUnfinished': 'Dream stopped after repeating the same tool work without progress. Unreviewed sessions can be picked up in another run. Used about {tokens} tokens.',
   'tidy.runUnfinishedWrites': 'Some changes could not be written. Their sessions remain eligible for another run.',
+  'tidy.runIncompleteReview': 'Reviewed {sessions} of {offered} sessions before stopping. Run Dream again to review the rest.',
   'tidy.runCheckpointConflict': 'The saved analysis is out of date because its sources changed. Start a new Dream to use the latest sources.',
+  'tidy.runCheckpointUnavailable': 'The saved checkpoint is missing or damaged. Start a new Dream.',
   'tidy.runTitle': 'This run',
   'tidy.start': 'Start the dream run',
   'tidy.switchConflict': 'memory changed while the dream ran: {files}',
@@ -295,9 +328,9 @@ const ZH = {
   'about.version': '插件版本 {v}',
   'banner.autoMemoryOff': '自动记忆已关闭：新会话不会载入记忆，智能体也不能保存记忆。',
   'banner.backendStale': '记忆插件的后台还在运行旧代码，和这个页面对不上：可信度标记、待处理详情等新功能会出错。请完全退出 DeepSeek Harness 再重新打开。',
-  'banner.noBackend': '此页面连不上记忆服务。请刷新页面；如仍失败，检查插件是否已安装。',
+  'banner.noBackend': '暂时连不上记忆服务，请重试。',
   'banner.pluginOff': '记忆功能已关闭：不会载入、保存或 Dream 记忆。',
-  'banner.tokenExpired': '与记忆服务的连接已失效，刷新页面即可重新连接。',
+  'banner.tokenExpired': '与记忆服务的连接已失效，请重试以重新连接。',
   'btn.back': '返回',
   'btn.cancel': '取消',
   'btn.clear': '清除搜索',
@@ -309,7 +342,6 @@ const ZH = {
   'btn.edit': '编辑',
   'btn.new': '新建',
   'btn.refresh': '刷新',
-  'btn.reload': '刷新页面',
   'btn.retry': '重试',
   'btn.review': '去审阅',
   'btn.save': '保存',
@@ -335,6 +367,7 @@ const ZH = {
   'detail.unverifiedIndex': '还没有经过 Dream 核实。',
   'detail.updated': '更新于 {time}',
   'detail.verified': '{date} 已核实：Dream 用来源对话逐字核对过这段内容。',
+  'detail.userConfirmed': '你已于 {date} 确认此版本。',
   'edit.conflict': '另一个窗口先保存了这条笔记。你的草稿还在；刷新后可以看到较新的版本。',
   'edit.content': '详细内容',
   'edit.contentPlaceholder': '支持 Markdown。Ctrl+Enter 保存。',
@@ -355,6 +388,7 @@ const ZH = {
   'err.deleteDisabled': '插件配置关闭了删除（dreamAllowDelete）。',
   'err.evidenceRejected': '有改动缺少可核对的来源，整批都没有应用：',
   'err.locked': '另一次 Dream 正在进行，请稍后再试。',
+  'err.dreamTaskSession': '这是 Dream 的子任务会话，它只整理工作区的影子副本，没有自己的记忆。',
   'err.more': '……还有 {n} 条',
   'err.stale': '方案生成后记忆又有改动，请重新生成方案。',
   'error.load': '无法加载记忆',
@@ -394,6 +428,13 @@ const ZH = {
   'reason.unsupported': '这一行和它引用的原话说的不是一回事：「{line}」',
   'reason.userAttribution': '把要求说成是用户提的，但没有用户的原话。',
   'reason.userClass': '用户/反馈类笔记必须有用户亲手打的原话，转发的材料不算。',
+  'recall.dismiss': '不相关',
+  'recall.dismissFailed': '无法保存：{error}',
+  'recall.dismissed': '已标记为不相关',
+  'recall.hint': '本对话中不再自动附带这条记忆。',
+  'recall.scopeUser': '所有项目',
+  'recall.title.one': '已召回 1 条记忆',
+  'recall.title.other': '已召回 {n} 条记忆',
   'restore.all': '全部恢复',
   'restore.backups': 'Dream 前备份',
   'restore.empty': '这里是空的。',
@@ -457,6 +498,22 @@ const ZH = {
   'tidy.focusPlaceholder': '例如：部署相关的笔记，或回复语言偏好',
   'tidy.generate': '估算这次运行',
   'tidy.historyTitle': '最近 Dream',
+  'tasks.title': '本工作区的 Dream 任务',
+  'tasks.summary': '{total} 个对话中已整理 {done} 个 · 还有 {left} 个未整理',
+  'tasks.empty': '这个工作区还没有对话。',
+  'tasks.status.done': '已整理',
+  'tasks.status.review': '等你审核',
+  'tasks.status.new': '有新对话',
+  'tasks.status.partial': '部分整理',
+  'tasks.status.todo': '未整理',
+  'tasks.status.excluded': '已关闭学习',
+  'tasks.filter.all': '全部',
+  'tasks.filter.left': '未整理',
+  'tasks.filter.done': '已整理',
+  'tasks.more': '显示全部 {n} 个',
+  'tasks.less': '收起',
+  'tasks.untitled': '对话 {id}',
+  'tasks.dreamedAt': '{time} 整理',
   'tidy.indexMeta': '{lines} / {maxLines} 行 · {bytes} / {maxBytes}',
   'tidy.intro': 'Dream 以智能体方式运行：读还没复查过的会话，同时比对已有记忆页，改动先写进副本。应用前你能看到每一处 diff 和对应证据。',
   'tidy.linked': '与 {file} 一起决定',
@@ -479,6 +536,8 @@ const ZH = {
   'tidy.defer': '暂缓',
   'tidy.sourceMissing': '没有可核对的来源。展开看过差异后，可以选择接受；不选的话，这次先不应用，也不算拒绝。',
   'tidy.sourceConfirmed': '没有可核对的来源，你已看过差异并选择接受。',
+  'tidy.sourcePartial': '已定位到原文，仍有陈述需要确认。展开差异查看具体内容。',
+  'tidy.sourcePartialConfirmed': '你已核对需要确认的陈述，并选择接受这项改动。',
   'tidy.passUnsourced': '接受',
   'tidy.readDiffFirst': '先展开查看差异',
   'tidy.rejectedBefore': '这一页上次被你拒绝过的改动',
@@ -503,11 +562,18 @@ const ZH = {
   'tidy.runState.skipped': '已跳过',
   'tidy.runState.done': '完成',
   'tidy.runState.paused': '已暂停',
+  'tidy.decision.applied': '已应用',
+  'tidy.decision.partially-applied': '部分应用',
+  'tidy.decision.rejected': '未通过',
+  'tidy.decision.deferred': '已暂缓',
+  'tidy.decision.undone': '已撤销',
   'tidy.runNoChanges': '复查了 {offered} 个会话中的 {sessions} 个，没有需要修改的地方。用了约 {tokens} token。',
   'tidy.runSkipped': '跳过：{reason}',
-  'tidy.runUnfinished': '到轮数上限时还没做完，这次没有提出改动。再运行一次会接着复查没做完的会话。用了约 {tokens} token。',
+  'tidy.runUnfinished': 'Dream 重复了相同的工具操作，进度没有变化。剩余会话可留到下次复查。用了约 {tokens} token。',
   'tidy.runUnfinishedWrites': '部分改动写入失败，相关会话会留待下次处理。',
+  'tidy.runIncompleteReview': '停止时只复查了 {sessions}/{offered} 个会话。再次运行 Dream 可继续复查。',
   'tidy.runCheckpointConflict': '来源已变化，保存的分析已过时。请重新运行 Dream 以读取最新来源。',
+  'tidy.runCheckpointUnavailable': '保存的检查点缺失或已损坏。请重新运行 Dream。',
   'tidy.runTitle': '本次运行',
   'tidy.start': '开始整理',
   'tidy.switchConflict': 'Dream 运行期间记忆被改动：{files}',
@@ -551,6 +617,9 @@ const DICTIONARIES = { en: EN, zh: ZH };
     // variables, so light/dark follow the host theme automatically.
     // -----------------------------------------------------------------------
     const CSS = `
+/* The active Memory view shares the host's scrollport with its resident composer. */
+[data-conversation-scroll]:has(> [data-slot="conversation.session"] [data-cc-memory-view="1"])
+  > [data-composer-seat] [data-composer-card]{display:none}
 .ccm-root{
   --ccm-fg:var(--dsw-alias-label-primary,#0f1115);
   --ccm-fg2:var(--dsw-alias-label-secondary,#575c63);
@@ -561,19 +630,18 @@ const DICTIONARIES = { en: EN, zh: ZH };
   --ccm-line2:var(--dsw-alias-border-l2,rgba(0,0,0,.12));
   --ccm-hover:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06));
   --ccm-active:var(--dsw-alias-interactive-bg-active,rgba(38,49,72,.1));
-  --ccm-accent:var(--dsw-static-blue-500,#3b82f6);
-  --ccm-ok:var(--dsw-static-green-500,#22c55e);
-  --ccm-ok-fg:var(--dsw-static-green-600,#16a34a);
-  --ccm-warn:var(--dsw-static-amber-500,#f59e0b);
-  --ccm-warn-fg:var(--dsw-static-amber-600,#b45309);
+  --ccm-accent:var(--dsw-alias-trajectory-accent,#3b82f6);
+  --ccm-ok:var(--dsw-alias-state-success-primary,#22c55e);
+  --ccm-ok-fg:color-mix(in srgb,var(--dsw-alias-state-success-primary,#22c55e) 82%,#000);
+  --ccm-warn:var(--dsw-alias-state-warn-primary,#f59e0b);
+  --ccm-warn-fg:var(--dsw-alias-state-warn-label,#b45309);
   --ccm-danger:var(--dsw-alias-state-error-primary,#dc2626);
   --ccm-strong:var(--dsw-alias-button-primary-fill,#0f1115);
   --ccm-on-strong:var(--dsw-alias-label-primary-inverted,#fff);
-  --ccm-link:var(--dsw-alias-text-link,var(--ccm-accent));
+  --ccm-link:var(--dsw-alias-link,var(--ccm-accent));
   position:relative;flex:1;min-height:0;height:100%;display:flex;flex-direction:column;overflow:hidden;
   font-family:inherit;font-size:13px;line-height:1.55;color:var(--ccm-fg);
   background:var(--dsw-alias-bg-module-platform,#f5f6f7);-webkit-font-smoothing:antialiased}
-body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 .ccm-root *,.ccm-root *::before,.ccm-root *::after{box-sizing:border-box}
 .ccm-root button,.ccm-root input,.ccm-root textarea{font:inherit;color:inherit}
 .ccm-root :focus-visible{outline:2px solid var(--ccm-accent);outline-offset:2px}
@@ -584,7 +652,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 .ccm-headbar{flex:none;container-type:inline-size;border-bottom:1px solid var(--ccm-line)}
 .ccm-scroll{flex:1;min-height:0;overflow:auto;container-type:inline-size}
 .ccm-shell{max-width:1080px;margin:0 auto;padding:0 24px}
-.ccm-scroll>.ccm-shell{padding:18px 24px 88px;display:flex;flex-direction:column;gap:16px}
+.ccm-scroll>.ccm-shell{padding:18px 24px 24px;display:flex;flex-direction:column;gap:16px}
 .ccm-head{display:flex;align-items:flex-start;gap:12px;padding:18px 0 4px}
 .ccm-head-main{flex:1;min-width:0}
 .ccm-title{display:flex;align-items:baseline;gap:10px;margin:0;font-size:19px;font-weight:650;letter-spacing:-.015em;line-height:1.3}
@@ -868,6 +936,26 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 .ccm-meter.is-warn>span{background:var(--ccm-warn)}
 .ccm-meter.is-over>span{background:var(--ccm-danger)}
 .ccm-hist{display:flex;align-items:center;gap:12px;padding:11px 16px;border-top:1px solid var(--ccm-line)}
+.ccm-tasks-bar{display:flex;gap:2px;height:10px;margin:0 16px;border-radius:99px;overflow:hidden;background:var(--ccm-line)}
+.ccm-task-seg{flex-basis:0;min-width:4px}
+.ccm-tasks-legend{display:flex;flex-wrap:wrap;gap:6px 14px;padding:10px 16px 4px;font-size:12px;color:var(--ccm-fg2)}
+.ccm-task-key{display:inline-flex;align-items:center;gap:6px}
+.ccm-task-key b{color:var(--ccm-fg);font-weight:620;font-variant-numeric:tabular-nums}
+.ccm-task-dot{width:8px;height:8px;border-radius:99px}
+.ccm-tasks-filter{display:flex;gap:6px;padding:8px 16px 10px}
+.ccm-tasks-filter .ccm-on{background:var(--ccm-active);color:var(--ccm-fg)}
+.ccm-task-name{color:var(--ccm-fg);-webkit-line-clamp:1}
+.ccm-task-done{background:var(--ccm-ok)}
+.ccm-task-review{background:var(--ccm-accent)}
+.ccm-task-new{background:var(--ccm-warn)}
+.ccm-task-partial{background:color-mix(in srgb,var(--ccm-warn) 55%,transparent)}
+.ccm-task-todo{background:var(--ccm-line2)}
+.ccm-task-excluded{background:var(--ccm-line)}
+.ccm-task-pill{color:var(--ccm-fg);white-space:nowrap}
+.ccm-task-pill.ccm-task-done{background:color-mix(in srgb,var(--ccm-ok) 18%,transparent);color:var(--ccm-ok-fg)}
+.ccm-task-pill.ccm-task-review{background:color-mix(in srgb,var(--ccm-accent) 16%,transparent);color:var(--ccm-link)}
+.ccm-task-pill.ccm-task-new,.ccm-task-pill.ccm-task-partial{background:color-mix(in srgb,var(--ccm-warn) 18%,transparent);color:var(--ccm-warn-fg)}
+.ccm-task-pill.ccm-task-todo,.ccm-task-pill.ccm-task-excluded{background:var(--ccm-hover);color:var(--ccm-fg2)}
 .ccm-fold{display:flex;align-items:center;gap:10px;width:100%;padding:12px 16px;border:0;border-top:1px solid var(--ccm-line);
   background:transparent;text-align:left;cursor:pointer;font-size:13px;font-weight:550}
 .ccm-fold:hover{background:var(--ccm-hover)}
@@ -916,7 +1004,7 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 
 @container (max-width:760px){
   .ccm-shell{padding:0 16px}
-  .ccm-scroll>.ccm-shell{padding:14px 16px 80px}
+  .ccm-scroll>.ccm-shell{padding:14px 16px 20px}
   .ccm-head{padding-top:14px}
   .ccm-split.has-detail{grid-template-columns:minmax(0,1fr)}
   .ccm-split.has-detail .ccm-listpane{display:none}
@@ -935,9 +1023,9 @@ body[data-ds-dark-theme] .ccm-root{background:var(--dsw-alias-bg-base,#151517)}
 .ccm-chip-dock{display:inline-flex;align-items:center;gap:6px;height:24px;padding:0 9px;border-radius:99px;font-size:12px;white-space:nowrap;
   color:var(--dsw-alias-label-secondary,#575c63);background:var(--dsw-alias-interactive-bg-hover,rgba(38,49,72,.06))}
 .ccm-chip-dot{width:6px;height:6px;border-radius:99px;background:var(--dsw-alias-label-tertiary,#9aa0a6)}
-.ccm-chip-dot[data-on=true]{background:var(--dsw-static-green-500,#22c55e)}
+.ccm-chip-dot[data-on=true]{background:var(--dsw-alias-state-success-primary,#22c55e)}
 .ccm-chip-count{font-variant-numeric:tabular-nums;color:var(--dsw-alias-label-tertiary,#8a8f96)}
-.ccm-chip-alert{font-weight:600;color:var(--dsw-static-amber-600,#b45309)}
+.ccm-chip-alert{font-weight:600;color:var(--dsw-alias-state-warn-label,#b45309)}
 `;
 
     // -----------------------------------------------------------------------
@@ -1314,6 +1402,8 @@ function normalizePendingSwitch(raw) {
     summary: typeof raw.summary === 'string' ? raw.summary : '',
     runId: typeof raw.runId === 'string' ? raw.runId : '',
     unsupported,
+    matchedSources: [...new Set((Array.isArray(raw.evidence) ? raw.evidence : [])
+      .filter((entry) => entry?.verified === true && typeof entry.file === 'string').map((entry) => entry.file))],
     // What the human rejected on these pages before, per file.
     rejectedBefore: raw.rejectedBefore && typeof raw.rejectedBefore === 'object'
       ? Object.fromEntries(Object.entries(raw.rejectedBefore)
@@ -1359,6 +1449,7 @@ function errorKey(code = '', message = '') {
   if (probe.includes('lock-busy') || probe.includes('dream-locked')) return 'locked';
   if (probe.includes('stale-dream') || probe.includes('stale-plan')) return 'stale';
   if (probe.includes('delete-disabled')) return 'deleteDisabled';
+  if (probe.includes('dream-task-session')) return 'dreamTaskSession';
   if (probe.includes('plugin-disabled')) return 'pluginOff';
   if (probe.includes('auto-memory-disabled')) return 'autoMemoryOff';
   // A backend loaded before this page was updated: unknown routes/actions, or
@@ -1420,6 +1511,7 @@ function normalizeStatus(raw) {
               .map((run) => ({
                 runId: typeof run.runId === 'string' ? run.runId : '',
                 status: typeof run.status === 'string' ? run.status : '',
+                decision: typeof run.decision === 'string' ? run.decision : '',
                 error: typeof run.error === 'string' ? run.error : '',
                 skipReason: typeof run.skipReason === 'string' ? run.skipReason : '',
                 resumable: run.resumable === true,
@@ -1429,6 +1521,20 @@ function normalizeStatus(raw) {
                 usage: run.usage && typeof run.usage === 'object' ? run.usage : {},
               }))
           : [],
+        // Conversations of this workspace and where Dream stands with each.
+        dreamTasks: (() => {
+          const raw = record.dreamTasks && typeof record.dreamTasks === 'object' ? record.dreamTasks : {};
+          const sessions = (Array.isArray(raw.sessions) ? raw.sessions : [])
+            .filter((item) => item && typeof item.id === 'string')
+            .map((item) => ({
+              id: item.id,
+              title: typeof item.title === 'string' ? item.title : '',
+              createdAt: asNumber(item.createdAt, 0),
+              dreamedAt: asNumber(item.dreamedAt, 0),
+              status: typeof item.status === 'string' ? item.status : 'todo',
+            }));
+          return { total: sessions.length, sessions };
+        })(),
         injection: (() => {
           const injection = record.injection && typeof record.injection === 'object' ? record.injection : {};
           return {
@@ -1767,20 +1873,41 @@ function normalizeStatus(raw) {
       return undefined;
     }
 
-    function createBackend({ api, sessionId }) {
+    function createBackend({ api, sessionId, connection }) {
       const sid = typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined;
-      const mode = api !== null ? 'api' : 'none';
-      const get = (endpoint, query = {}) => {
-        if (api === null) throw new Error('the memory service is unavailable');
-        return apiRequest(api, 'GET', endpoint, { query: { sessionId: sid, ...query } });
+      const request = async (method, endpoint, options) => {
+        const current = connection ? await connection.get() : api;
+        if (!current) {
+          throw Object.assign(new Error('the memory service is unavailable'), { code: 'no-backend' });
+        }
+        try {
+          return await apiRequest(current, method, endpoint, options);
+        } catch (error) {
+          if (error.status === 401) connection?.invalidate(current);
+          throw error;
+        }
       };
-      const post = (endpoint, body = {}) => {
-        if (api === null) throw new Error('the memory service is unavailable');
-        return apiRequest(api, 'POST', endpoint, { body: { sessionId: sid, ...body } });
-      };
+      const get = (endpoint, query = {}) => request('GET', endpoint, { query: { sessionId: sid, ...query } });
+      const post = (endpoint, body = {}) => request('POST', endpoint, { body: { sessionId: sid, ...body } });
 
       async function status() {
         return normalizeStatus(await get('/status'));
+      }
+
+      async function chipStatus() {
+        const data = await get('/status', { view: 'chip' });
+        const status = normalizeStatus(data);
+        return {
+          config: status.config,
+          index: status.index,
+          entryCount: asNumber(data.entryCount, status.entries.length),
+          needsReview: typeof data.needsReview === 'boolean' ? data.needsReview : planWaiting(status),
+        };
+      }
+
+      /** The user marked a recalled note not relevant: recall stops attaching it in this conversation. */
+      async function dismissRecall(file, scope) {
+        return post('/recall-dismiss', { file, scope: scope === 'user' ? 'user' : 'project' });
       }
 
       async function file(name) {
@@ -1891,9 +2018,11 @@ function normalizeStatus(raw) {
       }
 
       return {
-        mode,
+        get mode() { return (connection ? connection.current : api) ? 'api' : 'none'; },
         sessionId: sid,
         status,
+        chipStatus,
+        dismissRecall,
         fileHistory,
         file,
         saveRules,
@@ -2157,10 +2286,10 @@ function normalizeStatus(raw) {
     const STATUS_NAMES = ['stale', 'superseded', 'disputed', 'review-needed', 'retired'];
     const TABS = ['memories', 'inbox', 'tidy', 'settings'];
     const TYPE_COLORS = {
-      user: 'var(--dsw-static-blue-500,#3b82f6)',
-      feedback: 'var(--dsw-static-amber-500,#f59e0b)',
-      project: 'var(--dsw-static-green-500,#22c55e)',
-      reference: 'var(--dsw-static-violet-500,#8b5cf6)',
+      user: 'var(--dsw-alias-trajectory-accent,#3b82f6)',
+      feedback: 'var(--dsw-alias-state-warn-primary,#f59e0b)',
+      project: 'var(--dsw-alias-state-success-primary,#22c55e)',
+      reference: 'var(--dsw-alias-chart-tools,#8b5cf6)',
     };
     const BACKSLASH = String.fromCharCode(92);
 
@@ -2420,6 +2549,7 @@ function normalizeStatus(raw) {
       if (key === 'locked') return t('err.locked');
       if (key === 'stale') return t('err.stale');
       if (key === 'deleteDisabled') return t('err.deleteDisabled');
+      if (key === 'dreamTaskSession') return t('err.dreamTaskSession');
       if (key === 'pluginOff') return t('banner.pluginOff');
       if (key === 'autoMemoryOff') return t('banner.autoMemoryOff');
       if (key === 'backendStale') return t('err.backendStale');
@@ -2621,24 +2751,6 @@ function normalizeStatus(raw) {
       );
     }
 
-    function reloadButton(t) {
-      return h(
-        'button',
-        {
-          type: 'button',
-          className: 'ccm-btn ccm-btn-sm',
-          onClick: () => {
-            try {
-              window.location.reload();
-            } catch {
-              /* nothing else to do */
-            }
-          },
-        },
-        t('btn.reload'),
-      );
-    }
-
     // -----------------------------------------------------------------------
     // Memories tab: filters, one list, and a reader that shows trust.
     // -----------------------------------------------------------------------
@@ -2664,7 +2776,8 @@ function normalizeStatus(raw) {
         const name = STATUS_NAMES.includes(entry.status) ? t('status.' + entry.status) : t('trust.stale');
         text = t('detail.stale', { status: name });
       } else if (trust === 'verified') {
-        text = t('detail.verified', { date: entry.verified.date || '—' });
+        text = t(entry.verified.source === 'user-explicit' ? 'detail.userConfirmed' : 'detail.verified',
+          { date: entry.verified.date || '—' });
       } else if (trust === 'changed') {
         text = t('detail.changed');
       } else {
@@ -3391,6 +3504,59 @@ function normalizeStatus(raw) {
     // -----------------------------------------------------------------------
     // Dream tab: estimate -> agent run -> review shadow + evidence -> switch/undo.
     // -----------------------------------------------------------------------
+    const TASK_ORDER = ['done', 'review', 'new', 'partial', 'todo', 'excluded'];
+    const TASK_LEFT = new Set(['new', 'partial', 'todo']);
+    const TASK_LIMIT = 12;
+
+    /** Which conversations of this workspace Dream has reviewed, as a bar and a list. */
+    function DreamTasksCard({ tasks, t }) {
+      const [filter, setFilter] = React.useState('all');
+      const [all, setAll] = React.useState(false);
+      const sessions = tasks?.sessions ?? [];
+      const counts = Object.fromEntries(TASK_ORDER.map((key) => [key, 0]));
+      for (const item of sessions) counts[item.status in counts ? item.status : 'todo'] += 1;
+      const total = sessions.length;
+      const left = sessions.filter((item) => TASK_LEFT.has(item.status)).length;
+      const shown = sessions.filter((item) => filter === 'all'
+        || (filter === 'left' ? TASK_LEFT.has(item.status) : item.status === 'done'));
+      const visible = all ? shown : shown.slice(0, TASK_LIMIT);
+      return h(
+        'section',
+        { className: 'ccm-card' },
+        h('div', { className: 'ccm-card-head' },
+          h('span', { className: 'ccm-card-title' }, t('tasks.title')),
+          h('span', { className: 'ccm-spacer' }),
+          total > 0 ? h('span', { className: 'ccm-row-time' }, t('tasks.summary', { done: counts.done, total, left })) : null),
+        total === 0
+          ? h('p', { className: 'ccm-card-text' }, t('tasks.empty'))
+          : h(React.Fragment, null,
+            h('div', { className: 'ccm-tasks-bar', role: 'img', 'aria-label': t('tasks.summary', { done: counts.done, total, left }) },
+              ...TASK_ORDER.filter((key) => counts[key] > 0).map((key) => h('span', {
+                key, className: 'ccm-task-seg ccm-task-' + key, style: { flexGrow: counts[key] },
+                title: t('tasks.status.' + key) + ' ' + counts[key],
+              }))),
+            h('div', { className: 'ccm-tasks-legend' },
+              ...TASK_ORDER.filter((key) => counts[key] > 0).map((key) => h('span', { key, className: 'ccm-task-key' },
+                h('span', { className: 'ccm-task-dot ccm-task-' + key }), t('tasks.status.' + key), h('b', null, counts[key])))),
+            h('div', { className: 'ccm-tasks-filter', role: 'tablist' },
+              ...['all', 'left', 'done'].map((key) => h('button', {
+                key, type: 'button', role: 'tab', 'aria-selected': filter === key,
+                className: 'ccm-btn ccm-btn-ghost ccm-btn-sm' + (filter === key ? ' ccm-on' : ''),
+                onClick: () => { setFilter(key); setAll(false); },
+              }, t('tasks.filter.' + key), ' ', key === 'all' ? total : key === 'left' ? left : counts.done))),
+            ...visible.map((item) => h('div', { key: item.id, className: 'ccm-hist' },
+              h('div', { className: 'ccm-row-main' },
+                h('span', { className: 'ccm-row-desc ccm-task-name' }, item.title || t('tasks.untitled', { id: item.id.replace(/^session-/u, '').slice(0, 8) })),
+                h('span', { className: 'ccm-row-time' }, [formatTime(item.createdAt),
+                  item.dreamedAt ? t('tasks.dreamedAt', { time: formatTime(item.dreamedAt) }) : ''].filter(Boolean).join(' · '))),
+              h('span', { className: 'ccm-pill ccm-task-pill ccm-task-' + item.status }, t('tasks.status.' + item.status)))),
+            shown.length > TASK_LIMIT
+              ? h('div', { className: 'ccm-foot' }, h('button', { type: 'button', className: 'ccm-btn ccm-btn-ghost ccm-btn-sm', onClick: () => setAll(!all) },
+                all ? t('tasks.less') : t('tasks.more', { n: shown.length })))
+              : null),
+      );
+    }
+
     function DreamTab(props) {
       const { status, backend, t, busy, run, notify, readOnly, refresh } = props;
       const [history, setHistory] = React.useState(status.dreamHistory.items);
@@ -3413,8 +3579,9 @@ function normalizeStatus(raw) {
       // A background run reports its own progress; /status only carries a log.
       const runs = Array.isArray(status.dreamRuns) ? status.dreamRuns : [];
       const activeRun = (item) => item?.status === 'running' || item?.status === 'cancelling';
-      const shownRun = (activeRun(live) ? live : null) || runs.find(activeRun)
-        || (live?.resumable ? live : null) || runs.find((item) => item.resumable) || live || runs[0] || null;
+      const currentLive = (live && runs.find((item) => item.runId === live.runId && item.decision)) || live;
+      const shownRun = (activeRun(currentLive) ? currentLive : null) || runs.find(activeRun)
+        || (currentLive?.resumable ? currentLive : null) || runs.find((item) => item.resumable) || currentLive || runs[0] || null;
       const running = Boolean(shownRun && (shownRun.status === 'running' || shownRun.status === 'cancelling'));
       const showRun = backend.mode === 'api' && shownRun !== null &&
         (shownRun.status === 'running' || shownRun.status === 'cancelling' || shownRun.status === 'failed' ||
@@ -3591,7 +3758,7 @@ function normalizeStatus(raw) {
               'div',
               { className: 'ccm-card-head' },
               h('span', { className: 'ccm-card-title' }, t('tidy.runTitle')),
-              h('span', { className: 'ccm-pill' + runTone }, t('tidy.runState.' + runStatus)),
+              h('span', { className: 'ccm-pill' + runTone }, t(shownRun.decision ? 'tidy.decision.' + shownRun.decision : 'tidy.runState.' + runStatus)),
             ),
             // The internal stage name (agent/done) means nothing to a reader; say the outcome.
             runStatus === 'done' && shownRun.skipReason === 'nothing-new'
@@ -3602,6 +3769,10 @@ function normalizeStatus(raw) {
               }))
               : runStatus === 'done' && shownRun.skipReason === 'unfinished'
                 ? h('p', { className: 'ccm-card-text' }, t('tidy.runUnfinished', { tokens: asNumber(shownRun.usage?.totalTokens, 0).toLocaleString() }))
+              : (runStatus === 'done' || runStatus === 'ready') && shownRun.skipReason === 'incomplete-review'
+                ? h('p', { className: 'ccm-card-text' }, t('tidy.runIncompleteReview', {
+                  sessions: asNumber(shownRun.sessionsReviewed, 0), offered: asNumber(shownRun.sessionsOffered, 0),
+                }))
               : runStatus === 'skipped' && shownRun.skipReason
                 ? h('p', { className: 'ccm-card-text' }, t('tidy.runSkipped', { reason: shownRun.skipReason }))
                 : null,
@@ -3609,7 +3780,9 @@ function normalizeStatus(raw) {
               ? h('p', { className: 'ccm-card-text ccm-note-error' }, t('tidy.runUnfinishedWrites'))
               : shownRun.error === 'checkpoint-conflict'
                 ? h('p', { className: 'ccm-card-text ccm-note-error' }, t('tidy.runCheckpointConflict'))
-                : shownRun.error ? h('p', { className: 'ccm-card-text ccm-note-error' }, String(shownRun.error)) : null,
+                : shownRun.error === 'checkpoint-unavailable'
+                  ? h('p', { className: 'ccm-card-text ccm-note-error' }, t('tidy.runCheckpointUnavailable'))
+                  : shownRun.error ? h('p', { className: 'ccm-card-text ccm-note-error' }, String(shownRun.error)) : null,
             shownRun.resumable ? h('p', { className: 'ccm-card-text' }, t('tidy.runCheckpoint', { n: shownRun.checkpointed || 0 })) : null,
             running ? h('div', { className: 'ccm-card-body' }, h('div', { className: 'ccm-progress' })) : null,
             running || shownRun.resumable || runStatus === 'cancelled' || runStatus === 'failed'
@@ -3681,6 +3854,7 @@ function normalizeStatus(raw) {
               const decision = decisionOf(item.file);
               const isRejected = decision === 'rejected';
               const unsourced = blockedFiles.includes(item.file);
+              const matchedSource = pending.matchedSources?.includes(item.file);
               // An unsourced change can only be passed after its diff was read.
               const canPass = !unsourced || canConfirm(item.file);
               const linked = kind === 'index' ? '' : linkOf(item.file);
@@ -3710,7 +3884,9 @@ function normalizeStatus(raw) {
                       ),
                 ),
                 unsourced && kind !== 'index'
-                  ? h('p', { className: 'ccm-note-error ccm-op-note' }, t(decision === 'passed' ? 'tidy.sourceConfirmed' : 'tidy.sourceMissing')) : null,
+                  ? h('p', { className: 'ccm-note-error ccm-op-note' }, t(matchedSource
+                    ? (decision === 'passed' ? 'tidy.sourcePartialConfirmed' : 'tidy.sourcePartial')
+                    : (decision === 'passed' ? 'tidy.sourceConfirmed' : 'tidy.sourceMissing'))) : null,
                 rejectedBefore.length > 0
                   ? h('div', { className: 'ccm-op-note' },
                     h('div', { className: 'ccm-diff-label' }, t('tidy.rejectedBefore')),
@@ -3852,7 +4028,8 @@ function normalizeStatus(raw) {
           )
         : null;
 
-      return h(React.Fragment, null, runCard, resultCard, hero, historyCard);
+      const tasksCard = h(DreamTasksCard, { tasks: status.dreamTasks, t });
+      return h(React.Fragment, null, runCard, resultCard, tasksCard, hero, historyCard);
     }
 
     // -----------------------------------------------------------------------
@@ -4198,7 +4375,7 @@ function normalizeStatus(raw) {
     // MemoryView (conversation.view)
     // -----------------------------------------------------------------------
     function MemoryViewReady(props) {
-      return h(ViewBoundary, null, h(MemoryView, props));
+      return h(ViewBoundary, { key: props.memSessionId }, h(MemoryView, props));
     }
 
     function MemoryView(props) {
@@ -4236,8 +4413,8 @@ function normalizeStatus(raw) {
       const refreshSeq = React.useRef(0);
       const refreshInFlight = React.useRef(null);
       const refresh = React.useCallback(async () => {
-        if (backend === null || backend.mode === 'none') {
-          if (alive.current) setLoad({ phase: 'error', status: null, error: new Error('no-backend') });
+        if (backend === null) {
+          if (alive.current) setLoad({ phase: 'error', status: null, error: { code: 'no-backend' } });
           return null;
         }
         // One poll at a time: a burst of clicks (or a timer tick landing on a
@@ -4403,11 +4580,17 @@ function normalizeStatus(raw) {
 
       // ---- banners -------------------------------------------------------------
       const banners = [];
-      if (backend === null || backend.mode === 'none') {
-        banners.push(h(Banner, { key: 'nb', tone: 'error', text: t('banner.noBackend'), action: reloadButton(t) }));
+      if (load.error?.code === 'no-backend') {
+        banners.push(h(Banner, { key: 'nb', tone: 'error', text: t('banner.noBackend') }));
       }
       if (tokenExpired) {
-        banners.push(h(Banner, { key: 'tk', tone: 'error', text: t('banner.tokenExpired'), action: reloadButton(t) }));
+        banners.push(h(Banner, {
+          key: 'tk', tone: 'error', text: t('banner.tokenExpired'),
+          action: status ? h('button', {
+            type: 'button', className: 'ccm-btn ccm-btn-sm', disabled: busy !== '',
+            onClick: () => run('refresh', refresh, { refresh: false }),
+          }, t('btn.retry')) : null,
+        }));
       }
       // The host keeps imported backend modules until it restarts, so a page
       // can be newer than the code answering it; say so once, up front.
@@ -4459,7 +4642,7 @@ function normalizeStatus(raw) {
           title: t('error.load'),
           text: errorText(load.error, t),
           action:
-            backend && backend.mode !== 'none'
+            backend
               ? h('button', { type: 'button', className: 'ccm-btn', disabled: busy !== '', onClick: () => run('refresh', () => refresh(), { refresh: false }) }, t('btn.retry'))
               : null,
         });
@@ -4521,7 +4704,7 @@ function normalizeStatus(raw) {
     // Status chip (conversation.composer.dock)
     // -----------------------------------------------------------------------
     function MemoryStatusChipReady(props) {
-      return h(ViewBoundary, null, h(MemoryStatusChip, props));
+      return h(ViewBoundary, { key: props.memBackend?.sessionId }, h(MemoryStatusChip, props));
     }
 
     function MemoryStatusChip(props) {
@@ -4531,11 +4714,11 @@ function normalizeStatus(raw) {
       const [hidden, setHidden] = React.useState(false);
 
       React.useEffect(() => {
-        if (backend === null || backend.mode === 'none') return undefined;
+        if (!backend?.sessionId) return undefined;
         let alive = true;
         const tick = async () => {
           try {
-            const next = await backend.status();
+            const next = await backend.chipStatus();
             if (!alive) return;
             setStatus(next);
             setHidden(false);
@@ -4553,7 +4736,6 @@ function normalizeStatus(raw) {
 
       if (hidden || status === null) return null;
       const on = status.config.enabled !== false && status.config.autoMemoryEnabled !== false;
-      const attention = attentionCount(status);
       const summary = loadSummary(status, t);
       return h(
         React.Fragment,
@@ -4563,14 +4745,165 @@ function normalizeStatus(raw) {
           'div',
           {
             className: 'ccm-chip-dock',
-            title: summary ? summary.text : status.project.memoryDir || t('chip.title'),
+            title: summary?.text || t('chip.title'),
             'data-cc-memory-chip': '1',
           },
           h('span', { className: 'ccm-chip-dot', 'data-on': on ? 'true' : 'false' }),
           h('span', null, t('chip.label')),
-          h('span', { className: 'ccm-chip-count' }, String(status.entries.length)),
-          attention > 0 ? h('span', { className: 'ccm-chip-alert' }, '· ' + t('chip.attention', { n: attention })) : null,
+          h('span', { className: 'ccm-chip-count' }, String(status.entryCount)),
+          status.needsReview ? h('span', { className: 'ccm-chip-alert' }, '· ' + t('chip.attention', { n: 1 })) : null,
         ),
+      );
+    }
+
+    // -----------------------------------------------------------------------
+    // Recall row (conversation.chat.node): which memories were attached
+    // -----------------------------------------------------------------------
+    /** Registered through `uiConversation.events` for the recall attachment the Host logs as a user message. */
+    const RECALL_KIND = 'cc-memory-recall';
+    const RECALL_SOURCE_KIND = 'plugin:cc-memory-recall';
+
+    const RECALL_CSS = `
+.ccm-recall{margin:4px 0;font-size:12px;line-height:1.5;color:var(--dsw-alias-label-secondary)}
+.ccm-recall-head{display:flex;align-items:center;gap:6px;width:100%;min-width:0;padding:4px 8px;border:0;border-radius:8px;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer}
+.ccm-recall-head:hover{background:var(--dsw-alias-interactive-bg-hover)}
+.ccm-recall-head:focus-visible{outline:2px solid var(--dsw-alias-trajectory-accent);outline-offset:1px}
+.ccm-recall-title{flex:none;font-weight:600;color:var(--dsw-alias-label-primary)}
+.ccm-recall-files{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary)}
+.ccm-recall-caret{flex:none;margin-left:auto;color:var(--dsw-alias-label-tertiary);transition:transform .15s}
+.ccm-recall-head[aria-expanded=true] .ccm-recall-caret{transform:rotate(90deg)}
+.ccm-recall-body{display:flex;flex-direction:column;gap:10px;margin:4px 0 0 8px;padding:8px 10px;border-radius:8px;background:var(--dsw-alias-card-fill)}
+.ccm-recall-item-head{display:flex;align-items:center;gap:8px}
+.ccm-recall-file{font-weight:600;color:var(--dsw-alias-label-primary);overflow-wrap:anywhere}
+.ccm-recall-scope{color:var(--dsw-alias-label-tertiary)}
+.ccm-recall-text{margin:4px 0 0;max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;color:var(--dsw-alias-label-secondary)}
+.ccm-recall-action{flex:none;margin-left:auto;padding:2px 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);font:inherit;cursor:pointer}
+.ccm-recall-action:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
+.ccm-recall-action:disabled{cursor:default;color:var(--dsw-alias-label-tertiary)}
+.ccm-recall-error{margin-top:2px;color:var(--dsw-alias-state-error-primary)}
+`;
+
+    /** The text of a user message's content blocks. */
+    function contentText(content) {
+      return (Array.isArray(content) ? content : [])
+        .filter((block) => block && block.type === 'text' && typeof block.text === 'string')
+        .map((block) => block.text)
+        .join('\n');
+    }
+
+    /**
+     * Read the attached memories back out of the recall message the Host wrote
+     * (`## <scope>/<file> (updated …)` headings, each followed by its text).
+     */
+    function parseRecall(text) {
+      const source = String(text === undefined || text === null ? '' : text);
+      const found = [...source.matchAll(/^## (project|user)\/(\S+\.md)(?: \(updated [^)]*\))?[ \t]*$/gm)];
+      return found.map((match, index) => {
+        const end = index + 1 < found.length ? found[index + 1].index : source.length;
+        const body = source.slice(match.index + match[0].length, end).replace(/<\/system-reminder>\s*$/u, '').trim();
+        return { scope: match[1], file: match[2], body };
+      });
+    }
+
+    /** Chat event definition: claims the recall message so Chat does not draw it as generic injected context. */
+    const RECALL_DEFINITION = {
+      kind: RECALL_KIND,
+      target: 'chat',
+      match: (event) => (event
+        && event.type === 'user/message'
+        && event.surfaceOp === 'append'
+        && event.data
+        && event.data.source
+        && event.data.source.kind === RECALL_SOURCE_KIND
+        ? { id: String(event.data.id), role: 'start', exclusive: true }
+        : null),
+      start: (_context, match) => ({ seq: match.event.seq, text: contentText(match.event.data.content) }),
+      update: (context) => context.state,
+      buildViewNode: (context) => (context.state === undefined
+        ? null
+        : {
+          key: context.key,
+          kind: RECALL_KIND,
+          id: context.id,
+          target: 'chat',
+          anchorSeq: context.state.seq,
+          location: (context.start && context.start.location) || (context.matches[0] && context.matches[0].location) || { kind: 'unresolved' },
+          visibility: 'visible',
+          // Stay in the Turn outside its process disclosure: a completed Turn folds Step-level rows away.
+          groupTree: 'turn',
+          data: { text: context.state.text },
+        }),
+    };
+
+    function RecallRowReady(props) {
+      return h(ViewBoundary, { key: props.memBackend?.sessionId }, h(RecallRow, props));
+    }
+
+    function RecallRow(props) {
+      const t = resolveT(props);
+      const backend = resolveBackend(props);
+      const text = props.node && props.node.data ? props.node.data.text : '';
+      const items = React.useMemo(() => parseRecall(text), [text]);
+      const [open, setOpen] = React.useState(false);
+      const [marks, setMarks] = React.useState({});
+      if (items.length === 0) return null;
+
+      const dismiss = async (item) => {
+        const key = item.scope + '/' + item.file;
+        setMarks((previous) => ({ ...previous, [key]: { pending: true } }));
+        try {
+          await backend.dismissRecall(item.file, item.scope);
+          setMarks((previous) => ({ ...previous, [key]: { done: true } }));
+        } catch (error) {
+          setMarks((previous) => ({ ...previous, [key]: { error: formatError(error) } }));
+        }
+      };
+
+      const title = items.length === 1 ? t('recall.title.one') : t('recall.title.other', { n: items.length });
+      return h(
+        'div',
+        { className: 'ccm-recall', 'data-cc-memory-recall': '1' },
+        h('style', null, RECALL_CSS),
+        h(
+          'button',
+          { type: 'button', className: 'ccm-recall-head', 'aria-expanded': open ? 'true' : 'false', onClick: () => setOpen(!open) },
+          h('span', { className: 'ccm-recall-title' }, title + ':'),
+          h('span', { className: 'ccm-recall-files' }, items.map((item) => item.file).join(' · ')),
+          h('span', { className: 'ccm-recall-caret', 'aria-hidden': 'true' }, '›'),
+        ),
+        open
+          ? h(
+            'div',
+            { className: 'ccm-recall-body' },
+            items.map((item) => {
+              const key = item.scope + '/' + item.file;
+              const mark = marks[key] || {};
+              return h(
+                'div',
+                { key },
+                h(
+                  'div',
+                  { className: 'ccm-recall-item-head' },
+                  h('span', { className: 'ccm-recall-file' }, item.file),
+                  item.scope === 'user' ? h('span', { className: 'ccm-recall-scope' }, t('recall.scopeUser')) : null,
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'ccm-recall-action',
+                      title: t('recall.hint'),
+                      disabled: mark.done === true || mark.pending === true,
+                      onClick: () => dismiss(item),
+                    },
+                    mark.done === true ? t('recall.dismissed') : t('recall.dismiss'),
+                  ),
+                ),
+                h('pre', { className: 'ccm-recall-text' }, item.body),
+                mark.error ? h('div', { className: 'ccm-recall-error', role: 'alert' }, t('recall.dismissFailed', { error: mark.error })) : null,
+              );
+            }),
+          )
+          : null,
       );
     }
 
@@ -4646,8 +4979,23 @@ function normalizeStatus(raw) {
 
       // The silent HTTP API is the only data path; page data never touches the
       // session log.
-      const api = await discoverBridge();
-      backendFactory = (sessionId) => createBackend({ api, sessionId });
+      let api = await discoverBridge();
+      let discovery;
+      const connection = {
+        get current() { return api; },
+        get() {
+          if (api) return api;
+          discovery ??= discoverBridge().then((next) => {
+            api = next;
+            return next;
+          }).finally(() => { discovery = undefined; });
+          return discovery;
+        },
+        invalidate(previous) {
+          if (api === previous) api = null;
+        },
+      };
+      backendFactory = (sessionId) => createBackend({ connection, sessionId });
       const backendFor = backendFactory;
       const labelT = boundT;
 
@@ -4691,7 +5039,7 @@ function normalizeStatus(raw) {
               name: 'conversation.composer.dock',
               id: 'cc-memory-status',
               order: 50,
-              inject: () => ({ memBackend: backendFor(undefined), memT: fallbackT }),
+              inject: (owner) => ({ memBackend: backendFor(sessionIdOf(owner)), memT: fallbackT }),
             },
             MemoryStatusChipReady,
           ),
@@ -4699,6 +5047,32 @@ function normalizeStatus(raw) {
       } catch (error) {
         // eslint-disable-next-line no-console
         console.warn('[cc-memory] status chip registration failed:', formatError(error));
+      }
+
+      // 3. Recall row in the chat flow. The Chat target is optional: without
+      // the conversation service the attachment keeps its generic injected-context row.
+      try {
+        if (typeof ctx.inject === 'function') {
+          ctx.inject(['uiConversation'], (conversation) => {
+            conversation.effect(
+              () => conversation.uiConversation.events.register(RECALL_DEFINITION),
+              'cc-memory: recall event',
+            );
+            conversation.slots.inject('conversation.chat.node', () =>
+              conversation.slots.register(
+                {
+                  name: 'conversation.chat.node',
+                  key: RECALL_KIND,
+                  inject: (owner) => ({ memBackend: backendFor(sessionIdOf(owner)), memT: fallbackT }),
+                },
+                RecallRowReady,
+              ),
+            );
+          });
+        }
+      } catch (error) {
+        // eslint-disable-next-line no-console
+        console.warn('[cc-memory] recall row registration failed:', formatError(error));
       }
     }
 
@@ -4738,6 +5112,8 @@ function normalizeStatus(raw) {
           attentionCount,
           viaLabel,
           readinessText,
+          parseRecall,
+          RECALL_DEFINITION,
         };
       }
     } catch {

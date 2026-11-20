@@ -13,6 +13,9 @@ import path from 'node:path';
 /** No built-in block: the index is the whole memory surface on the first turn. */
 export const DEFAULT_RULES = '';
 
+/** Shared selection rule for the main agent, turn extractor and Dream worker. */
+export const MEMORY_SELECTION = 'Keep a fact when it will change a later answer or action: an explicit standing preference or correction, a dated change of state, a continuing goal or constraint, a decision, or a useful external reference. Preserve who, when, and whether something was planned or actually happened. A question, a hypothetical, an assistant suggestion, or a one-turn formatting request alone establishes no lasting user fact. Skip facts already recorded with the same meaning.';
+
 /** Upper bound accepted for one rules override (characters). */
 export const RULES_MAX_CHARS = 8000;
 
