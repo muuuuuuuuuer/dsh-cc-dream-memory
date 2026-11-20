@@ -37,7 +37,7 @@ What this shows:
 - **Dream did not add accuracy here.** C fixed one question and broke two. The evidence check deferred 1,001 of the 1,137 changes Dream proposed (88%).
 - **Abstention is slightly worse with memory.** The plugin-less agent correctly says "I don't know" more often, because it has nothing to misread.
 
-Limits: this is a fixed diagnostic sample of 30 questions (10 per group), not the full 500. The judge is DeepSeek with the official LongMemEval answer-check prompts, not the official GPT-4o judge. The run used the 0.25.0 code. 0.26.0 changed how Dream selects and edits notes, and these 30 questions have not been rerun since. [Setup and sample](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/README.md) · [Where Dream spent its time](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/DREAM-SELECTION.zh.md) (Chinese)
+Limits: this is a fixed diagnostic sample of 30 questions (10 per group), not the full 500. The judge is DeepSeek using LongMemEval's own answer-check prompts, not the GPT-4o judge the benchmark specifies. The run used the 0.25.0 code. 0.26.0 changed how Dream selects and edits notes, and these 30 questions have not been rerun since. [Setup and sample](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/README.md) · [Where Dream spent its time](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/DREAM-SELECTION.zh.md) (Chinese)
 
 ### Recall, synthetic cases
 

@@ -711,7 +711,11 @@ for (const userMemory of ['global', 'project']) {
   });
 }
 
-test('a child whose turn ends without a result stops the wait instead of hanging', async () => {
+test('a child whose turn ends without a result stops the wait instead of hanging', async (t) => {
+  // Dream's own waits use unref'd timers; with a dispose that never settles,
+  // Node 22's runner would otherwise see an empty event loop and cancel the file.
+  const keepAlive = setInterval(() => {}, 1000);
+  t.after(() => clearInterval(keepAlive));
   const { SubagentTracker, runDreamChild } = await import('../src/dream-subagent.js');
   const tracker = new SubagentTracker();
   let childId;

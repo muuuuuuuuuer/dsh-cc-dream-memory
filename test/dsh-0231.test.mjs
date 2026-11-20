@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -15,7 +15,9 @@ async function makeTempDir(t) {
 }
 
 test('Dream admits history from the project root, subdirectories and linked worktrees in either open order', async (t) => {
-  const tmp = await makeTempDir(t);
+  // git records worktree paths in long form; a Windows 8.3 temp dir
+  // (C:\Users\RUNNER~1 on CI) would otherwise name the repo two ways.
+  const tmp = await realpath(await makeTempDir(t));
   const repo = path.join(tmp, 'repo');
   const subdir = path.join(repo, 'pkg');
   const worktree = path.join(tmp, 'worktree');
