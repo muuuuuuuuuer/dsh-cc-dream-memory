@@ -22,9 +22,12 @@ const pkg = JSON.parse(await read('package.json'));
 
 for (const [name, doc] of [['README.md', readme], ['README.zh.md', readmeZh]]) {
   test(`${name} gives the install command and the not-affiliated note`, () => {
-    const source = `github:muuuuuuuuuer/dsh-cc-dream-memory#v${pkg.version}`;
-    assert.ok(doc.includes(`\ndsh plugin --profile web add ${source}\n`), `install the current version (${source})`);
-    assert.ok(doc.includes(`npx @deepseek-ai/dsh plugin --profile web add ${source}`), 'desktop users have no dsh on PATH');
+    const npmSource = `${pkg.name}@${pkg.version}`;
+    const githubSource = `github:muuuuuuuuuer/dsh-cc-dream-memory#v${pkg.version}`;
+    assert.ok(doc.includes(`\ndsh plugin --profile web add ${npmSource}\n`), 'Web installs the pinned npm version');
+    assert.ok(doc.includes(`npx @deepseek-ai/dsh plugin --profile web add ${npmSource}`), 'Web users can use npx if dsh is not on PATH');
+    assert.ok(doc.includes(`\n${npmSource}\n`), 'Desktop users can paste the same npm version into Add plugin');
+    assert.ok(doc.includes(`\n${githubSource}\n`), 'GitHub fallback pins the same version');
     assert.match(doc, /Anthropic/);
     assert.match(doc, /DeepSeek/);
   });

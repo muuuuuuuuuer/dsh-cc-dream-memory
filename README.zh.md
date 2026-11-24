@@ -56,18 +56,34 @@
 
 ## 安装
 
-需要 Node 22 或更新版本，以及 DeepSeek Harness 0.2.2-rc.1 或更新版本。
+需要 DeepSeek Harness 0.2.2-rc.1 或更新版本。使用 Web 命令行安装时还需要 Node 22 或更新版本。
 
-npm 上目前仍是 0.12.0，请从 GitHub 安装当前版本：
+### Web 命令行
 
 ```bash
-dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
+dsh plugin --profile web add dsh-cc-dream-memory@0.26.0
 ```
 
 如果 `dsh` 不在 PATH 中，用 `npx`：
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
+npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory@0.26.0
+```
+
+### 桌面版
+
+打开 **插件** → **添加插件**，粘贴下面的包地址：
+
+```text
+dsh-cc-dream-memory@0.26.0
+```
+
+如果安装后插件处于禁用状态，请在插件页启用它。
+
+npm 无法访问时，可以在同一个安装入口使用下面的 GitHub 地址：
+
+```text
+github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
 ```
 
 重启 DeepSeek Harness，然后新建会话。

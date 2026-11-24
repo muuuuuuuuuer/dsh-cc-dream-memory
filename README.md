@@ -56,18 +56,34 @@ In a 0.23.1 check of seven queries run twice, unrelated messages pulled in 2 not
 
 ## Install
 
-Requires Node 22 or newer and DeepSeek Harness 0.2.2-rc.1 or newer.
+Requires DeepSeek Harness 0.2.2-rc.1 or newer. The Web CLI also requires Node 22 or newer.
 
-npm still has 0.12.0, so install the current release from GitHub:
+### Web CLI
 
 ```bash
-dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
+dsh plugin --profile web add dsh-cc-dream-memory@0.26.0
 ```
 
 If `dsh` is not on your PATH, use `npx`:
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
+npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory@0.26.0
+```
+
+### Desktop app
+
+Open **Plugins** → **Add plugin** and paste this package address:
+
+```text
+dsh-cc-dream-memory@0.26.0
+```
+
+If the plugin is disabled after installation, enable it on the Plugins page.
+
+If npm is unavailable, use this GitHub address in the same installer:
+
+```text
+github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
 ```
 
 Restart DeepSeek Harness and start a new session.
