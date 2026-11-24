@@ -61,30 +61,24 @@
 ### Web 命令行
 
 ```bash
-dsh plugin --profile web add dsh-cc-dream-memory@0.26.0
+dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
 ```
 
 如果 `dsh` 不在 PATH 中，用 `npx`：
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory@0.26.0
+npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
 ```
 
 ### 桌面版
 
-打开 **插件** → **添加插件**，粘贴下面的包地址：
+打开 **插件** → **添加插件**，粘贴下面的发布包地址：
 
 ```text
-dsh-cc-dream-memory@0.26.0
+https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/releases/download/v0.26.0/dsh-cc-dream-memory-0.26.0.tgz
 ```
 
 如果安装后插件处于禁用状态，请在插件页启用它。
-
-npm 无法访问时，可以在同一个安装入口使用下面的 GitHub 地址：
-
-```text
-github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
-```
 
 重启 DeepSeek Harness，然后新建会话。
 

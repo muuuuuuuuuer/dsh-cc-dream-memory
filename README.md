@@ -61,30 +61,24 @@ Requires DeepSeek Harness 0.2.2-rc.1 or newer. The Web CLI also requires Node 22
 ### Web CLI
 
 ```bash
-dsh plugin --profile web add dsh-cc-dream-memory@0.26.0
+dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
 ```
 
 If `dsh` is not on your PATH, use `npx`:
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory@0.26.0
+npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
 ```
 
 ### Desktop app
 
-Open **Plugins** → **Add plugin** and paste this package address:
+Open **Plugins** → **Add plugin** and paste this release archive URL:
 
 ```text
-dsh-cc-dream-memory@0.26.0
+https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/releases/download/v0.26.0/dsh-cc-dream-memory-0.26.0.tgz
 ```
 
 If the plugin is disabled after installation, enable it on the Plugins page.
-
-If npm is unavailable, use this GitHub address in the same installer:
-
-```text
-github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
-```
 
 Restart DeepSeek Harness and start a new session.
 

@@ -22,12 +22,11 @@ const pkg = JSON.parse(await read('package.json'));
 
 for (const [name, doc] of [['README.md', readme], ['README.zh.md', readmeZh]]) {
   test(`${name} gives the install command and the not-affiliated note`, () => {
-    const npmSource = `${pkg.name}@${pkg.version}`;
     const githubSource = `github:muuuuuuuuuer/dsh-cc-dream-memory#v${pkg.version}`;
-    assert.ok(doc.includes(`\ndsh plugin --profile web add ${npmSource}\n`), 'Web installs the pinned npm version');
-    assert.ok(doc.includes(`npx @deepseek-ai/dsh plugin --profile web add ${npmSource}`), 'Web users can use npx if dsh is not on PATH');
-    assert.ok(doc.includes(`\n${npmSource}\n`), 'Desktop users can paste the same npm version into Add plugin');
-    assert.ok(doc.includes(`\n${githubSource}\n`), 'GitHub fallback pins the same version');
+    const archive = `https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/releases/download/v${pkg.version}/${pkg.name}-${pkg.version}.tgz`;
+    assert.ok(doc.includes(`\ndsh plugin --profile web add ${githubSource}\n`), 'Web installs the tagged release');
+    assert.ok(doc.includes(`npx @deepseek-ai/dsh plugin --profile web add ${githubSource}`), 'Web users can use npx if dsh is not on PATH');
+    assert.ok(doc.includes(`\n${archive}\n`), 'Desktop uses the matching release archive');
     assert.match(doc, /Anthropic/);
     assert.match(doc, /DeepSeek/);
   });
