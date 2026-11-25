@@ -4,7 +4,9 @@
 
 **Claude Code-style auto memory and Dream for DeepSeek Harness.**
 
-Your agent remembers across sessions. Every change Dream proposes is one you can review and undo.
+Same model, 30 LongMemEval questions: 27% correct without the plugin, 87% with its memory.
+
+Notes are plain Markdown you can open and edit. Every change Dream proposes is one you review and can undo.
 
 [![npm](https://img.shields.io/npm/v/dsh-cc-dream-memory)](https://www.npmjs.com/package/dsh-cc-dream-memory)
 [![CI](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml)
@@ -13,6 +15,22 @@ Your agent remembers across sessions. Every change Dream proposes is one you can
 English · [简体中文](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/README.zh.md)
 
 </div>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/memory-tab.png" width="860" alt="DeepSeek Harness with the Memory tab open, listing four plain-Markdown notes with search, type filters and a New button">
+</p>
+
+```bash
+dsh plugin --profile web add dsh-cc-dream-memory
+```
+
+Coming from Claude Code? Bring your notes with you:
+
+```text
+/memory import ~/.claude/projects/<your-project>
+```
+
+Desktop install, `npx` and requirements are under [Install](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/README.md#install).
 
 ## Test results
 
@@ -34,8 +52,8 @@ Each question comes with about 50 earlier chat sessions. Three lines answered th
 What this shows:
 
 - **Memory is the gain.** Without the plugin the agent cannot see earlier sessions, so it answered none of the 20 knowledge-update and multi-session questions. With memory it answered 19.
-- **Dream did not add accuracy here.** C fixed one question and broke two. The evidence check deferred 1,001 of the 1,137 changes Dream proposed (88%).
 - **Abstention is slightly worse with memory.** The plugin-less agent correctly says "I don't know" more often, because it has nothing to misread.
+- **Dream is for review, not for score.** It did not add accuracy here: C fixed one question and broke two, and the evidence check deferred 1,001 of the 1,137 changes Dream proposed (88%). What Dream gives you is consolidation you can check: a separate copy, a quote behind every new fact, and undo after you switch.
 
 Limits: this is a fixed diagnostic sample of 30 questions (10 per group), not the full 500. The judge is DeepSeek using LongMemEval's own answer-check prompts, not the GPT-4o judge the benchmark specifies. The run used the 0.25.0 code. 0.26.0 changed how Dream selects and edits notes, and these 30 questions have not been rerun since. [Setup and sample](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/README.md) · [Where Dream spent its time](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/DREAM-SELECTION.zh.md) (Chinese)
 
