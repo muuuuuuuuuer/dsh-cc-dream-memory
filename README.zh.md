@@ -4,7 +4,9 @@
 
 **为 DeepSeek Harness 带来 Claude Code 式的自动记忆和 Dream。**
 
-让 agent 跨会话记住事情。Dream 提出的每一处改动，你都能先审阅，也能撤销。
+同一个模型，30 道 LongMemEval 题：不装插件答对 27%，有了它的记忆答对 87%。
+
+笔记是纯 Markdown，你可以直接打开和修改。Dream 提出的每一处改动，你都能先审阅，也能撤销。
 
 [![npm](https://img.shields.io/npm/v/dsh-cc-dream-memory)](https://www.npmjs.com/package/dsh-cc-dream-memory)
 [![CI](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml)
@@ -13,6 +15,22 @@
 [English](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/README.md) · 简体中文
 
 </div>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/memory-tab.png" width="860" alt="打开记忆标签的 DeepSeek Harness，列出四篇纯 Markdown 笔记，带搜索、类型筛选和新建按钮">
+</p>
+
+```bash
+dsh plugin --profile web add dsh-cc-dream-memory
+```
+
+从 Claude Code 过来？把笔记一起带上：
+
+```text
+/memory import ~/.claude/projects/<你的项目>
+```
+
+桌面版安装、`npx` 和环境要求见[安装](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/README.zh.md#安装)。
 
 ## 测试结果
 
@@ -34,8 +52,8 @@
 结论：
 
 - **提升来自记忆。** 不装插件时 agent 看不到以前的会话，知识更新和跨会话的 20 题一题没答对；有了记忆，答对 19 题。
-- **Dream 在这里没有提高准确率。** C 比 B 多对 1 题、多错 2 题。Dream 提出的 1,137 处改动中，证据检查暂缓了 1,001 处（88%）。
 - **有记忆时拒答略差。** 不装插件的 agent 更常正确地回答“不知道”，因为它没有可以误读的笔记。
+- **Dream 管的是可审阅，不是提分。** 它在这里没有提高准确率：C 比 B 多对 1 题、多错 2 题，Dream 提出的 1,137 处改动中，证据检查暂缓了 1,001 处（88%）。Dream 给你的是一次可以核对的整理：单独的副本，每条新事实都附原文引用，切换后还能撤销。
 
 局限：这是固定的 30 题诊断样本（每组 10 题），不是完整的 500 题。评分用 DeepSeek 加官方 LongMemEval 判分提示词，不是官方的 GPT-4o 评委。本次运行使用 0.25.0 的代码。0.26.0 改了 Dream 挑选和编辑笔记的方式，之后没有重跑这 30 题。[实验设置与样本](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/README.md)（英文） · [Dream 的时间花在哪里](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/DREAM-SELECTION.zh.md)
 

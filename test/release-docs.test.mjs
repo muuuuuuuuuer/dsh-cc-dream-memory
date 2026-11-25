@@ -36,7 +36,13 @@ for (const [name, doc] of [['README.md', readme], ['README.zh.md', readmeZh]]) {
   });
 
   test(`${name} links are absolute and point at files in the repository`, () => {
-    assert.doesNotMatch(doc, /<img|\.png\b/, 'the README carries no screenshots');
+    const images = [...doc.matchAll(/<img src="([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(images.length <= 1, 'the README keeps to one screenshot');
+    for (const src of images) {
+      const raw = 'https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/';
+      assert.ok(src.startsWith(raw), `${src} must be an absolute raw URL so npm can show it`);
+      assert.ok(existsSync(localPath(src.slice(raw.length))), `${src} is missing`);
+    }
     const links = [...doc.matchAll(/\]\(([^)]+)\)/g)].map((m) => m[1]);
     for (const link of links) {
       assert.match(link, /^https:\/\//, `${link} must be absolute so npm can follow it`);
