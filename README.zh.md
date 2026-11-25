@@ -61,18 +61,20 @@
 ### Web 命令行
 
 ```bash
-dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
+dsh plugin --profile web add dsh-cc-dream-memory
 ```
 
 如果 `dsh` 不在 PATH 中，用 `npx`：
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
+npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
 ```
 
 ### 桌面版
 
-打开 **插件** → **添加插件**，粘贴下面的发布包地址：
+打开 **插件** → **添加插件**，输入 `dsh-cc-dream-memory` 并安装。
+
+如果你的版本不支持按包名安装，改为粘贴下面的发布包地址：
 
 ```text
 https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/releases/download/v0.26.0/dsh-cc-dream-memory-0.26.0.tgz

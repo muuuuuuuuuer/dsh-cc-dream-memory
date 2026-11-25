@@ -22,11 +22,10 @@ const pkg = JSON.parse(await read('package.json'));
 
 for (const [name, doc] of [['README.md', readme], ['README.zh.md', readmeZh]]) {
   test(`${name} gives the install command and the not-affiliated note`, () => {
-    const githubSource = `github:muuuuuuuuuer/dsh-cc-dream-memory#v${pkg.version}`;
     const archive = `https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/releases/download/v${pkg.version}/${pkg.name}-${pkg.version}.tgz`;
-    assert.ok(doc.includes(`\ndsh plugin --profile web add ${githubSource}\n`), 'Web installs the tagged release');
-    assert.ok(doc.includes(`npx @deepseek-ai/dsh plugin --profile web add ${githubSource}`), 'Web users can use npx if dsh is not on PATH');
-    assert.ok(doc.includes(`\n${archive}\n`), 'Desktop uses the matching release archive');
+    assert.ok(doc.includes(`\ndsh plugin --profile web add ${pkg.name}\n`), 'Web installs from npm');
+    assert.ok(doc.includes(`npx @deepseek-ai/dsh plugin --profile web add ${pkg.name}\n`), 'Web users can use npx if dsh is not on PATH');
+    assert.ok(doc.includes(`\n${archive}\n`), 'Desktop falls back to the matching release archive');
     assert.match(doc, /Anthropic/);
     assert.match(doc, /DeepSeek/);
   });
