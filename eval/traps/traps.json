@@ -1,0 +1,2884 @@
+[
+  {
+    "question_id": "trap_ku_01",
+    "question_type": "knowledge-update",
+    "question": "二期是哪天上线？",
+    "answer": "2026 年 10 月 22 日（原定 10 月 15 日，后来改了）",
+    "question_date": "2026/10/14 (Wed) 20:05",
+    "haystack_session_ids": [
+      "trap_ku_01-s1",
+      "trap_ku_01-s2",
+      "trap_ku_01-s3",
+      "trap_ku_01-s4",
+      "trap_ku_01-s5"
+    ],
+    "haystack_dates": [
+      "2026/09/08 (Tue) 20:10",
+      "2026/09/16 (Wed) 21:30",
+      "2026/09/29 (Tue) 22:40",
+      "2026/10/06 (Tue) 19:45",
+      "2026/10/12 (Mon) 23:10"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "二期的排期我们先定一下。订单拆单和物流轨迹这两块，上线定在 10 月 15 号，你帮我把里程碑列个表"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，按 10/15 上线倒推：9 月底前拆单接口联调完成，10 月 8 日前完成冒烟与压测，10/12 冻结代码。需要我把物流轨迹也拆成子任务吗？"
+        },
+        {
+          "role": "user",
+          "content": "先不拆，我自己看。里程碑就按你说的"
+        },
+        {
+          "role": "assistant",
+          "content": "已列好，你确认后可以贴到项目看板。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这条查询跑了 3 秒：select * from orders where user_id = ? order by created_at desc limit 20"
+        },
+        {
+          "role": "assistant",
+          "content": "看下有没有 (user_id, created_at) 的联合索引。只有 user_id 单列索引的话，排序还得额外 filesort。"
+        },
+        {
+          "role": "user",
+          "content": "只有 user_id 单列的"
+        },
+        {
+          "role": "assistant",
+          "content": "加 (user_id, created_at desc) 联合索引，再 explain 一下确认没有 Using filesort。"
+        },
+        {
+          "role": "user",
+          "content": "加完了，80ms"
+        },
+        {
+          "role": "assistant",
+          "content": "那就可以了。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "帮我 review 下这个 retry 函数：async function retry(fn, n = 3) { for (let i = 0; i < n; i++) { try { return await fn() } catch (e) { if (i === n - 1) throw e } } }"
+        },
+        {
+          "role": "assistant",
+          "content": "逻辑没问题，但缺少退避，连续失败会瞬间打满对方。建议加指数退避加抖动，比如 await sleep(2 ** i * 200 + Math.random() * 100)。"
+        },
+        {
+          "role": "user",
+          "content": "行，加上。对了二期上线改到 10 月 22 号了，支付渠道那边联调没赶上，别按 15 号排了"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，改成 10/22。需要我把前面的里程碑整体顺延一周吗？"
+        },
+        {
+          "role": "user",
+          "content": "不用，我自己顺。先把 retry 改完"
+        },
+        {
+          "role": "assistant",
+          "content": "好，改好的版本：每次失败后 sleep(2 ** i * 200 + 随机抖动)，最后一次失败直接抛出。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "批量把当前目录 .jpeg 改成 .jpg"
+        },
+        {
+          "role": "assistant",
+          "content": "for f in *.jpeg; do mv \"$f\" \"${f%.jpeg}.jpg\"; done"
+        },
+        {
+          "role": "user",
+          "content": "windows git bash 能用吗"
+        },
+        {
+          "role": "assistant",
+          "content": "git bash 里可以，PowerShell 里语法不同。"
+        },
+        {
+          "role": "user",
+          "content": "我用的 git bash"
+        },
+        {
+          "role": "assistant",
+          "content": "那就直接跑上面那条。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "div 里的按钮想垂直居中，一直不行"
+        },
+        {
+          "role": "assistant",
+          "content": "父容器加 display:flex; align-items:center。需要水平也居中就再加 justify-content:center。"
+        },
+        {
+          "role": "user",
+          "content": "父容器没高度，难怪"
+        },
+        {
+          "role": "assistant",
+          "content": "对，给个 min-height 就行。"
+        }
+      ]
+    ],
+    "group": "correction-later",
+    "trap": "早先定的上线日期 10/15 在后来的 session 里被顺口改成 10/22，笔记里可能只留下旧日期或两个日期并存。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 2,
+        "quote": "二期上线改到 10 月 22 号"
+      }
+    ],
+    "answer_keys": [
+      "10 月 22"
+    ]
+  },
+  {
+    "question_id": "trap_ku_02",
+    "question_type": "knowledge-update",
+    "question": "后端仓库装依赖用哪个命令？",
+    "answer": "bun install（早先是 pnpm，已换成 bun）",
+    "question_date": "2026/10/28 (Wed) 21:00",
+    "haystack_session_ids": [
+      "trap_ku_02-s1",
+      "trap_ku_02-s2",
+      "trap_ku_02-s3",
+      "trap_ku_02-s4",
+      "trap_ku_02-s5"
+    ],
+    "haystack_dates": [
+      "2026/09/10 (Thu) 20:30",
+      "2026/09/20 (Sun) 22:00",
+      "2026/10/05 (Mon) 21:15",
+      "2026/10/12 (Mon) 20:20",
+      "2026/10/20 (Tue) 22:35"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "新建了 orbit 后端仓库，装依赖我习惯用 pnpm，你给我写下 README 的开发指引"
+        },
+        {
+          "role": "assistant",
+          "content": "开发指引：安装依赖 pnpm install；本地启动 pnpm dev；跑测试 pnpm test。需要的话我再补上环境变量说明。"
+        },
+        {
+          "role": "user",
+          "content": "行，先这样"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "TS 里想要一个类型，是 User 去掉 password 字段"
+        },
+        {
+          "role": "assistant",
+          "content": "type PublicUser = Omit<User, 'password'>。要只留几个字段就用 Pick。"
+        },
+        {
+          "role": "user",
+          "content": "那如果想让所有字段变可选呢"
+        },
+        {
+          "role": "assistant",
+          "content": "Partial<PublicUser>。组合起来 Partial<Omit<User, 'password'>> 也可以。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "CI 的 runner 上装依赖太慢了，要 4 分钟"
+        },
+        {
+          "role": "assistant",
+          "content": "可以缓存包管理器的 store 目录；pnpm 的话缓存 ~/.local/share/pnpm/store，key 用 pnpm-lock.yaml 的 hash。"
+        },
+        {
+          "role": "user",
+          "content": "我上周已经把项目整个换成 bun 了，pnpm-lock 都删了，现在是 bun.lockb。缓存那个按 bun 的来"
+        },
+        {
+          "role": "assistant",
+          "content": "那缓存 ~/.bun/install/cache，key 用 bun.lockb 的 hash。CI 里用 oven-sh/setup-bun，然后 bun install --frozen-lockfile。"
+        },
+        {
+          "role": "user",
+          "content": "好，帮我写下 workflow 片段"
+        },
+        {
+          "role": "assistant",
+          "content": "- uses: oven-sh/setup-bun@v2\n- uses: actions/cache@v4\n  with:\n    path: ~/.bun/install/cache\n    key: bun-${{ hashFiles('bun.lockb') }}\n- run: bun install --frozen-lockfile"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "写个正则匹配大陆手机号，11位，1开头"
+        },
+        {
+          "role": "assistant",
+          "content": "/^1[3-9]\\d{9}$/ 够用了。要容忍 +86 前缀的话：/^(?:\\+?86)?1[3-9]\\d{9}$/"
+        },
+        {
+          "role": "user",
+          "content": "+86 后面可能带空格"
+        },
+        {
+          "role": "assistant",
+          "content": "那就 /^(?:\\+?86\\s?)?1[3-9]\\d{9}$/。不过更稳妥的是先把空格和横杠去掉再匹配。"
+        },
+        {
+          "role": "user",
+          "content": "好，先 replace 掉再测"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "jest 里怎么 mock 当前时间，我的函数用了 Date.now()"
+        },
+        {
+          "role": "assistant",
+          "content": "jest.useFakeTimers(); jest.setSystemTime(new Date('2026-01-01'))。测完记得 jest.useRealTimers()。"
+        },
+        {
+          "role": "user",
+          "content": "setSystemTime 之后 setTimeout 还会走吗"
+        },
+        {
+          "role": "assistant",
+          "content": "fake timers 下不会自动走，需要 jest.advanceTimersByTime。"
+        }
+      ]
+    ],
+    "group": "correction-later",
+    "trap": "工具从 pnpm 换成 bun 是在讨论 CI 缓存时顺口说的，README 里助手写的 pnpm 容易留在笔记里。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 2,
+        "quote": "我上周已经把项目整个换成 bun 了"
+      }
+    ],
+    "answer_keys": [
+      "bun"
+    ]
+  },
+  {
+    "question_id": "trap_ku_03",
+    "question_type": "knowledge-update",
+    "question": "staging 的 redis 连哪个端口？",
+    "answer": "6381（6380 是已下线的旧实例）",
+    "question_date": "2026/10/20 (Tue) 10:30",
+    "haystack_session_ids": [
+      "trap_ku_03-s1",
+      "trap_ku_03-s2",
+      "trap_ku_03-s3",
+      "trap_ku_03-s4"
+    ],
+    "haystack_dates": [
+      "2026/09/18 (Fri) 19:50",
+      "2026/09/25 (Fri) 21:40",
+      "2026/10/02 (Fri) 22:15",
+      "2026/10/09 (Fri) 23:00"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "staging 的 redis 我记得在 6380 端口，帮我写下 config/staging.json 里的 redis 段"
+        },
+        {
+          "role": "assistant",
+          "content": "{ \"redis\": { \"host\": \"redis.staging.internal\", \"port\": 6380, \"db\": 0 } } 已经按 6380 写了。"
+        },
+        {
+          "role": "user",
+          "content": "好"
+        },
+        {
+          "role": "assistant",
+          "content": "需要的话 password 我也可以用环境变量占位。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "nginx 开 gzip，json 也要压"
+        },
+        {
+          "role": "assistant",
+          "content": "gzip on; gzip_types application/json text/css application/javascript; gzip_min_length 1024; 记得 reload。"
+        },
+        {
+          "role": "user",
+          "content": "reload 命令？"
+        },
+        {
+          "role": "assistant",
+          "content": "nginx -t 先检查配置，然后 nginx -s reload。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "docker compose up 报 port is already allocated，5432"
+        },
+        {
+          "role": "assistant",
+          "content": "本机已经有进程占着 5432，可能是本地装的 Postgres。docker ps 和 lsof -i :5432 看下是谁。"
+        },
+        {
+          "role": "user",
+          "content": "是我自己装的 pg，把 compose 里映射改成 5433:5432 吧"
+        },
+        {
+          "role": "assistant",
+          "content": "改 ports: - \"5433:5432\"，连接串端口也要同步改成 5433。"
+        },
+        {
+          "role": "user",
+          "content": "ok 通了"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "staging 连不上 redis，ECONNREFUSED，你看看哪里不对"
+        },
+        {
+          "role": "assistant",
+          "content": "ECONNREFUSED 一般是端口或主机不对。你确认下 config/staging.json 里的 port 和实际监听端口一致吗？"
+        },
+        {
+          "role": "user",
+          "content": "我去查了，6380 是旧的那台，已经下线了。现在 staging redis 是 6381，我记错了"
+        },
+        {
+          "role": "assistant",
+          "content": "那把 port 改成 6381 并重新部署。"
+        },
+        {
+          "role": "user",
+          "content": "改了，重新部署后好了"
+        },
+        {
+          "role": "assistant",
+          "content": "好，连接应该正常了。"
+        }
+      ]
+    ],
+    "group": "correction-later",
+    "trap": "用户先说了 6380，助手据此写进配置；之后用户在排查连接失败时更正为 6381，旧值容易留在笔记里。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 2,
+        "quote": "现在 staging redis 是 6381"
+      }
+    ],
+    "answer_keys": [
+      "6381"
+    ]
+  },
+  {
+    "question_id": "trap_ku_04",
+    "question_type": "knowledge-update",
+    "question": "订单列表接口的分页现在用的什么方式？",
+    "answer": "page + pageSize 的 offset 分页（最大页码 200）；cursor 方案已废弃",
+    "question_date": "2026/10/25 (Sun) 14:20",
+    "haystack_session_ids": [
+      "trap_ku_04-s1",
+      "trap_ku_04-s2",
+      "trap_ku_04-s3",
+      "trap_ku_04-s4"
+    ],
+    "haystack_dates": [
+      "2026/09/12 (Sat) 20:00",
+      "2026/09/22 (Tue) 21:10",
+      "2026/10/01 (Thu) 22:30",
+      "2026/10/14 (Wed) 18:40"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "订单列表接口分页怎么设计，我倾向 cursor 分页，参数 limit + cursor"
+        },
+        {
+          "role": "assistant",
+          "content": "cursor 分页在数据量大和实时插入时更稳，响应里带 nextCursor；缺点是不能跳页。"
+        },
+        {
+          "role": "user",
+          "content": "不跳页问题不大，订单列表就定 cursor 分页了"
+        },
+        {
+          "role": "assistant",
+          "content": "好，我按 limit + cursor 出接口文档。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "重复创建资源该返回 409 还是 422？"
+        },
+        {
+          "role": "assistant",
+          "content": "冲突（比如唯一键已存在）用 409，字段校验不通过用 422，也有团队统一用 400。"
+        },
+        {
+          "role": "user",
+          "content": "那就 409"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯，错误体里带上冲突的字段名会方便前端提示。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这条查询跑了 3 秒：select * from orders where user_id = ? order by created_at desc limit 20"
+        },
+        {
+          "role": "assistant",
+          "content": "看下有没有 (user_id, created_at) 的联合索引。只有 user_id 单列索引的话，排序还得额外 filesort。"
+        },
+        {
+          "role": "user",
+          "content": "只有 user_id 单列的"
+        },
+        {
+          "role": "assistant",
+          "content": "加 (user_id, created_at desc) 联合索引，再 explain 一下确认没有 Using filesort。"
+        },
+        {
+          "role": "user",
+          "content": "加完了，80ms"
+        },
+        {
+          "role": "assistant",
+          "content": "那就可以了。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "上午跟运营开会，他们要在后台按页码翻订单，还要直接跳到第 N 页，cursor 搞不了"
+        },
+        {
+          "role": "assistant",
+          "content": "那 cursor 不适合这个场景，要支持跳页只能用 offset 分页，数据量大时后面的页会慢，可以限制最大页码。"
+        },
+        {
+          "role": "user",
+          "content": "那订单列表改回 page + pageSize 的 offset 分页，最大页码限 200，cursor 那版不要了"
+        },
+        {
+          "role": "assistant",
+          "content": "好，我把接口文档改成 page/pageSize，响应里带 total。"
+        }
+      ]
+    ],
+    "group": "correction-later",
+    "trap": "先定了 cursor 分页，后来因运营要跳页而推翻；笔记可能保留最初的决定。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 2,
+        "quote": "订单列表改回 page + pageSize 的 offset 分页，最大页码限 200"
+      }
+    ],
+    "answer_keys": [
+      "page + pageSize",
+      "offset",
+      "200"
+    ]
+  },
+  {
+    "question_id": "trap_ov_01",
+    "question_type": "knowledge-update",
+    "question": "我提交代码时 commit message 一般按什么规范写？",
+    "answer": "默认是英文 Conventional Commits（如 feat(order): add split api）；中文只是某次给外包同事的一次性例外",
+    "question_date": "2026/10/25 (Sun) 09:30",
+    "haystack_session_ids": [
+      "trap_ov_01-s1",
+      "trap_ov_01-s2",
+      "trap_ov_01-s3",
+      "trap_ov_01-s4",
+      "trap_ov_01-s5"
+    ],
+    "haystack_dates": [
+      "2026/09/09 (Wed) 20:20",
+      "2026/09/19 (Sat) 22:10",
+      "2026/10/03 (Sat) 17:50",
+      "2026/10/10 (Sat) 21:00",
+      "2026/10/18 (Sun) 20:40"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "以后写 commit message 帮我按 Conventional Commits，英文，比如 feat(order): add split api"
+        },
+        {
+          "role": "assistant",
+          "content": "好，type 用 feat/fix/chore/docs/refactor/test，scope 写模块名，英文祈使句。"
+        },
+        {
+          "role": "user",
+          "content": "对，这是我们的默认规范"
+        },
+        {
+          "role": "assistant",
+          "content": "记下了。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "最近三个 commit 想合并成一个，怎么弄"
+        },
+        {
+          "role": "assistant",
+          "content": "git rebase -i HEAD~3，把后两个的 pick 改成 squash（或 s），保存后改下合并后的信息。已经 push 过的话需要 force-with-lease。"
+        },
+        {
+          "role": "user",
+          "content": "已经 push 了，force-with-lease 是不是比 -f 安全点"
+        },
+        {
+          "role": "assistant",
+          "content": "是，远端有别人新推的提交时它会拒绝覆盖。"
+        },
+        {
+          "role": "user",
+          "content": "行"
+        },
+        {
+          "role": "assistant",
+          "content": "合并完记得再看一眼 git log，确认历史是你想要的样子。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这次的 commit message 你用中文写，因为这个提交是给外包同事看的，他们看不懂英文缩写。就这一次"
+        },
+        {
+          "role": "assistant",
+          "content": "好：fix(logistics): 修复物流轨迹时间排序错误，按 event_time 倒序而不是 created_at。"
+        },
+        {
+          "role": "user",
+          "content": "可以，提交了"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "react-hooks/exhaustive-deps 一直报 warning，useEffect 里我用了个函数，加进依赖又无限循环了"
+        },
+        {
+          "role": "assistant",
+          "content": "函数每次渲染都是新引用，所以加进依赖会重复触发。用 useCallback 包住它，或者直接把函数挪到 effect 里面定义。"
+        },
+        {
+          "role": "user",
+          "content": "挪进去了，好了。那个 warning 消失了"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯，如果函数还要在别处用，再用 useCallback，并且把它自己的依赖写全。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "docker compose up 报 port is already allocated，5432"
+        },
+        {
+          "role": "assistant",
+          "content": "本机已经有进程占着 5432，可能是本地装的 Postgres。docker ps 和 lsof -i :5432 看下是谁。"
+        },
+        {
+          "role": "user",
+          "content": "是我自己装的 pg，把 compose 里映射改成 5433:5432 吧"
+        },
+        {
+          "role": "assistant",
+          "content": "改 ports: - \"5433:5432\"，连接串端口也要同步改成 5433。"
+        },
+        {
+          "role": "user",
+          "content": "ok 通了"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ]
+    ],
+    "group": "one-off-vs-default",
+    "trap": "“这次用中文”是一次性覆盖，笔记可能把它记成新的默认。",
+    "evidence": [
+      {
+        "session": 0,
+        "turn": 0,
+        "quote": "按 Conventional Commits，英文"
+      },
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "你用中文写，因为这个提交是给外包同事看的"
+      },
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "就这一次"
+      }
+    ],
+    "answer_keys": [
+      "Conventional Commits",
+      "英文",
+      "中文",
+      "就这一次"
+    ]
+  },
+  {
+    "question_id": "trap_ov_02",
+    "question_type": "knowledge-update",
+    "question": "十月中旬 CI 挂掉那次，要验证的 hotfix 最后是怎么发到 staging 的？",
+    "answer": "本地 npm run build 后用 scp 把 dist 传到 staging 机器的 /srv/orbit，再 pm2 reload orbit（仅此一次，平时仍走 make deploy-staging）",
+    "question_date": "2026/11/02 (Mon) 10:00",
+    "haystack_session_ids": [
+      "trap_ov_02-s1",
+      "trap_ov_02-s2",
+      "trap_ov_02-s3",
+      "trap_ov_02-s4",
+      "trap_ov_02-s5"
+    ],
+    "haystack_dates": [
+      "2026/09/14 (Mon) 20:50",
+      "2026/09/27 (Sun) 21:20",
+      "2026/10/11 (Sun) 23:30",
+      "2026/10/20 (Tue) 22:00",
+      "2026/10/28 (Wed) 20:15"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "staging 发版统一走 make deploy-staging，它会触发 CI 构建再部署。以后都这样"
+        },
+        {
+          "role": "assistant",
+          "content": "了解。deploy-staging 需要传 tag 参数吗？"
+        },
+        {
+          "role": "user",
+          "content": "不用，默认用当前分支最新的 commit"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "前端请求后端报 CORS，preflight 的 OPTIONS 返回 404"
+        },
+        {
+          "role": "assistant",
+          "content": "后端没处理 OPTIONS。用 cors 中间件并且要挂在路由之前，别挂在鉴权中间件后面。"
+        },
+        {
+          "role": "user",
+          "content": "我鉴权在前面，难怪"
+        },
+        {
+          "role": "assistant",
+          "content": "把 cors 提到最前，OPTIONS 请求不带 Authorization，会被鉴权拦掉。"
+        },
+        {
+          "role": "user",
+          "content": "好了"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "有个 hotfix 要先发 staging 验证，但 CI 的 runner 挂了，排了半小时没人接单"
+        },
+        {
+          "role": "assistant",
+          "content": "紧急的话可以绕开 CI：本地构建产物手动传到服务器。staging 机器上服务是怎么跑的？"
+        },
+        {
+          "role": "user",
+          "content": "那这次先本地 npm run build，然后 scp dist 到 staging 机器的 /srv/orbit，再 pm2 reload orbit。就这一次，等 runner 修好还是走 make deploy-staging"
+        },
+        {
+          "role": "assistant",
+          "content": "命令： scp -r dist user@staging:/srv/orbit && ssh user@staging 'pm2 reload orbit'"
+        },
+        {
+          "role": "user",
+          "content": "发完了，OK"
+        },
+        {
+          "role": "assistant",
+          "content": "好，记得验证接口是否返回新版本号。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "vscode 里怎么调试 node 脚本，断点不生效"
+        },
+        {
+          "role": "assistant",
+          "content": "launch.json 里 type 用 node，program 指向入口，如果是 ts 要开 sourceMap 并且 outFiles 指到编译产物。"
+        },
+        {
+          "role": "user",
+          "content": "我用 tsx 跑的"
+        },
+        {
+          "role": "assistant",
+          "content": "那可以加 runtimeArgs: [\"--import\", \"tsx\"]，program 直接指 ts 文件。"
+        },
+        {
+          "role": "user",
+          "content": "有断点了"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "把一个 csv 转成 json 数组，写个 python 脚本"
+        },
+        {
+          "role": "assistant",
+          "content": "import csv, json; rows = list(csv.DictReader(open('in.csv', encoding='utf-8-sig'))); json.dump(rows, open('out.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=2)"
+        },
+        {
+          "role": "user",
+          "content": "utf-8-sig 是干嘛的"
+        },
+        {
+          "role": "assistant",
+          "content": "处理 Excel 导出带的 BOM，不然第一列名会带个不可见字符。"
+        }
+      ]
+    ],
+    "group": "one-off-vs-default",
+    "trap": "这次的手动发布是一次性特例，笔记可能把它和默认流程混为一谈或丢掉。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 2,
+        "quote": "本地 npm run build，然后 scp dist 到 staging 机器的 /srv/orbit，再 pm2 reload orbit。就这一次，等 runner 修好还是走 make deploy-staging"
+      }
+    ],
+    "answer_keys": [
+      "npm run build",
+      "scp",
+      "/srv/orbit",
+      "pm2 reload",
+      "就这一次",
+      "make deploy-staging"
+    ]
+  },
+  {
+    "question_id": "trap_ov_03",
+    "question_type": "knowledge-update",
+    "question": "我们仓库合并 PR 要几个人 approve？",
+    "answer": "2 个（有一次线上事故临时降为 1 个，已改回 2 个）",
+    "question_date": "2026/11/01 (Sun) 15:30",
+    "haystack_session_ids": [
+      "trap_ov_03-s1",
+      "trap_ov_03-s2",
+      "trap_ov_03-s3",
+      "trap_ov_03-s4",
+      "trap_ov_03-s5"
+    ],
+    "haystack_dates": [
+      "2026/09/11 (Fri) 20:30",
+      "2026/09/24 (Thu) 21:45",
+      "2026/10/07 (Wed) 02:10",
+      "2026/10/15 (Thu) 20:50",
+      "2026/10/22 (Thu) 21:30"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "我们仓库合并 PR 必须 2 个人 approve，已经在 GitHub branch protection 里设好了"
+        },
+        {
+          "role": "assistant",
+          "content": "好，CODEOWNERS 的人也必须有一个吗？"
+        },
+        {
+          "role": "user",
+          "content": "那个不强制，就是 2 个 approve"
+        },
+        {
+          "role": "assistant",
+          "content": "了解。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "写个正则匹配大陆手机号，11位，1开头"
+        },
+        {
+          "role": "assistant",
+          "content": "/^1[3-9]\\d{9}$/ 够用了。要容忍 +86 前缀的话：/^(?:\\+?86)?1[3-9]\\d{9}$/"
+        },
+        {
+          "role": "user",
+          "content": "+86 后面可能带空格"
+        },
+        {
+          "role": "assistant",
+          "content": "那就 /^(?:\\+?86\\s?)?1[3-9]\\d{9}$/。不过更稳妥的是先把空格和横杠去掉再匹配。"
+        },
+        {
+          "role": "user",
+          "content": "好，先 replace 掉再测"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "线上支付回调挂了，刚才我那个修复 PR 只有一个同事 approve 就合了，临时把 branch protection 的 2 人要求降到 1，修完已经改回 2 了。就这一次，别当常态"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，事故修复属于例外，事后补评审是个好习惯。要不要补一份复盘？"
+        },
+        {
+          "role": "user",
+          "content": "明天再说"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "jest 里怎么 mock 当前时间，我的函数用了 Date.now()"
+        },
+        {
+          "role": "assistant",
+          "content": "jest.useFakeTimers(); jest.setSystemTime(new Date('2026-01-01'))。测完记得 jest.useRealTimers()。"
+        },
+        {
+          "role": "user",
+          "content": "setSystemTime 之后 setTimeout 还会走吗"
+        },
+        {
+          "role": "assistant",
+          "content": "fake timers 下不会自动走，需要 jest.advanceTimersByTime。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "TS 里想要一个类型，是 User 去掉 password 字段"
+        },
+        {
+          "role": "assistant",
+          "content": "type PublicUser = Omit<User, 'password'>。要只留几个字段就用 Pick。"
+        },
+        {
+          "role": "user",
+          "content": "那如果想让所有字段变可选呢"
+        },
+        {
+          "role": "assistant",
+          "content": "Partial<PublicUser>。组合起来 Partial<Omit<User, 'password'>> 也可以。"
+        }
+      ]
+    ],
+    "group": "one-off-vs-default",
+    "trap": "事故时临时降低到 1 人 approve 是一次性例外，笔记可能把它当成新规则。",
+    "evidence": [
+      {
+        "session": 0,
+        "turn": 0,
+        "quote": "必须 2 个人 approve"
+      },
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "临时把 branch protection 的 2 人要求降到 1，修完已经改回 2 了"
+      }
+    ],
+    "answer_keys": [
+      "2 个人 approve",
+      "降到 1",
+      "改回 2"
+    ]
+  },
+  {
+    "question_id": "trap_sc_01",
+    "question_type": "multi-session",
+    "question": "legacy-importer 这个包的 tsconfig 里 strict 要开吗？",
+    "answer": "不开，strict 保持 false（唯一的例外，其他包都是 strict: true）",
+    "question_date": "2026/10/30 (Fri) 10:20",
+    "haystack_session_ids": [
+      "trap_sc_01-s1",
+      "trap_sc_01-s2",
+      "trap_sc_01-s3",
+      "trap_sc_01-s4",
+      "trap_sc_01-s5"
+    ],
+    "haystack_dates": [
+      "2026/09/10 (Thu) 21:00",
+      "2026/09/21 (Mon) 22:20",
+      "2026/10/04 (Sun) 20:10",
+      "2026/10/12 (Mon) 21:30",
+      "2026/10/19 (Mon) 19:40"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "monorepo 里所有包的 tsconfig 都要 strict: true，这个是硬规定"
+        },
+        {
+          "role": "assistant",
+          "content": "好，我新建包时模板里默认打开 strict，并且 CI 里加 tsc --noEmit 检查。"
+        },
+        {
+          "role": "user",
+          "content": "加上"
+        },
+        {
+          "role": "assistant",
+          "content": "已加。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "react-hooks/exhaustive-deps 一直报 warning，useEffect 里我用了个函数，加进依赖又无限循环了"
+        },
+        {
+          "role": "assistant",
+          "content": "函数每次渲染都是新引用，所以加进依赖会重复触发。用 useCallback 包住它，或者直接把函数挪到 effect 里面定义。"
+        },
+        {
+          "role": "user",
+          "content": "挪进去了，好了。那个 warning 消失了"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯，如果函数还要在别处用，再用 useCallback，并且把它自己的依赖写全。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "legacy-importer 那个包没法开 strict，里面全是 any 的老代码，那个包的 tsconfig 里 strict 保持 false，我跟团队说好了，其他包不变"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，legacy-importer 的 strict 保持 false，其他包继续 strict。要在 CI 里给它单独排除严格检查吗？"
+        },
+        {
+          "role": "user",
+          "content": "用 tsconfig 自己的配置就行，不用单独排除"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "TS 里想要一个类型，是 User 去掉 password 字段"
+        },
+        {
+          "role": "assistant",
+          "content": "type PublicUser = Omit<User, 'password'>。要只留几个字段就用 Pick。"
+        },
+        {
+          "role": "user",
+          "content": "那如果想让所有字段变可选呢"
+        },
+        {
+          "role": "assistant",
+          "content": "Partial<PublicUser>。组合起来 Partial<Omit<User, 'password'>> 也可以。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "批量把当前目录 .jpeg 改成 .jpg"
+        },
+        {
+          "role": "assistant",
+          "content": "for f in *.jpeg; do mv \"$f\" \"${f%.jpeg}.jpg\"; done"
+        },
+        {
+          "role": "user",
+          "content": "windows git bash 能用吗"
+        },
+        {
+          "role": "assistant",
+          "content": "git bash 里可以，PowerShell 里语法不同。"
+        },
+        {
+          "role": "user",
+          "content": "我用的 git bash"
+        },
+        {
+          "role": "assistant",
+          "content": "那就直接跑上面那条。"
+        }
+      ]
+    ],
+    "group": "scope-exception",
+    "trap": "“所有包 strict” 是通用规则，legacy-importer 是例外；笔记可能只记通用规则。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "那个包的 tsconfig 里 strict 保持 false，我跟团队说好了，其他包不变"
+      },
+      {
+        "session": 0,
+        "turn": 0,
+        "quote": "所有包的 tsconfig 都要 strict: true"
+      }
+    ],
+    "answer_keys": [
+      "strict 保持 false",
+      "strict: true"
+    ]
+  },
+  {
+    "question_id": "trap_sc_02",
+    "question_type": "multi-session",
+    "question": "往 dev 环境发版前要先跑 e2e 吗？",
+    "answer": "不用，e2e 只卡 staging 和 prod，dev 直接发",
+    "question_date": "2026/11/03 (Tue) 16:00",
+    "haystack_session_ids": [
+      "trap_sc_02-s1",
+      "trap_sc_02-s2",
+      "trap_sc_02-s3",
+      "trap_sc_02-s4",
+      "trap_sc_02-s5"
+    ],
+    "haystack_dates": [
+      "2026/09/15 (Tue) 20:00",
+      "2026/09/30 (Wed) 22:10",
+      "2026/10/08 (Thu) 21:25",
+      "2026/10/17 (Sat) 20:30",
+      "2026/10/26 (Mon) 21:50"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "发布前一定要跑 e2e：make e2e，全绿才能发 staging 和 prod"
+        },
+        {
+          "role": "assistant",
+          "content": "好，e2e 大概十来分钟，要不要在 CI 里设成必过的 job？"
+        },
+        {
+          "role": "user",
+          "content": "设成必过的"
+        },
+        {
+          "role": "assistant",
+          "content": "已设为 required check。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "docker compose up 报 port is already allocated，5432"
+        },
+        {
+          "role": "assistant",
+          "content": "本机已经有进程占着 5432，可能是本地装的 Postgres。docker ps 和 lsof -i :5432 看下是谁。"
+        },
+        {
+          "role": "user",
+          "content": "是我自己装的 pg，把 compose 里映射改成 5433:5432 吧"
+        },
+        {
+          "role": "assistant",
+          "content": "改 ports: - \"5433:5432\"，连接串端口也要同步改成 5433。"
+        },
+        {
+          "role": "user",
+          "content": "ok 通了"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "dev 环境就不用等 e2e 了，dev 是给大家随便试的，直接发，e2e 只卡 staging 和 prod"
+        },
+        {
+          "role": "assistant",
+          "content": "了解，dev 部署的 pipeline 里去掉对 e2e 的依赖，staging 和 prod 保留。"
+        },
+        {
+          "role": "user",
+          "content": "对"
+        },
+        {
+          "role": "assistant",
+          "content": "改好了。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "div 里的按钮想垂直居中，一直不行"
+        },
+        {
+          "role": "assistant",
+          "content": "父容器加 display:flex; align-items:center。需要水平也居中就再加 justify-content:center。"
+        },
+        {
+          "role": "user",
+          "content": "父容器没高度，难怪"
+        },
+        {
+          "role": "assistant",
+          "content": "对，给个 min-height 就行。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Promise.all 一次并发 500 个请求被对面限流了"
+        },
+        {
+          "role": "assistant",
+          "content": "用 p-limit 控制并发：const limit = pLimit(10); await Promise.all(items.map(i => limit(() => fetch(i))))。"
+        },
+        {
+          "role": "user",
+          "content": "10 够吗"
+        },
+        {
+          "role": "assistant",
+          "content": "看对面限流策略，先 10 试，遇到 429 再降。"
+        }
+      ]
+    ],
+    "group": "scope-exception",
+    "trap": "“发布前必须 e2e” 是通用规则，dev 环境是例外；笔记可能只记通用规则。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "dev 环境就不用等 e2e 了，dev 是给大家随便试的，直接发，e2e 只卡 staging 和 prod"
+      }
+    ],
+    "answer_keys": [
+      "不用等 e2e",
+      "只卡 staging 和 prod"
+    ]
+  },
+  {
+    "question_id": "trap_sc_03",
+    "question_type": "multi-session",
+    "question": "后端 src 目录里的业务代码，调试时能直接 console.log 吗？",
+    "answer": "不能，no-console 是 error，要用 logger.debug；只有 scripts/ 目录下的脚本例外",
+    "question_date": "2026/11/05 (Thu) 11:00",
+    "haystack_session_ids": [
+      "trap_sc_03-s1",
+      "trap_sc_03-s2",
+      "trap_sc_03-s3",
+      "trap_sc_03-s4",
+      "trap_sc_03-s5"
+    ],
+    "haystack_dates": [
+      "2026/09/13 (Sun) 21:10",
+      "2026/09/26 (Sat) 20:40",
+      "2026/10/09 (Fri) 22:20",
+      "2026/10/20 (Tue) 19:55",
+      "2026/10/27 (Tue) 21:15"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "后端 src 下面 eslint 的 no-console 我设成 error 了，调试别用 console.log，用 logger.debug"
+        },
+        {
+          "role": "assistant",
+          "content": "好，logger 是 src/lib/logger 里的 pino 实例吧？"
+        },
+        {
+          "role": "user",
+          "content": "对"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "nginx 开 gzip，json 也要压"
+        },
+        {
+          "role": "assistant",
+          "content": "gzip on; gzip_types application/json text/css application/javascript; gzip_min_length 1024; 记得 reload。"
+        },
+        {
+          "role": "user",
+          "content": "reload 命令？"
+        },
+        {
+          "role": "assistant",
+          "content": "nginx -t 先检查配置，然后 nginx -s reload。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "scripts/ 目录下那些一次性的 CLI 脚本，比如 scripts/backfill.ts，可以直接 console.log，输出给人看的，在 eslintrc 里给 scripts/** 关掉 no-console"
+        },
+        {
+          "role": "assistant",
+          "content": "在 overrides 里加 files: ['scripts/**'], rules: { 'no-console': 'off' }。"
+        },
+        {
+          "role": "user",
+          "content": "加了"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "前端请求后端报 CORS，preflight 的 OPTIONS 返回 404"
+        },
+        {
+          "role": "assistant",
+          "content": "后端没处理 OPTIONS。用 cors 中间件并且要挂在路由之前，别挂在鉴权中间件后面。"
+        },
+        {
+          "role": "user",
+          "content": "我鉴权在前面，难怪"
+        },
+        {
+          "role": "assistant",
+          "content": "把 cors 提到最前，OPTIONS 请求不带 Authorization，会被鉴权拦掉。"
+        },
+        {
+          "role": "user",
+          "content": "好了"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "重复创建资源该返回 409 还是 422？"
+        },
+        {
+          "role": "assistant",
+          "content": "冲突（比如唯一键已存在）用 409，字段校验不通过用 422，也有团队统一用 400。"
+        },
+        {
+          "role": "user",
+          "content": "那就 409"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯，错误体里带上冲突的字段名会方便前端提示。"
+        }
+      ]
+    ],
+    "group": "scope-exception",
+    "trap": "scripts/ 目录对 console.log 的例外容易被泛化成“可以用 console.log”。",
+    "evidence": [
+      {
+        "session": 0,
+        "turn": 0,
+        "quote": "no-console 我设成 error 了，调试别用 console.log，用 logger.debug"
+      },
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "scripts/ 目录下那些一次性的 CLI 脚本，比如 scripts/backfill.ts，可以直接 console.log"
+      }
+    ],
+    "answer_keys": [
+      "no-console",
+      "error",
+      "logger.debug",
+      "scripts/"
+    ]
+  },
+  {
+    "question_id": "trap_pv_01",
+    "question_type": "knowledge-update",
+    "question": "我们定的 access token 有效期是多久？",
+    "answer": "2 小时（refresh token 7 天）。供应商建议的 24 小时没有被采纳",
+    "question_date": "2026/10/28 (Wed) 20:30",
+    "haystack_session_ids": [
+      "trap_pv_01-s1",
+      "trap_pv_01-s2",
+      "trap_pv_01-s3",
+      "trap_pv_01-s4",
+      "trap_pv_01-s5"
+    ],
+    "haystack_dates": [
+      "2026/09/17 (Thu) 20:40",
+      "2026/09/28 (Mon) 21:00",
+      "2026/10/03 (Sat) 20:15",
+      "2026/10/12 (Mon) 22:05",
+      "2026/10/19 (Mon) 20:30"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "这是鉴权供应商发来的集成建议邮件，你先看一下：\n\n---\n主题：Orbit 集成方案建议\n您好，根据贵司的业务规模，我们建议：\n1. 签名算法使用 RS256，密钥每 90 天轮换。\n2. access token 有效期设置为 24 小时，refresh token 30 天，以减少用户重新登录的频率。\n3. 开启 token 绑定 IP 以增强安全。\n4. 登录接口限流为每 IP 每分钟 60 次。\n5. 建议所有回调地址使用 HTTPS 并配置白名单。\n如有疑问请联系您的客户经理。\n---\n你怎么看？"
+        },
+        {
+          "role": "assistant",
+          "content": "整体合理。第 2 点 24 小时的 access token 偏长，一旦泄露窗口较大；第 3 点绑定 IP 对移动网络用户体验不好。其他几点可以采纳。"
+        },
+        {
+          "role": "user",
+          "content": "嗯，我再想想"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，你定了告诉我，我来改配置。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "把一个 csv 转成 json 数组，写个 python 脚本"
+        },
+        {
+          "role": "assistant",
+          "content": "import csv, json; rows = list(csv.DictReader(open('in.csv', encoding='utf-8-sig'))); json.dump(rows, open('out.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=2)"
+        },
+        {
+          "role": "user",
+          "content": "utf-8-sig 是干嘛的"
+        },
+        {
+          "role": "assistant",
+          "content": "处理 Excel 导出带的 BOM，不然第一列名会带个不可见字符。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "鉴权这块定下来了：access token 有效期 2 小时，refresh token 7 天，签名 RS256，不绑 IP"
+        },
+        {
+          "role": "assistant",
+          "content": "好，我按这个配置 JWT 的 signOptions：expiresIn: '2h'，refresh token 另外签发，exp 为 7d。"
+        },
+        {
+          "role": "user",
+          "content": "嗯，登录限流先用默认的"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "vscode 里怎么调试 node 脚本，断点不生效"
+        },
+        {
+          "role": "assistant",
+          "content": "launch.json 里 type 用 node，program 指向入口，如果是 ts 要开 sourceMap 并且 outFiles 指到编译产物。"
+        },
+        {
+          "role": "user",
+          "content": "我用 tsx 跑的"
+        },
+        {
+          "role": "assistant",
+          "content": "那可以加 runtimeArgs: [\"--import\", \"tsx\"]，program 直接指 ts 文件。"
+        },
+        {
+          "role": "user",
+          "content": "有断点了"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "react-hooks/exhaustive-deps 一直报 warning，useEffect 里我用了个函数，加进依赖又无限循环了"
+        },
+        {
+          "role": "assistant",
+          "content": "函数每次渲染都是新引用，所以加进依赖会重复触发。用 useCallback 包住它，或者直接把函数挪到 effect 里面定义。"
+        },
+        {
+          "role": "user",
+          "content": "挪进去了，好了。那个 warning 消失了"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯，如果函数还要在别处用，再用 useCallback，并且把它自己的依赖写全。"
+        }
+      ]
+    ],
+    "group": "provenance",
+    "trap": "供应商邮件（粘贴材料）里的 24 小时建议可能被当作用户的决定记下来。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "access token 有效期 2 小时，refresh token 7 天"
+      }
+    ],
+    "answer_keys": [
+      "2 小时",
+      "7 天"
+    ]
+  },
+  {
+    "question_id": "trap_pv_02",
+    "question_type": "knowledge-update",
+    "question": "我们线上跑的是哪个 Node 版本？",
+    "answer": "Node 20（20.11）",
+    "question_date": "2026/10/30 (Fri) 09:50",
+    "haystack_session_ids": [
+      "trap_pv_02-s1",
+      "trap_pv_02-s2",
+      "trap_pv_02-s3",
+      "trap_pv_02-s4"
+    ],
+    "haystack_dates": [
+      "2026/09/19 (Sat) 20:10",
+      "2026/10/01 (Thu) 21:40",
+      "2026/10/08 (Thu) 20:20",
+      "2026/10/16 (Fri) 19:30"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "帮我给 orbit 写个 Dockerfile，多阶段构建，alpine 的"
+        },
+        {
+          "role": "assistant",
+          "content": "按你们线上 Node 18 来写的：\nFROM node:18-alpine AS build\nWORKDIR /app\nCOPY package*.json ./\nRUN npm ci\nCOPY . .\nRUN npm run build\n\nFROM node:18-alpine\nWORKDIR /app\nCOPY --from=build /app/dist ./dist\nCOPY package*.json ./\nRUN npm ci --omit=dev\nCMD [\"node\", \"dist/main.js\"]"
+        },
+        {
+          "role": "user",
+          "content": "收到，我先拿去试试"
+        },
+        {
+          "role": "assistant",
+          "content": "构建不通过的话把报错贴给我。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "最近三个 commit 想合并成一个，怎么弄"
+        },
+        {
+          "role": "assistant",
+          "content": "git rebase -i HEAD~3，把后两个的 pick 改成 squash（或 s），保存后改下合并后的信息。已经 push 过的话需要 force-with-lease。"
+        },
+        {
+          "role": "user",
+          "content": "已经 push 了，force-with-lease 是不是比 -f 安全点"
+        },
+        {
+          "role": "assistant",
+          "content": "是，远端有别人新推的提交时它会拒绝覆盖。"
+        },
+        {
+          "role": "user",
+          "content": "行"
+        },
+        {
+          "role": "assistant",
+          "content": "合并完记得再看一眼 git log，确认历史是你想要的样子。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Promise.all 一次并发 500 个请求被对面限流了"
+        },
+        {
+          "role": "assistant",
+          "content": "用 p-limit 控制并发：const limit = pLimit(10); await Promise.all(items.map(i => limit(() => fetch(i))))。"
+        },
+        {
+          "role": "user",
+          "content": "10 够吗"
+        },
+        {
+          "role": "assistant",
+          "content": "看对面限流策略，先 10 试，遇到 429 再降。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Dockerfile 里那个 node:18 是你自己编的吧，我们线上是 Node 20.11，之前从没说过 18。服务里用到了内置 fetch，18 上行为不一样，改成 node:20-alpine"
+        },
+        {
+          "role": "assistant",
+          "content": "抱歉，之前没有依据地写了 18。两个 stage 都改成 node:20-alpine。"
+        },
+        {
+          "role": "user",
+          "content": "好"
+        },
+        {
+          "role": "assistant",
+          "content": "已更新。"
+        }
+      ]
+    ],
+    "group": "provenance",
+    "trap": "助手在 Dockerfile 里凭空写了 “线上 Node 18”，用户从未说过，后来才否认；笔记可能记下助手的说法。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 0,
+        "quote": "我们线上是 Node 20.11，之前从没说过 18"
+      }
+    ],
+    "answer_keys": [
+      "Node 20"
+    ]
+  },
+  {
+    "question_id": "trap_pv_03",
+    "question_type": "knowledge-update",
+    "question": "十月初那次订单重复扣款事故，真正查出来的根因是什么？",
+    "answer": "扣款调用没带 Idempotency-Key，支付回调超时后网关重试被当成新请求（不是 Kafka 重复消费）",
+    "question_date": "2026/11/04 (Wed) 10:40",
+    "haystack_session_ids": [
+      "trap_pv_03-s1",
+      "trap_pv_03-s2",
+      "trap_pv_03-s3",
+      "trap_pv_03-s4",
+      "trap_pv_03-s5"
+    ],
+    "haystack_dates": [
+      "2026/10/06 (Tue) 21:00",
+      "2026/10/10 (Sat) 22:15",
+      "2026/10/12 (Mon) 20:50",
+      "2026/10/20 (Tue) 21:20",
+      "2026/10/27 (Tue) 20:05"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "昨天订单重复扣款的事故，我同事老李写了个复盘草稿，你帮我润色下，我贴给你：\n\n【事故复盘草稿 - 老李】\n时间：10/05 14:20-15:05\n现象：部分用户同一订单被扣款两次，共 37 笔。\n原因分析：我们判断是 Kafka 消费者在 rebalance 时重复消费了支付成功消息，导致重复入账扣款。\n影响：37 笔订单，已全部退款。\n改进：1. 消费端做去重；2. 增加 rebalance 监控。"
+        },
+        {
+          "role": "assistant",
+          "content": "润色后：\n【事故复盘】\n时间：10/05 14:20–15:05（45 分钟）\n现象：同一订单被重复扣款，共 37 笔。\n原因：Kafka 消费者在 rebalance 时重复消费支付成功消息，导致重复入账扣款。\n影响：37 笔订单，已全额退款。\n改进：消费端增加去重；增加 rebalance 监控告警。"
+        },
+        {
+          "role": "user",
+          "content": "行，先放着"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这条查询跑了 3 秒：select * from orders where user_id = ? order by created_at desc limit 20"
+        },
+        {
+          "role": "assistant",
+          "content": "看下有没有 (user_id, created_at) 的联合索引。只有 user_id 单列索引的话，排序还得额外 filesort。"
+        },
+        {
+          "role": "user",
+          "content": "只有 user_id 单列的"
+        },
+        {
+          "role": "assistant",
+          "content": "加 (user_id, created_at desc) 联合索引，再 explain 一下确认没有 Using filesort。"
+        },
+        {
+          "role": "user",
+          "content": "加完了，80ms"
+        },
+        {
+          "role": "assistant",
+          "content": "那就可以了。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "更新下上次重复扣款的根因：老李写的 Kafka 重复消费是错的，我查了日志，消费端有去重。真正原因是支付回调超时后网关重试，而我们调用扣款接口时没带 Idempotency-Key，网关当成了新请求。已经加了 Idempotency-Key，用 orderId 做幂等键。"
+        },
+        {
+          "role": "assistant",
+          "content": "那复盘里的原因分析要整段改掉，改进项也要改成：扣款请求统一带 Idempotency-Key，并给网关重试加告警。要我改吗？"
+        },
+        {
+          "role": "user",
+          "content": "改，发我最终版"
+        },
+        {
+          "role": "assistant",
+          "content": "最终版：原因——支付回调超时后网关重试，扣款请求未携带 Idempotency-Key 被视为新请求；改进——扣款统一带 Idempotency-Key（orderId），网关重试加告警。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "jest 里怎么 mock 当前时间，我的函数用了 Date.now()"
+        },
+        {
+          "role": "assistant",
+          "content": "jest.useFakeTimers(); jest.setSystemTime(new Date('2026-01-01'))。测完记得 jest.useRealTimers()。"
+        },
+        {
+          "role": "user",
+          "content": "setSystemTime 之后 setTimeout 还会走吗"
+        },
+        {
+          "role": "assistant",
+          "content": "fake timers 下不会自动走，需要 jest.advanceTimersByTime。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "前端请求后端报 CORS，preflight 的 OPTIONS 返回 404"
+        },
+        {
+          "role": "assistant",
+          "content": "后端没处理 OPTIONS。用 cors 中间件并且要挂在路由之前，别挂在鉴权中间件后面。"
+        },
+        {
+          "role": "user",
+          "content": "我鉴权在前面，难怪"
+        },
+        {
+          "role": "assistant",
+          "content": "把 cors 提到最前，OPTIONS 请求不带 Authorization，会被鉴权拦掉。"
+        },
+        {
+          "role": "user",
+          "content": "好了"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯。"
+        }
+      ]
+    ],
+    "group": "provenance",
+    "trap": "同事的复盘草稿（粘贴材料）里的错误归因 “Kafka 重复消费” 容易被当成事实记下，用户后来才纠正。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "老李写的 Kafka 重复消费是错的"
+      },
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "真正原因是支付回调超时后网关重试，而我们调用扣款接口时没带 Idempotency-Key，网关当成了新请求"
+      }
+    ],
+    "answer_keys": [
+      "Kafka",
+      "Idempotency-Key",
+      "网关重试"
+    ]
+  },
+  {
+    "question_id": "trap_sy_01",
+    "question_type": "multi-session",
+    "question": "我们完整的发版流程是什么？",
+    "answer": "1) make test 全绿；2) 打 tag vX.Y.Z 并更新 CHANGELOG.md；3) 发 staging 跑 make smoke-staging，通过才继续；4) prod 先灰度 10%，观察 30 分钟无报警；5) 全量；6) 在 #release 频道发通知，附 tag 和 CHANGELOG 链接",
+    "question_date": "2026/11/05 (Thu) 10:15",
+    "haystack_session_ids": [
+      "trap_sy_01-s1",
+      "trap_sy_01-s2",
+      "trap_sy_01-s3",
+      "trap_sy_01-s4",
+      "trap_sy_01-s5",
+      "trap_sy_01-s6"
+    ],
+    "haystack_dates": [
+      "2026/09/14 (Mon) 21:30",
+      "2026/09/23 (Wed) 20:30",
+      "2026/10/02 (Fri) 22:00",
+      "2026/10/09 (Fri) 21:10",
+      "2026/10/21 (Wed) 20:40",
+      "2026/10/28 (Wed) 19:50"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "整理下我们发版流程：第一步，make test 必须全绿；第二步，打 tag，格式 vX.Y.Z，同时更新 CHANGELOG.md"
+        },
+        {
+          "role": "assistant",
+          "content": "记下了：1. make test 全绿；2. 打 tag vX.Y.Z 并更新 CHANGELOG。后面还有吗？"
+        },
+        {
+          "role": "user",
+          "content": "还有，之后再说"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "写个正则匹配大陆手机号，11位，1开头"
+        },
+        {
+          "role": "assistant",
+          "content": "/^1[3-9]\\d{9}$/ 够用了。要容忍 +86 前缀的话：/^(?:\\+?86)?1[3-9]\\d{9}$/"
+        },
+        {
+          "role": "user",
+          "content": "+86 后面可能带空格"
+        },
+        {
+          "role": "assistant",
+          "content": "那就 /^(?:\\+?86\\s?)?1[3-9]\\d{9}$/。不过更稳妥的是先把空格和横杠去掉再匹配。"
+        },
+        {
+          "role": "user",
+          "content": "好，先 replace 掉再测"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "发版流程补充：tag 之后先发 staging 跑 make smoke-staging，冒烟过了才能继续"
+        },
+        {
+          "role": "assistant",
+          "content": "好，作为第 3 步。"
+        },
+        {
+          "role": "user",
+          "content": "嗯"
+        },
+        {
+          "role": "assistant",
+          "content": "需要的话我把这些整理成 docs/release.md。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "docker compose up 报 port is already allocated，5432"
+        },
+        {
+          "role": "assistant",
+          "content": "本机已经有进程占着 5432，可能是本地装的 Postgres。docker ps 和 lsof -i :5432 看下是谁。"
+        },
+        {
+          "role": "user",
+          "content": "是我自己装的 pg，把 compose 里映射改成 5433:5432 吧"
+        },
+        {
+          "role": "assistant",
+          "content": "改 ports: - \"5433:5432\"，连接串端口也要同步改成 5433。"
+        },
+        {
+          "role": "user",
+          "content": "ok 通了"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "发版流程剩下的：prod 先灰度 10%，观察 30 分钟没有报警再全量；全量完成后在 #release 频道发通知，贴上 tag 和 CHANGELOG 链接"
+        },
+        {
+          "role": "assistant",
+          "content": "好，记下了。"
+        },
+        {
+          "role": "user",
+          "content": "嗯，整个流程就这些"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "批量把当前目录 .jpeg 改成 .jpg"
+        },
+        {
+          "role": "assistant",
+          "content": "for f in *.jpeg; do mv \"$f\" \"${f%.jpeg}.jpg\"; done"
+        },
+        {
+          "role": "user",
+          "content": "windows git bash 能用吗"
+        },
+        {
+          "role": "assistant",
+          "content": "git bash 里可以，PowerShell 里语法不同。"
+        },
+        {
+          "role": "user",
+          "content": "我用的 git bash"
+        },
+        {
+          "role": "assistant",
+          "content": "那就直接跑上面那条。"
+        }
+      ]
+    ],
+    "group": "synthesis",
+    "trap": "发版步骤分散在三个 session，增量记笔记容易只留下其中一部分。",
+    "evidence": [
+      {
+        "session": 0,
+        "turn": 0,
+        "quote": "第一步，make test 必须全绿；第二步，打 tag，格式 vX.Y.Z，同时更新 CHANGELOG.md"
+      },
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "tag 之后先发 staging 跑 make smoke-staging，冒烟过了才能继续"
+      },
+      {
+        "session": 4,
+        "turn": 0,
+        "quote": "prod 先灰度 10%，观察 30 分钟没有报警再全量；全量完成后在 #release 频道发通知，贴上 tag 和 CHANGELOG 链接"
+      }
+    ],
+    "answer_keys": [
+      "make test",
+      "vX.Y.Z",
+      "CHANGELOG",
+      "make smoke-staging",
+      "灰度 10%",
+      "30 分钟",
+      "#release"
+    ]
+  },
+  {
+    "question_id": "trap_sy_02",
+    "question_type": "multi-session",
+    "question": "改 billing 模块有哪些坑要注意？",
+    "answer": "四点：金额一律用整数分，不用浮点；汇率缓存 TTL 只有 60 秒，在循环外取一次；退款接口不幂等，要自己带 refund_key；第三方沙箱每分钟最多 10 次请求，测试别并发",
+    "question_date": "2026/11/12 (Thu) 10:00",
+    "haystack_session_ids": [
+      "trap_sy_02-s1",
+      "trap_sy_02-s2",
+      "trap_sy_02-s3",
+      "trap_sy_02-s4",
+      "trap_sy_02-s5",
+      "trap_sy_02-s6",
+      "trap_sy_02-s7"
+    ],
+    "haystack_dates": [
+      "2026/09/16 (Wed) 20:20",
+      "2026/09/29 (Tue) 21:00",
+      "2026/10/05 (Mon) 22:30",
+      "2026/10/14 (Wed) 20:10",
+      "2026/10/22 (Thu) 21:45",
+      "2026/11/03 (Tue) 19:30",
+      "2026/11/08 (Sun) 20:45"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "billing 模块有个坑你记一下：金额一律用整数的分，别用浮点，之前 0.1+0.2 出过账差"
+        },
+        {
+          "role": "assistant",
+          "content": "好，金额字段用 integer cents，展示时再格式化。"
+        },
+        {
+          "role": "user",
+          "content": "对"
+        },
+        {
+          "role": "assistant",
+          "content": "记下了。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "nginx 开 gzip，json 也要压"
+        },
+        {
+          "role": "assistant",
+          "content": "gzip on; gzip_types application/json text/css application/javascript; gzip_min_length 1024; 记得 reload。"
+        },
+        {
+          "role": "user",
+          "content": "reload 命令？"
+        },
+        {
+          "role": "assistant",
+          "content": "nginx -t 先检查配置，然后 nginx -s reload。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "billing 另一个坑：汇率是缓存的，TTL 只有 60 秒，别在循环里每次都去取汇率，会被限流，循环外取一次"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，循环外取一次并复用。"
+        },
+        {
+          "role": "user",
+          "content": "嗯"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "react-hooks/exhaustive-deps 一直报 warning，useEffect 里我用了个函数，加进依赖又无限循环了"
+        },
+        {
+          "role": "assistant",
+          "content": "函数每次渲染都是新引用，所以加进依赖会重复触发。用 useCallback 包住它，或者直接把函数挪到 effect 里面定义。"
+        },
+        {
+          "role": "user",
+          "content": "挪进去了，好了。那个 warning 消失了"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯，如果函数还要在别处用，再用 useCallback，并且把它自己的依赖写全。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "billing 的退款接口不是幂等的，重试会重复退，调用的时候自己带 refund_key，对面按 key 去重"
+        },
+        {
+          "role": "assistant",
+          "content": "好，退款请求带 refund_key，并在本地记录已发出的 key。"
+        },
+        {
+          "role": "user",
+          "content": "对"
+        },
+        {
+          "role": "assistant",
+          "content": "了解。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "写测试时注意，billing 的第三方沙箱每分钟最多 10 次请求，测试用例别并发打"
+        },
+        {
+          "role": "assistant",
+          "content": "好，用串行执行，或者 mock 掉沙箱。"
+        },
+        {
+          "role": "user",
+          "content": "先串行吧"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "重复创建资源该返回 409 还是 422？"
+        },
+        {
+          "role": "assistant",
+          "content": "冲突（比如唯一键已存在）用 409，字段校验不通过用 422，也有团队统一用 400。"
+        },
+        {
+          "role": "user",
+          "content": "那就 409"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯，错误体里带上冲突的字段名会方便前端提示。"
+        }
+      ]
+    ],
+    "group": "synthesis",
+    "trap": "四个坑分散在四个 session，每次只提一个，笔记可能只留最近的一两个。",
+    "evidence": [
+      {
+        "session": 0,
+        "turn": 0,
+        "quote": "金额一律用整数的分，别用浮点"
+      },
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "TTL 只有 60 秒，别在循环里每次都去取汇率，会被限流，循环外取一次"
+      },
+      {
+        "session": 4,
+        "turn": 0,
+        "quote": "退款接口不是幂等的，重试会重复退，调用的时候自己带 refund_key"
+      },
+      {
+        "session": 5,
+        "turn": 0,
+        "quote": "第三方沙箱每分钟最多 10 次请求，测试用例别并发打"
+      }
+    ],
+    "answer_keys": [
+      "整数的分",
+      "60 秒",
+      "refund_key",
+      "每分钟最多 10 次"
+    ]
+  },
+  {
+    "question_id": "trap_sy_03",
+    "question_type": "multi-session",
+    "question": "orbit 的 dev、staging、prod 分别部署在哪？",
+    "answer": "dev：本机 docker compose，不上云；staging：阿里云杭州区 2 台 ECS（SLB 转发）；prod：阿里云上海区的 K8s",
+    "question_date": "2026/11/09 (Mon) 14:00",
+    "haystack_session_ids": [
+      "trap_sy_03-s1",
+      "trap_sy_03-s2",
+      "trap_sy_03-s3",
+      "trap_sy_03-s4",
+      "trap_sy_03-s5",
+      "trap_sy_03-s6"
+    ],
+    "haystack_dates": [
+      "2026/09/12 (Sat) 20:00",
+      "2026/09/24 (Thu) 21:30",
+      "2026/10/03 (Sat) 22:10",
+      "2026/10/12 (Mon) 20:40",
+      "2026/10/26 (Mon) 21:20",
+      "2026/11/02 (Mon) 19:50"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "orbit 的 dev 环境就是本机 docker compose，不上云"
+        },
+        {
+          "role": "assistant",
+          "content": "好，docker-compose.yml 里包含 postgres 和 redis 吗？"
+        },
+        {
+          "role": "user",
+          "content": "都有"
+        },
+        {
+          "role": "assistant",
+          "content": "了解。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "vscode 里怎么调试 node 脚本，断点不生效"
+        },
+        {
+          "role": "assistant",
+          "content": "launch.json 里 type 用 node，program 指向入口，如果是 ts 要开 sourceMap 并且 outFiles 指到编译产物。"
+        },
+        {
+          "role": "user",
+          "content": "我用 tsx 跑的"
+        },
+        {
+          "role": "assistant",
+          "content": "那可以加 runtimeArgs: [\"--import\", \"tsx\"]，program 直接指 ts 文件。"
+        },
+        {
+          "role": "user",
+          "content": "有断点了"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "staging 在阿里云杭州区，两台 ECS"
+        },
+        {
+          "role": "assistant",
+          "content": "两台 ECS 前面有 SLB 吗？"
+        },
+        {
+          "role": "user",
+          "content": "有，SLB 转发"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "把一个 csv 转成 json 数组，写个 python 脚本"
+        },
+        {
+          "role": "assistant",
+          "content": "import csv, json; rows = list(csv.DictReader(open('in.csv', encoding='utf-8-sig'))); json.dump(rows, open('out.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=2)"
+        },
+        {
+          "role": "user",
+          "content": "utf-8-sig 是干嘛的"
+        },
+        {
+          "role": "assistant",
+          "content": "处理 Excel 导出带的 BOM，不然第一列名会带个不可见字符。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "prod 在阿里云上海区，跑在 K8s 上，不是 ECS"
+        },
+        {
+          "role": "assistant",
+          "content": "了解，和 staging 的部署方式不一样，发布脚本要区分。"
+        },
+        {
+          "role": "user",
+          "content": "对，分开写"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Promise.all 一次并发 500 个请求被对面限流了"
+        },
+        {
+          "role": "assistant",
+          "content": "用 p-limit 控制并发：const limit = pLimit(10); await Promise.all(items.map(i => limit(() => fetch(i))))。"
+        },
+        {
+          "role": "user",
+          "content": "10 够吗"
+        },
+        {
+          "role": "assistant",
+          "content": "看对面限流策略，先 10 试，遇到 429 再降。"
+        }
+      ]
+    ],
+    "group": "synthesis",
+    "trap": "三个环境的部署位置分散在三个 session，笔记可能只记其中一两个或把 staging 和 prod 混淆。",
+    "evidence": [
+      {
+        "session": 0,
+        "turn": 0,
+        "quote": "本机 docker compose，不上云"
+      },
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "staging 在阿里云杭州区，两台 ECS"
+      },
+      {
+        "session": 2,
+        "turn": 2,
+        "quote": "有，SLB 转发"
+      },
+      {
+        "session": 4,
+        "turn": 0,
+        "quote": "prod 在阿里云上海区，跑在 K8s 上"
+      }
+    ],
+    "answer_keys": [
+      "docker compose",
+      "杭州",
+      "ECS",
+      "SLB",
+      "上海",
+      "K8s"
+    ]
+  },
+  {
+    "question_id": "trap_ab_01_abs",
+    "question_type": "knowledge-update",
+    "question": "三期联调为什么推迟了？",
+    "answer": "对话里没有说明推迟的原因，只提到联调从 11 月 10 日挪到了 11 月 17 日（另外提过小周请年假，但没有说和推迟有关）",
+    "question_date": "2026/11/08 (Sun) 10:00",
+    "haystack_session_ids": [
+      "trap_ab_01_abs-s1",
+      "trap_ab_01_abs-s2",
+      "trap_ab_01_abs-s3",
+      "trap_ab_01_abs-s4",
+      "trap_ab_01_abs-s5"
+    ],
+    "haystack_dates": [
+      "2026/09/21 (Mon) 20:30",
+      "2026/10/05 (Mon) 21:20",
+      "2026/10/12 (Mon) 22:00",
+      "2026/10/30 (Fri) 20:10",
+      "2026/11/04 (Wed) 21:40"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "三期联调定在 11 月 10 号开始，前后端一起"
+        },
+        {
+          "role": "assistant",
+          "content": "好，联调前一周做接口冻结。"
+        },
+        {
+          "role": "user",
+          "content": "嗯"
+        },
+        {
+          "role": "assistant",
+          "content": "我把时间线记下了。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "批量把当前目录 .jpeg 改成 .jpg"
+        },
+        {
+          "role": "assistant",
+          "content": "for f in *.jpeg; do mv \"$f\" \"${f%.jpeg}.jpg\"; done"
+        },
+        {
+          "role": "user",
+          "content": "windows git bash 能用吗"
+        },
+        {
+          "role": "assistant",
+          "content": "git bash 里可以，PowerShell 里语法不同。"
+        },
+        {
+          "role": "user",
+          "content": "我用的 git bash"
+        },
+        {
+          "role": "assistant",
+          "content": "那就直接跑上面那条。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "小周下周起请一周年假，他手头的退款页面我先接着做"
+        },
+        {
+          "role": "assistant",
+          "content": "要我帮你把退款页面的待办列出来吗？"
+        },
+        {
+          "role": "user",
+          "content": "不用，先看看代码"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "对了，三期联调从 11 月 10 号挪到 11 月 17 号了，到时候通知一下前端"
+        },
+        {
+          "role": "assistant",
+          "content": "好，11/17 开始联调，我把里程碑更新一下。"
+        },
+        {
+          "role": "user",
+          "content": "嗯"
+        },
+        {
+          "role": "assistant",
+          "content": "已更新。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "写个正则匹配大陆手机号，11位，1开头"
+        },
+        {
+          "role": "assistant",
+          "content": "/^1[3-9]\\d{9}$/ 够用了。要容忍 +86 前缀的话：/^(?:\\+?86)?1[3-9]\\d{9}$/"
+        },
+        {
+          "role": "user",
+          "content": "+86 后面可能带空格"
+        },
+        {
+          "role": "assistant",
+          "content": "那就 /^(?:\\+?86\\s?)?1[3-9]\\d{9}$/。不过更稳妥的是先把空格和横杠去掉再匹配。"
+        },
+        {
+          "role": "user",
+          "content": "好，先 replace 掉再测"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯。"
+        }
+      ]
+    ],
+    "group": "abstention",
+    "trap": "相邻 session 里出现的“小周请假”是诱人的牵强解释；用户从未说过推迟的原因。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 0,
+        "quote": "三期联调从 11 月 10 号挪到 11 月 17 号了"
+      },
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "小周下周起请一周年假"
+      }
+    ],
+    "absent_keys": [
+      "推迟",
+      "延期",
+      "延后",
+      "原因",
+      "因为",
+      "由于"
+    ]
+  },
+  {
+    "question_id": "trap_ab_02_abs",
+    "question_type": "multi-session",
+    "question": "prod 数据库降配是谁批准的？",
+    "answer": "对话里没有提到谁批准的；只说过老板要求压缩云成本，以及 prod 数据库已从 8C16G 降到 4C8G",
+    "question_date": "2026/11/10 (Tue) 11:00",
+    "haystack_session_ids": [
+      "trap_ab_02_abs-s1",
+      "trap_ab_02_abs-s2",
+      "trap_ab_02_abs-s3",
+      "trap_ab_02_abs-s4",
+      "trap_ab_02_abs-s5"
+    ],
+    "haystack_dates": [
+      "2026/09/18 (Fri) 20:00",
+      "2026/09/30 (Wed) 21:15",
+      "2026/10/10 (Sat) 22:00",
+      "2026/10/23 (Fri) 09:40",
+      "2026/11/01 (Sun) 20:30"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "老板在群里说要压缩云成本，让我们各自看看能省哪里"
+        },
+        {
+          "role": "assistant",
+          "content": "常见的是降配闲置实例、清理快照、把按量改包年。你们现在资源利用率大概多少？"
+        },
+        {
+          "role": "user",
+          "content": "prod 数据库 CPU 平均才 15%"
+        },
+        {
+          "role": "assistant",
+          "content": "那有降配空间，可以先看峰值和连接数。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "crontab 每周一早上 9 点跑一次怎么写"
+        },
+        {
+          "role": "assistant",
+          "content": "0 9 * * 1 。注意服务器时区，容器里默认可能是 UTC。"
+        },
+        {
+          "role": "user",
+          "content": "哦，那得看下容器的时区"
+        },
+        {
+          "role": "assistant",
+          "content": "date 命令确认一下，或者在 cron 里显式写 TZ=。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "docker compose up 报 port is already allocated，5432"
+        },
+        {
+          "role": "assistant",
+          "content": "本机已经有进程占着 5432，可能是本地装的 Postgres。docker ps 和 lsof -i :5432 看下是谁。"
+        },
+        {
+          "role": "user",
+          "content": "是我自己装的 pg，把 compose 里映射改成 5433:5432 吧"
+        },
+        {
+          "role": "assistant",
+          "content": "改 ports: - \"5433:5432\"，连接串端口也要同步改成 5433。"
+        },
+        {
+          "role": "user",
+          "content": "ok 通了"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "prod 数据库已经从 8C16G 降到 4C8G 了，降配窗口是凌晨 2 点，没影响业务"
+        },
+        {
+          "role": "assistant",
+          "content": "降配后建议观察一周的慢查询和连接数。"
+        },
+        {
+          "role": "user",
+          "content": "已经在盯了"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "TS 里想要一个类型，是 User 去掉 password 字段"
+        },
+        {
+          "role": "assistant",
+          "content": "type PublicUser = Omit<User, 'password'>。要只留几个字段就用 Pick。"
+        },
+        {
+          "role": "user",
+          "content": "那如果想让所有字段变可选呢"
+        },
+        {
+          "role": "assistant",
+          "content": "Partial<PublicUser>。组合起来 Partial<Omit<User, 'password'>> 也可以。"
+        }
+      ]
+    ],
+    "group": "abstention",
+    "trap": "“老板要压缩成本”容易让人推断是老板批的，但用户从未说过谁批准。",
+    "evidence": [
+      {
+        "session": 0,
+        "turn": 0,
+        "quote": "老板在群里说要压缩云成本"
+      },
+      {
+        "session": 3,
+        "turn": 0,
+        "quote": "prod 数据库已经从 8C16G 降到 4C8G 了"
+      }
+    ],
+    "absent_keys": [
+      "批准",
+      "批的",
+      "审批",
+      "同意",
+      "approve",
+      "签字"
+    ]
+  },
+  {
+    "question_id": "trap_ct_01",
+    "question_type": "multi-session",
+    "question": "对外 API 的路径前缀是什么？",
+    "answer": "/api/v2",
+    "question_date": "2026/10/28 (Wed) 10:30",
+    "haystack_session_ids": [
+      "trap_ct_01-s1",
+      "trap_ct_01-s2",
+      "trap_ct_01-s3",
+      "trap_ct_01-s4",
+      "trap_ct_01-s5"
+    ],
+    "haystack_dates": [
+      "2026/09/11 (Fri) 20:00",
+      "2026/09/25 (Fri) 21:30",
+      "2026/10/06 (Tue) 20:20",
+      "2026/10/20 (Tue) 19:40",
+      "2026/10/24 (Sat) 22:10"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "对外 API 的路径前缀统一用 /api/v2，v1 已经废弃了"
+        },
+        {
+          "role": "assistant",
+          "content": "好，路由注册时统一挂 /api/v2。"
+        },
+        {
+          "role": "user",
+          "content": "对"
+        },
+        {
+          "role": "assistant",
+          "content": "已改。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "重复创建资源该返回 409 还是 422？"
+        },
+        {
+          "role": "assistant",
+          "content": "冲突（比如唯一键已存在）用 409，字段校验不通过用 422，也有团队统一用 400。"
+        },
+        {
+          "role": "user",
+          "content": "那就 409"
+        },
+        {
+          "role": "assistant",
+          "content": "嗯，错误体里带上冲突的字段名会方便前端提示。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "运营后台自己用的内部接口是 /admin/v1 前缀，只在内网，别和对外的搞混"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，两套前缀分开：对外一套，内网后台 /admin/v1。"
+        },
+        {
+          "role": "user",
+          "content": "嗯"
+        },
+        {
+          "role": "assistant",
+          "content": "好。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "写下 swagger 的 servers 配置，对外的 basePath 是 /api/v2"
+        },
+        {
+          "role": "assistant",
+          "content": "servers:\n  - url: https://api.orbit.example.com/api/v2"
+        },
+        {
+          "role": "user",
+          "content": "好"
+        },
+        {
+          "role": "assistant",
+          "content": "已写入。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "jest 里怎么 mock 当前时间，我的函数用了 Date.now()"
+        },
+        {
+          "role": "assistant",
+          "content": "jest.useFakeTimers(); jest.setSystemTime(new Date('2026-01-01'))。测完记得 jest.useRealTimers()。"
+        },
+        {
+          "role": "user",
+          "content": "setSystemTime 之后 setTimeout 还会走吗"
+        },
+        {
+          "role": "assistant",
+          "content": "fake timers 下不会自动走，需要 jest.advanceTimersByTime。"
+        }
+      ]
+    ],
+    "group": "control",
+    "trap": "对照项：事实稳定且重复出现，旁边有相似的内部前缀 /admin/v1 作干扰；B 应已答对，用来发现 Dream 把它改坏。",
+    "evidence": [
+      {
+        "session": 0,
+        "turn": 0,
+        "quote": "对外 API 的路径前缀统一用 /api/v2"
+      },
+      {
+        "session": 3,
+        "turn": 0,
+        "quote": "对外的 basePath 是 /api/v2"
+      }
+    ],
+    "answer_keys": [
+      "/api/v2"
+    ]
+  },
+  {
+    "question_id": "trap_ct_02",
+    "question_type": "multi-session",
+    "question": "数据库里的时间字段存的是哪个时区？",
+    "answer": "UTC（字段类型 timestamptz）",
+    "question_date": "2026/11/06 (Fri) 15:00",
+    "haystack_session_ids": [
+      "trap_ct_02-s1",
+      "trap_ct_02-s2",
+      "trap_ct_02-s3",
+      "trap_ct_02-s4",
+      "trap_ct_02-s5"
+    ],
+    "haystack_dates": [
+      "2026/09/13 (Sun) 20:45",
+      "2026/09/27 (Sun) 21:00",
+      "2026/10/10 (Sat) 20:30",
+      "2026/10/18 (Sun) 22:20",
+      "2026/10/29 (Thu) 20:00"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "服务端和数据库的时间统一用 UTC，数据库字段用 timestamptz，别存本地时间"
+        },
+        {
+          "role": "assistant",
+          "content": "好，写入时用 new Date().toISOString()，查询返回 ISO 8601 带 Z。"
+        },
+        {
+          "role": "user",
+          "content": "对"
+        },
+        {
+          "role": "assistant",
+          "content": "记下了。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "把一个 csv 转成 json 数组，写个 python 脚本"
+        },
+        {
+          "role": "assistant",
+          "content": "import csv, json; rows = list(csv.DictReader(open('in.csv', encoding='utf-8-sig'))); json.dump(rows, open('out.json', 'w', encoding='utf-8'), ensure_ascii=False, indent=2)"
+        },
+        {
+          "role": "user",
+          "content": "utf-8-sig 是干嘛的"
+        },
+        {
+          "role": "assistant",
+          "content": "处理 Excel 导出带的 BOM，不然第一列名会带个不可见字符。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "前端展示的时候转成 Asia/Shanghai 显示就行，那是展示层的事"
+        },
+        {
+          "role": "assistant",
+          "content": "好，前端用 Intl.DateTimeFormat 指定 timeZone: 'Asia/Shanghai'。"
+        },
+        {
+          "role": "user",
+          "content": "嗯"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这条查询跑了 3 秒：select * from orders where user_id = ? order by created_at desc limit 20"
+        },
+        {
+          "role": "assistant",
+          "content": "看下有没有 (user_id, created_at) 的联合索引。只有 user_id 单列索引的话，排序还得额外 filesort。"
+        },
+        {
+          "role": "user",
+          "content": "只有 user_id 单列的"
+        },
+        {
+          "role": "assistant",
+          "content": "加 (user_id, created_at desc) 联合索引，再 explain 一下确认没有 Using filesort。"
+        },
+        {
+          "role": "user",
+          "content": "加完了，80ms"
+        },
+        {
+          "role": "assistant",
+          "content": "那就可以了。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "div 里的按钮想垂直居中，一直不行"
+        },
+        {
+          "role": "assistant",
+          "content": "父容器加 display:flex; align-items:center。需要水平也居中就再加 justify-content:center。"
+        },
+        {
+          "role": "user",
+          "content": "父容器没高度，难怪"
+        },
+        {
+          "role": "assistant",
+          "content": "对，给个 min-height 就行。"
+        }
+      ]
+    ],
+    "group": "control",
+    "trap": "对照项：事实只说一次，旁边有相似的展示层时区 Asia/Shanghai 作干扰；B 应已答对，用来发现 Dream 把它改坏。",
+    "evidence": [
+      {
+        "session": 0,
+        "turn": 0,
+        "quote": "服务端和数据库的时间统一用 UTC，数据库字段用 timestamptz"
+      }
+    ],
+    "answer_keys": [
+      "UTC",
+      "timestamptz"
+    ]
+  }
+]

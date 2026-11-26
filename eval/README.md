@@ -60,6 +60,10 @@ node eval/run.mjs --scenario-file eval/scenarios.dream-session.dev.json --runs 1
 
 输出（`EVAL_RUNS_DIR` 可改目录）：`eval/runs/<timestamp>/report.md`、`records.json`、每个场景的 snapshot 与测试回答。`eval/rescore.mjs --run <run>` 是"旧答案对 v2 约束的兼容性检查"，不能据此断言旧答案违反了当时指令。
 
+## Mt. Moon 回归用例
+
+另有 11 个“记忆里已有错笔记、源会话说明真相、Dream 必须据 transcript 改正”的行为用例（不是 A/B 收益对比），见 [mt-moon/README.md](mt-moon/README.md)；确定性版本在 `test/dream-mt-moon.test.mjs`，进 CI。
+
 ## 指标（分开命名，不混用）
 
 - `raw`：确定性检查 + judge 门槛（runner report 的"主指标"）。

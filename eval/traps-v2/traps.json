@@ -1,0 +1,5165 @@
+[
+  {
+    "question_id": "v2_wa_01",
+    "question_type": "knowledge-update",
+    "question": "对账任务 reconcile-daily 现在是用什么来调度的？",
+    "answer": "仍然是系统 cron。改用 BullMQ repeatable job 的方案已经作废，现状保持到年底再议。",
+    "question_date": "2026/09/13 (Sun) 00:51",
+    "haystack_session_ids": [
+      "v2_wa_01-s1",
+      "v2_wa_01-s2",
+      "v2_wa_01-s3",
+      "v2_wa_01-s4",
+      "v2_wa_01-s5",
+      "v2_wa_01-s6",
+      "v2_wa_01-s7",
+      "v2_wa_01-s8"
+    ],
+    "haystack_dates": [
+      "2026/09/03 (Thu) 20:30",
+      "2026/09/05 (Sat) 21:07",
+      "2026/09/05 (Sat) 21:21",
+      "2026/09/06 (Sun) 22:12",
+      "2026/09/07 (Mon) 22:40",
+      "2026/09/08 (Tue) 22:45",
+      "2026/09/08 (Tue) 23:27",
+      "2026/09/09 (Wed) 23:46"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "commit message 以后统一用 conventional commits，scope 写模块名，比如 feat(invoice): add proration，描述用英文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后按 type(scope): subject 的格式写，subject 用英文小写开头。"
+        },
+        {
+          "role": "user",
+          "content": "另外 subject 里别带 ticket 号，放 footer。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，footer 用 Refs: BILL-123 的形式。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个测试挂了，是 mock 的 pg 和真库行为不一样。以后测试里不要 mock 数据库，用 testcontainers 起真的 Postgres。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我把这个用例改成用 testcontainers 的 Postgres，启动一次整个 suite 复用。"
+        },
+        {
+          "role": "user",
+          "content": "对，复用，别每个用例都起一个，太慢。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，用 beforeAll 起、afterAll 关，每个用例前 truncate。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "对账这块我想好了：reconcile-daily 不再用系统 cron 跑了，改成 BullMQ 的 repeatable job，这个定了，先从它开始。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。BullMQ 的 repeatable job 可以用 cron 表达式 0 2 * * *，需要我先写 Queue 和 Worker 的骨架吗？"
+        },
+        {
+          "role": "user",
+          "content": "先别写，我先把昨晚的失败日志贴给你看。\n2026-09-12T02:00:00.320Z INFO  [reconcile] batch=1000 fetched=199 matched=456 elapsed=257ms\n2026-09-12T02:00:01.754Z INFO  [reconcile] batch=1001 fetched=756 matched=106 elapsed=585ms\n2026-09-12T02:00:02.341Z INFO  [reconcile] batch=1002 fetched=223 matched=201 elapsed=709ms\n2026-09-12T02:00:03.056Z INFO  [reconcile] batch=1003 fetched=702 matched=382 elapsed=196ms\n2026-09-12T02:00:04.937Z ERROR [reconcile] batch=1004 upstream request failed: ECONNRESET after 6521ms (attempt 2/3)\n2026-09-12T02:00:05.510Z INFO  [reconcile] batch=1005 fetched=288 matched=805 elapsed=263ms\n2026-09-12T02:00:06.182Z INFO  [reconcile] batch=1006 fetched=2 matched=137 elapsed=346ms\n2026-09-12T02:00:07.554Z WARN  [reconcile] batch=1007 slow step=write elapsed=7490ms\n2026-09-12T02:00:08.652Z INFO  [reconcile] batch=1008 fetched=105 matched=64 elapsed=59ms\n2026-09-12T02:00:09.639Z INFO  [reconcile] batch=1009 fetched=126 matched=153 elapsed=3ms\n2026-09-12T02:00:10.008Z INFO  [reconcile] batch=1010 fetched=630 matched=652 elapsed=819ms\n2026-09-12T02:00:11.119Z INFO  [reconcile] batch=1011 fetched=707 matched=397 elapsed=60ms\n2026-09-12T02:00:12.471Z INFO  [reconcile] batch=1012 fetched=178 matched=30 elapsed=5ms\n2026-09-12T02:00:13.789Z ERROR [reconcile] batch=1013 upstream request failed: ECONNRESET after 1688ms (attempt 2/3)\n2026-09-12T02:00:14.218Z INFO  [reconcile] batch=1014 fetched=554 matched=673 elapsed=22ms\n2026-09-12T02:00:15.432Z INFO  [reconcile] batch=1015 fetched=449 matched=560 elapsed=884ms\n2026-09-12T02:00:16.219Z INFO  [reconcile] batch=1016 fetched=153 matched=319 elapsed=363ms\n2026-09-12T02:00:17.376Z INFO  [reconcile] batch=1017 fetched=834 matched=750 elapsed=739ms\n2026-09-12T02:00:18.289Z INFO  [reconcile] batch=1018 fetched=420 matched=338 elapsed=312ms\n2026-09-12T02:00:19.067Z INFO  [reconcile] batch=1019 fetched=522 matched=615 elapsed=673ms\n2026-09-12T02:00:20.397Z WARN  [reconcile] batch=1020 slow step=diff elapsed=6819ms\n2026-09-12T02:00:21.952Z INFO  [reconcile] batch=1021 fetched=207 matched=618 elapsed=750ms\n2026-09-12T02:00:22.904Z ERROR [reconcile] batch=1022 upstream request failed: ECONNRESET after 6373ms (attempt 2/3)\n2026-09-12T02:00:23.306Z INFO  [reconcile] batch=1023 fetched=378 matched=899 elapsed=868ms\n2026-09-12T02:00:24.407Z INFO  [reconcile] batch=1024 fetched=247 matched=479 elapsed=630ms\n2026-09-12T02:00:25.712Z INFO  [reconcile] batch=1025 fetched=237 matched=783 elapsed=585ms\n2026-09-12T02:00:26.638Z INFO  [reconcile] batch=1026 fetched=729 matched=273 elapsed=327ms\n2026-09-12T02:00:27.705Z INFO  [reconcile] batch=1027 fetched=573 matched=697 elapsed=823ms\n2026-09-12T02:00:28.636Z INFO  [reconcile] batch=1028 fetched=97 matched=852 elapsed=401ms\n2026-09-12T02:00:29.750Z INFO  [reconcile] batch=1029 fetched=623 matched=266 elapsed=607ms\n2026-09-12T02:00:30.445Z INFO  [reconcile] batch=1030 fetched=279 matched=182 elapsed=692ms\n2026-09-12T02:00:31.875Z ERROR [reconcile] batch=1031 upstream request failed: ECONNRESET after 5164ms (attempt 2/3)\n2026-09-12T02:00:32.236Z INFO  [reconcile] batch=1032 fetched=200 matched=126 elapsed=183ms\n2026-09-12T02:00:33.077Z WARN  [reconcile] batch=1033 slow step=diff elapsed=5387ms\n2026-09-12T02:00:34.118Z INFO  [reconcile] batch=1034 fetched=713 matched=352 elapsed=801ms\n2026-09-12T02:00:35.964Z INFO  [reconcile] batch=1035 fetched=375 matched=116 elapsed=429ms\n2026-09-12T02:00:36.127Z INFO  [reconcile] batch=1036 fetched=25 matched=695 elapsed=737ms\n2026-09-12T02:00:37.448Z INFO  [reconcile] batch=1037 fetched=714 matched=798 elapsed=873ms\n2026-09-12T02:00:38.199Z INFO  [reconcile] batch=1038 fetched=599 matched=898 elapsed=625ms\n2026-09-12T02:00:39.057Z INFO  [reconcile] batch=1039 fetched=631 matched=357 elapsed=392ms\n2026-09-12T02:00:40.113Z ERROR [reconcile] batch=1040 upstream request failed: ECONNRESET after 1733ms (attempt 2/3)\n2026-09-12T02:00:41.090Z INFO  [reconcile] batch=1041 fetched=373 matched=144 elapsed=60ms\n2026-09-12T02:00:42.757Z INFO  [reconcile] batch=1042 fetched=407 matched=714 elapsed=245ms\n2026-09-12T02:00:43.866Z INFO  [reconcile] batch=1043 fetched=291 matched=74 elapsed=63ms\n2026-09-12T02:00:44.340Z INFO  [reconcile] batch=1044 fetched=673 matched=740 elapsed=430ms\n2026-09-12T02:00:45.408Z INFO  [reconcile] batch=1045 fetched=290 matched=585 elapsed=251ms\n2026-09-12T02:00:46.542Z WARN  [reconcile] batch=1046 slow step=write elapsed=5116ms\n2026-09-12T02:00:47.330Z INFO  [reconcile] batch=1047 fetched=541 matched=724 elapsed=277ms\n2026-09-12T02:00:48.100Z INFO  [reconcile] batch=1048 fetched=540 matched=273 elapsed=527ms\n2026-09-12T02:00:49.654Z ERROR [reconcile] batch=1049 upstream request failed: ECONNRESET after 6507ms (attempt 2/3)\n2026-09-12T02:00:50.401Z INFO  [reconcile] batch=1050 fetched=707 matched=480 elapsed=423ms\n2026-09-12T02:00:51.805Z INFO  [reconcile] batch=1051 fetched=280 matched=215 elapsed=96ms\n2026-09-12T02:00:52.534Z INFO  [reconcile] batch=1052 fetched=306 matched=225 elapsed=685ms\n2026-09-12T02:00:53.687Z INFO  [reconcile] batch=1053 fetched=304 matched=741 elapsed=773ms\n2026-09-12T02:00:54.790Z INFO  [reconcile] batch=1054 fetched=496 matched=875 elapsed=668ms\n2026-09-12T02:00:55.303Z INFO  [reconcile] batch=1055 fetched=893 matched=344 elapsed=582ms"
+        },
+        {
+          "role": "assistant",
+          "content": "日志里有两类问题：一批请求 ECONNRESET，另外有几批 diff 步骤明显偏慢。还有别的日志吗？"
+        },
+        {
+          "role": "user",
+          "content": "再贴一份 Postgres 的慢查询日志。\n2026-09-12 03:00:00 UTC [20000] LOG:  duration: 4704.453 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 6 ORDER BY t.updated_at LIMIT 500\n2026-09-12 03:00:01 UTC [20001] LOG:  duration: 9867.450 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 13 ORDER BY t.updated_at LIMIT 200\n2026-09-12 03:00:02 UTC [20002] LOG:  duration: 3692.734 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 3 ORDER BY t.updated_at LIMIT 500\n2026-09-12 03:00:03 UTC [20003] LOG:  duration: 3234.689 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 15 ORDER BY t.updated_at LIMIT 700\n2026-09-12 03:00:04 UTC [20004] LOG:  duration: 6715.301 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 13 ORDER BY t.updated_at LIMIT 800\n2026-09-12 03:00:05 UTC [20005] LOG:  duration: 1983.562 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 2 ORDER BY t.updated_at LIMIT 200\n2026-09-12 03:00:06 UTC [20006] LOG:  duration: 4359.436 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 10 ORDER BY t.updated_at LIMIT 900\n2026-09-12 03:00:07 UTC [20007] LOG:  duration: 4977.191 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 8 ORDER BY t.updated_at LIMIT 900\n2026-09-12 03:00:08 UTC [20008] LOG:  duration: 6506.77 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 14 ORDER BY t.updated_at LIMIT 600\n2026-09-12 03:00:09 UTC [20009] LOG:  duration: 4918.861 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 12 ORDER BY t.updated_at LIMIT 800\n2026-09-12 03:00:10 UTC [20010] LOG:  duration: 2745.162 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 8 ORDER BY t.updated_at LIMIT 700\n2026-09-12 03:00:11 UTC [20011] LOG:  duration: 3844.621 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 4 ORDER BY t.updated_at LIMIT 200\n2026-09-12 03:00:12 UTC [20012] LOG:  duration: 8151.586 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 8 ORDER BY t.updated_at LIMIT 500\n2026-09-12 03:00:13 UTC [20013] LOG:  duration: 5722.481 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 10 ORDER BY t.updated_at LIMIT 500\n2026-09-12 03:00:14 UTC [20014] LOG:  duration: 4832.809 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 6 ORDER BY t.updated_at LIMIT 400\n2026-09-12 03:00:15 UTC [20015] LOG:  duration: 3260.684 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 12 ORDER BY t.updated_at LIMIT 100\n2026-09-12 03:00:16 UTC [20016] LOG:  duration: 7055.356 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 6 ORDER BY t.updated_at LIMIT 800\n2026-09-12 03:00:17 UTC [20017] LOG:  duration: 9314.258 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 13 ORDER BY t.updated_at LIMIT 100\n2026-09-12 03:00:18 UTC [20018] LOG:  duration: 4353.431 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 8 ORDER BY t.updated_at LIMIT 900\n2026-09-12 03:00:19 UTC [20019] LOG:  duration: 7021.427 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 10 ORDER BY t.updated_at LIMIT 400\n2026-09-12 03:00:20 UTC [20020] LOG:  duration: 4605.704 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 14 ORDER BY t.updated_at LIMIT 400\n2026-09-12 03:00:21 UTC [20021] LOG:  duration: 2931.268 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 13 ORDER BY t.updated_at LIMIT 300\n2026-09-12 03:00:22 UTC [20022] LOG:  duration: 8471.819 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 9 ORDER BY t.updated_at LIMIT 800\n2026-09-12 03:00:23 UTC [20023] LOG:  duration: 10156.460 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 2 ORDER BY t.updated_at LIMIT 300\n2026-09-12 03:00:24 UTC [20024] LOG:  duration: 5681.674 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 5 ORDER BY t.updated_at LIMIT 900\n2026-09-12 03:00:25 UTC [20025] LOG:  duration: 8879.71 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 1 ORDER BY t.updated_at LIMIT 400\n2026-09-12 03:00:26 UTC [20026] LOG:  duration: 3067.830 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 4 ORDER BY t.updated_at LIMIT 100"
+        },
+        {
+          "role": "assistant",
+          "content": "慢查询集中在 ledger_entries 按 updated_at 排序的那条上，大概率是缺联合索引。"
+        },
+        {
+          "role": "user",
+          "content": "还有 worker 的 stack。\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at Object.run (/app/node_modules/pg-pool/index.js:45:11)\n    at async Pool.query (/app/dist/reconcile/worker.js:32:5)\n    at async reconcile.step (/app/node_modules/pg-pool/index.js:45:11)\n    at async Pool.query (/app/node_modules/pg-pool/index.js:45:11)\n    at async Pool.query (node:internal/process/task_queues:95:5)\n    at async Pool.query (/app/dist/db/client.js:94:17)\n    at Object.run (node:internal/process/task_queues:95:5)\n    at async Worker.handle (/app/dist/reconcile/worker.js:38:11)\n    at async reconcile.step (/app/dist/reconcile/worker.js:39:12)\n    at Object.run (/app/node_modules/pg-pool/index.js:45:11)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at processTicksAndRejections (/app/dist/db/client.js:100:17)\n    at Object.run (/app/node_modules/pg-pool/index.js:45:11)\n    at async Worker.handle (/app/dist/reconcile/worker.js:44:17)\n    at async reconcile.step (/app/dist/db/client.js:103:17)\n    at async Pool.query (/app/dist/reconcile/worker.js:46:19)\n    at Object.run (/app/dist/db/client.js:105:17)\n    at async reconcile.step (/app/dist/db/client.js:106:17)\n    at async reconcile.step (/app/node_modules/pg-pool/index.js:45:11)\n    at async Pool.query (/app/dist/reconcile/worker.js:50:23)\n    at async reconcile.step (/app/dist/db/client.js:109:17)\n    at Object.run (node:internal/process/task_queues:95:5)\n    at async Pool.query (node:internal/process/task_queues:95:5)\n    at async Pool.query (/app/node_modules/pg-pool/index.js:45:11)\n    at async reconcile.step (/app/dist/reconcile/worker.js:55:28)\n    at processTicksAndRejections (/app/node_modules/pg-pool/index.js:45:11)\n    at async Pool.query (node:internal/process/task_queues:95:5)\n    at async Pool.query (node:internal/process/task_queues:95:5)\n    at processTicksAndRejections (/app/dist/db/client.js:117:17)\n    at Object.run (/app/dist/reconcile/worker.js:60:33)\n    at async reconcile.step (/app/dist/reconcile/worker.js:61:34)\n    at Object.run (/app/dist/db/client.js:120:17)\n    at async Worker.handle (/app/dist/db/client.js:121:17)\n    at Object.run (/app/node_modules/pg-pool/index.js:45:11)\n    at async Pool.query (/app/node_modules/pg-pool/index.js:45:11)\n    at async Worker.handle (/app/dist/db/client.js:124:17)\n    at async Pool.query (/app/dist/db/client.js:125:17)\n    at async Pool.query (/app/dist/reconcile/worker.js:68:41)\n    at async Pool.query (/app/dist/db/client.js:127:17)\n    at async Worker.handle (/app/dist/db/client.js:128:17)\n    at async Pool.query (node:internal/process/task_queues:95:5)\n    at async Worker.handle (node:internal/process/task_queues:95:5)\n    at processTicksAndRejections (/app/node_modules/pg-pool/index.js:45:11)\n    at async Worker.handle (/app/dist/db/client.js:132:17)\n    at async Pool.query (node:internal/process/task_queues:95:5)\n    at async Pool.query (/app/dist/reconcile/worker.js:76:9)\n    at async Pool.query (node:internal/process/task_queues:95:5)\n    at async Pool.query (/app/dist/db/client.js:136:17)\n    at async reconcile.step (/app/node_modules/pg-pool/index.js:45:11)\n    at async Worker.handle (/app/node_modules/pg-pool/index.js:45:11)\n    at async reconcile.step (/app/node_modules/pg-pool/index.js:45:11)\n    at async Worker.handle (/app/dist/db/client.js:140:17)\n    at async reconcile.step (node:internal/process/task_queues:95:5)\n    at async Worker.handle (/app/dist/db/client.js:142:17)\n    at processTicksAndRejections (/app/dist/db/client.js:143:17)\n    at async reconcile.step (/app/dist/reconcile/worker.js:86:19)\n    at async reconcile.step (/app/node_modules/pg-pool/index.js:45:11)\n    at Object.run (/app/dist/reconcile/worker.js:88:21)\n    at async Worker.handle (/app/dist/reconcile/worker.js:89:22)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at processTicksAndRejections (/app/dist/reconcile/worker.js:91:24)\n    at Object.run (/app/dist/db/client.js:150:17)\n    at async Worker.handle (node:internal/process/task_queues:95:5)\n    at async reconcile.step (/app/node_modules/pg-pool/index.js:45:11)\n    at async reconcile.step (/app/dist/db/client.js:153:17)"
+        },
+        {
+          "role": "assistant",
+          "content": "栈里是连接池取连接超时之后抛出的错误，和上面的慢查询是同一个根因。"
+        },
+        {
+          "role": "user",
+          "content": "行，原因我清楚了，是 numeric 精度那条 SQL 拖慢了整个批次，先修这个。顺便，刚才那个方案作废，运维说现状保持到年底再说，别提了。"
+        },
+        {
+          "role": "assistant",
+          "content": "SQL 我来改，改完给你 diff。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "日志统一用 pino，不要 console.log，每条日志必须带 traceId 字段。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我会用 logger.child({ traceId }) 的方式，不再写 console.log。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "数据库里的时间一律存 UTC，展示层才转 Asia/Shanghai，别在 SQL 里做时区转换。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，timestamptz 存 UTC，转换放在 API 响应序列化那一层。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 PR 有 900 行 diff，以后超过 400 行我会直接要求拆，你写的时候就控制一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，之后一个 PR 控制在 400 行以内，大改动按层拆成几个。"
+        },
+        {
+          "role": "user",
+          "content": "拆的时候保证每个 PR 单独能过 CI。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，每个 PR 都保持可独立合并。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "回答先给结论再给理由，别写一大段铺垫。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，之后先说结论。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "新增依赖之前先问我，我们有 license 白名单：MIT、Apache-2.0、BSD。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，要加依赖我会先列出名称、license 和用途请你确认。"
+        },
+        {
+          "role": "user",
+          "content": "嗯，GPL 系的一律不行。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到。"
+        }
+      ]
+    ],
+    "group": "window-anaphora",
+    "mechanism": "window-anaphora",
+    "trap": "决定和撤回隔着三段粘贴日志，处在 auto-extract 的不同分块；撤回只说“刚才那个方案”。",
+    "b_hypothesis": "决定在长 session 开头（窗口 1 / 3 轮组 1）被保存；撤回发生在 12000 字符分块的第 2 块、粘贴日志之后，B 只看到新窗口里的“刚才那个方案作废，现状保持”和 4000 字符内的索引描述，没有关键词（BullMQ、reconcile）可以对上旧笔记，旧笔记原样保留。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "reconcile-daily 不再用系统 cron 跑了，改成 BullMQ 的 repeatable job",
+        "role": "decision"
+      },
+      {
+        "session": 2,
+        "turn": 8,
+        "quote": "刚才那个方案作废，运维说现状保持到年底再说",
+        "role": "retraction"
+      }
+    ],
+    "answer_keys": [
+      "cron",
+      "作废"
+    ],
+    "stale_keys": [
+      "改成 BullMQ",
+      "BullMQ"
+    ]
+  },
+  {
+    "question_id": "v2_wa_02",
+    "question_type": "knowledge-update",
+    "question": "商品批量导入现在是怎么实现的？",
+    "answer": "仍然是前端解析 Excel 再分批上传；改成后端异步任务加轮询的方案已经作废（后端排期排不上）。",
+    "question_date": "2026/09/14 (Mon) 02:01",
+    "haystack_session_ids": [
+      "v2_wa_02-s1",
+      "v2_wa_02-s2",
+      "v2_wa_02-s3",
+      "v2_wa_02-s4",
+      "v2_wa_02-s5",
+      "v2_wa_02-s6",
+      "v2_wa_02-s7",
+      "v2_wa_02-s8"
+    ],
+    "haystack_dates": [
+      "2026/09/04 (Fri) 21:40",
+      "2026/09/06 (Sun) 22:17",
+      "2026/09/06 (Sun) 22:31",
+      "2026/09/07 (Mon) 23:22",
+      "2026/09/08 (Tue) 23:50",
+      "2026/09/09 (Wed) 23:55",
+      "2026/09/10 (Thu) 00:37",
+      "2026/09/11 (Fri) 00:56"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "包管理器就用 pnpm，别给我写 npm install，也别生成 package-lock.json。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后命令都用 pnpm，lockfile 只保留 pnpm-lock.yaml。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "组件库只用 Ant Design 5，别自己引别的 UI 库，样式也别再装 tailwind。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，只用 antd 5 的组件和 token，需要定制就走 ConfigProvider 的 theme。"
+        },
+        {
+          "role": "user",
+          "content": "对，主题色走 token，不要写死色值。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "商品批量导入现在是前端解析 Excel 再分批传给后端的，我拍板改成后端异步任务：前端只传文件，然后轮询 job 状态，就这么定了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。后端提供 POST /imports 返回 jobId，前端每 2 秒轮询 GET /imports/:id，需要我先画个状态流转图吗？"
+        },
+        {
+          "role": "user",
+          "content": "先不用，我先给你看今天 CI 的构建日志。\n##[group]Run step 0: pnpm -r test -- --reporter=dot\n   Progress: resolved 365 modules, done in 13.7s \n##[group]Run step 1: docker build -t app:ci .\n   Progress: resolved 795 modules, done in 13.9s \n##[group]Run step 2: docker build -t app:ci .\n   Progress: resolved 1151 modules, done in 17.4s \n##[group]Run step 3: pnpm -r build\n   Progress: resolved 2344 modules, done in 4.8s \n##[group]Run step 4: pnpm -r test -- --reporter=dot\n   computing gzip size 2926 modules, done in 11.4s \n##[group]Run step 5: pnpm install --frozen-lockfile\n   transforming 2703 modules, done in 12.1s \n   FAIL  src/orders.test.ts > case 5\n   AssertionError: expected 44 to equal 68\n##[group]Run step 6: pnpm -r build\n   rendering chunks 414 modules, done in 16.4s \n##[group]Run step 7: pnpm -r build\n   transforming 2114 modules, done in 11.1s \n##[group]Run step 8: docker build -t app:ci .\n   rendering chunks 889 modules, done in 2.0s \n##[group]Run step 9: pnpm -r test -- --reporter=dot\n   computing gzip size 56 modules, done in 16.7s \n##[group]Run step 10: docker build -t app:ci .\n   rendering chunks 889 modules, done in 9.5s \n##[group]Run step 11: pnpm -r test -- --reporter=dot\n   transforming 2525 modules, done in 2.8s \n##[group]Run step 12: pnpm install --frozen-lockfile\n   computing gzip size 316 modules, done in 4.1s \n##[group]Run step 13: pnpm install --frozen-lockfile\n   Progress: resolved 870 modules, done in 18.1s \n##[group]Run step 14: pnpm install --frozen-lockfile\n   computing gzip size 738 modules, done in 0.0s \n##[group]Run step 15: docker build -t app:ci .\n   rendering chunks 2516 modules, done in 19.2s \n##[group]Run step 16: pnpm -r build\n   computing gzip size 1814 modules, done in 10.3s \n   FAIL  src/export.test.ts > case 16\n   AssertionError: expected 86 to equal 70\n##[group]Run step 17: pnpm -r test -- --reporter=dot\n   computing gzip size 903 modules, done in 1.0s \n##[group]Run step 18: pnpm -r build\n   rendering chunks 1731 modules, done in 10.4s \n##[group]Run step 19: pnpm lint\n   computing gzip size 2575 modules, done in 17.3s \n##[group]Run step 20: docker build -t app:ci .\n   Progress: resolved 2011 modules, done in 12.4s \n##[group]Run step 21: docker build -t app:ci .\n   Progress: resolved 2975 modules, done in 19.7s \n##[group]Run step 22: docker build -t app:ci .\n   rendering chunks 440 modules, done in 14.9s \n##[group]Run step 23: pnpm -r build\n   transforming 2173 modules, done in 1.4s \n##[group]Run step 24: pnpm install --frozen-lockfile\n   computing gzip size 2774 modules, done in 7.2s \n##[group]Run step 25: pnpm install --frozen-lockfile\n   transforming 2893 modules, done in 7.2s \n##[group]Run step 26: docker build -t app:ci .\n   transforming 1321 modules, done in 4.9s \n##[group]Run step 27: pnpm install --frozen-lockfile\n   transforming 2358 modules, done in 7.1s \n   FAIL  src/auth.test.ts > case 27\n   AssertionError: expected 43 to equal 19\n##[group]Run step 28: docker build -t app:ci .\n   Progress: resolved 2669 modules, done in 15.5s \n##[group]Run step 29: pnpm -r build\n   rendering chunks 1443 modules, done in 9.3s \n##[group]Run step 30: pnpm -r test -- --reporter=dot\n   computing gzip size 1521 modules, done in 8.9s \n##[group]Run step 31: pnpm -r test -- --reporter=dot\n   Progress: resolved 1719 modules, done in 16.6s \n##[group]Run step 32: docker build -t app:ci .\n   rendering chunks 2106 modules, done in 13.8s \n##[group]Run step 33: pnpm lint\n   computing gzip size 2920 modules, done in 1.6s \n##[group]Run step 34: pnpm install --frozen-lockfile\n   rendering chunks 1359 modules, done in 6.8s \n##[group]Run step 35: pnpm -r build\n   computing gzip size 1072 modules, done in 19.1s \n##[group]Run step 36: pnpm -r test -- --reporter=dot\n   Progress: resolved 1995 modules, done in 14.7s \n##[group]Run step 37: pnpm lint\n   Progress: resolved 1862 modules, done in 0.9s \n##[group]Run step 38: pnpm -r test -- --reporter=dot\n   rendering chunks 2511 modules, done in 8.0s \n   FAIL  src/orders.test.ts > case 38\n   AssertionError: expected 59 to equal 85\n##[group]Run step 39: pnpm lint\n   Progress: resolved 2829 modules, done in 0.8s \n##[group]Run step 40: pnpm lint\n   computing gzip size 2917 modules, done in 4.4s \n##[group]Run step 41: pnpm install --frozen-lockfile\n   computing gzip size 254 modules, done in 4.0s \n##[group]Run step 42: docker build -t app:ci .\n   computing gzip size 2480 modules, done in 13.3s \n##[group]Run step 43: pnpm install --frozen-lockfile\n   transforming 1782 modules, done in 14.5s \n##[group]Run step 44: pnpm -r test -- --reporter=dot\n   computing gzip size 2447 modules, done in 18.3s \n##[group]Run step 45: docker build -t app:ci .\n   transforming 576 modules, done in 7.8s \n##[group]Run step 46: pnpm lint\n   Progress: resolved 2270 modules, done in 6.2s \n##[group]Run step 47: pnpm -r test -- --reporter=dot\n   Progress: resolved 2319 modules, done in 11.8s \n##[group]Run step 48: pnpm lint\n   transforming 2206 modules, done in 10.4s \n##[group]Run step 49: pnpm -r test -- --reporter=dot\n   computing gzip size 2958 modules, done in 17.3s \n   FAIL  src/export.test.ts > case 49\n   AssertionError: expected 18 to equal 64\n##[group]Run step 50: pnpm -r test -- --reporter=dot\n   Progress: resolved 1579 modules, done in 7.6s "
+        },
+        {
+          "role": "assistant",
+          "content": "构建日志里 vitest 有两个用例失败，其余步骤都过了。还有别的日志吗？"
+        },
+        {
+          "role": "user",
+          "content": "再贴一份 Playwright 的输出。\n##[group]Run step 0: pnpm -r test -- --reporter=dot\n   transforming 979 modules, done in 16.3s \n##[group]Run step 1: pnpm lint\n   transforming 1942 modules, done in 14.2s \n##[group]Run step 2: pnpm -r test -- --reporter=dot\n   computing gzip size 1311 modules, done in 18.0s \n##[group]Run step 3: pnpm install --frozen-lockfile\n   rendering chunks 2701 modules, done in 5.0s \n##[group]Run step 4: pnpm -r build\n   Progress: resolved 1391 modules, done in 19.7s \n##[group]Run step 5: pnpm lint\n   transforming 1421 modules, done in 9.4s \n   FAIL  src/auth.test.ts > case 5\n   AssertionError: expected 17 to equal 75\n##[group]Run step 6: pnpm lint\n   computing gzip size 1900 modules, done in 1.1s \n##[group]Run step 7: pnpm lint\n   computing gzip size 2180 modules, done in 7.2s \n##[group]Run step 8: pnpm install --frozen-lockfile\n   computing gzip size 2176 modules, done in 18.0s \n##[group]Run step 9: docker build -t app:ci .\n   rendering chunks 2956 modules, done in 3.8s \n##[group]Run step 10: pnpm -r build\n   Progress: resolved 714 modules, done in 4.7s \n##[group]Run step 11: docker build -t app:ci .\n   Progress: resolved 2577 modules, done in 2.5s \n##[group]Run step 12: pnpm install --frozen-lockfile\n   transforming 2673 modules, done in 18.6s \n##[group]Run step 13: docker build -t app:ci .\n   transforming 2537 modules, done in 4.3s \n##[group]Run step 14: pnpm install --frozen-lockfile\n   rendering chunks 1630 modules, done in 10.7s \n##[group]Run step 15: docker build -t app:ci .\n   Progress: resolved 1521 modules, done in 13.5s \n##[group]Run step 16: pnpm -r build\n   Progress: resolved 2043 modules, done in 11.5s \n   FAIL  src/import.test.ts > case 16\n   AssertionError: expected 8 to equal 43\n##[group]Run step 17: pnpm install --frozen-lockfile\n   rendering chunks 1713 modules, done in 9.3s \n##[group]Run step 18: pnpm -r build\n   transforming 1620 modules, done in 1.6s \n##[group]Run step 19: pnpm install --frozen-lockfile\n   rendering chunks 1128 modules, done in 6.9s \n##[group]Run step 20: pnpm install --frozen-lockfile\n   rendering chunks 273 modules, done in 8.0s \n##[group]Run step 21: docker build -t app:ci .\n   computing gzip size 254 modules, done in 4.5s \n##[group]Run step 22: docker build -t app:ci .\n   rendering chunks 2948 modules, done in 1.1s \n##[group]Run step 23: pnpm lint\n   transforming 1193 modules, done in 4.3s \n##[group]Run step 24: pnpm lint\n   computing gzip size 2062 modules, done in 8.9s \n##[group]Run step 25: pnpm -r build\n   transforming 107 modules, done in 18.3s \n##[group]Run step 26: pnpm -r build\n   rendering chunks 1317 modules, done in 11.1s \n##[group]Run step 27: pnpm lint\n   rendering chunks 1269 modules, done in 5.7s \n   FAIL  src/auth.test.ts > case 27\n   AssertionError: expected 51 to equal 51\n##[group]Run step 28: pnpm -r build\n   Progress: resolved 1949 modules, done in 3.6s \n##[group]Run step 29: pnpm install --frozen-lockfile\n   computing gzip size 533 modules, done in 13.2s \n##[group]Run step 30: docker build -t app:ci .\n   rendering chunks 898 modules, done in 8.7s \n##[group]Run step 31: pnpm lint\n   Progress: resolved 1520 modules, done in 10.0s \n##[group]Run step 32: pnpm -r test -- --reporter=dot\n   transforming 920 modules, done in 18.6s \n##[group]Run step 33: pnpm install --frozen-lockfile\n   computing gzip size 2895 modules, done in 17.5s \n##[group]Run step 34: pnpm install --frozen-lockfile\n   rendering chunks 1414 modules, done in 19.4s \n##[group]Run step 35: pnpm -r test -- --reporter=dot\n   computing gzip size 338 modules, done in 2.8s \n##[group]Run step 36: docker build -t app:ci .\n   transforming 903 modules, done in 3.2s \n##[group]Run step 37: pnpm -r build\n   rendering chunks 1616 modules, done in 12.3s \n##[group]Run step 38: pnpm lint\n   transforming 2008 modules, done in 19.0s \n   FAIL  src/orders.test.ts > case 38\n   AssertionError: expected 4 to equal 72\n##[group]Run step 39: docker build -t app:ci .\n   computing gzip size 493 modules, done in 10.7s \n##[group]Run step 40: pnpm install --frozen-lockfile\n   rendering chunks 559 modules, done in 8.5s \n##[group]Run step 41: pnpm -r test -- --reporter=dot\n   rendering chunks 238 modules, done in 14.7s \n##[group]Run step 42: pnpm -r test -- --reporter=dot\n   transforming 653 modules, done in 19.6s \n##[group]Run step 43: pnpm -r test -- --reporter=dot\n   computing gzip size 842 modules, done in 16.2s \n##[group]Run step 44: pnpm lint\n   Progress: resolved 2024 modules, done in 3.7s \n##[group]Run step 45: pnpm install --frozen-lockfile\n   Progress: resolved 517 modules, done in 18.7s \n##[group]Run step 46: pnpm lint\n   transforming 2203 modules, done in 2.5s \n##[group]Run step 47: pnpm install --frozen-lockfile\n   transforming 2119 modules, done in 17.4s \n##[group]Run step 48: pnpm -r test -- --reporter=dot\n   computing gzip size 2558 modules, done in 9.5s \n##[group]Run step 49: pnpm lint\n   transforming 2771 modules, done in 0.4s \n   FAIL  src/import.test.ts > case 49\n   AssertionError: expected 49 to equal 64\n##[group]Run step 50: docker build -t app:ci .\n   transforming 2492 modules, done in 16.2s \n##[group]Run step 51: pnpm -r test -- --reporter=dot\n   Progress: resolved 1719 modules, done in 9.7s \n##[group]Run step 52: pnpm install --frozen-lockfile\n   Progress: resolved 369 modules, done in 9.1s "
+        },
+        {
+          "role": "assistant",
+          "content": "Playwright 的失败集中在退款流程的等待超时，看起来是接口变慢。"
+        },
+        {
+          "role": "user",
+          "content": "最后是 vite 的构建输出。\n##[group]Run step 0: pnpm -r build\n   computing gzip size 2469 modules, done in 18.6s \n##[group]Run step 1: pnpm install --frozen-lockfile\n   rendering chunks 2978 modules, done in 11.5s \n##[group]Run step 2: pnpm -r build\n   transforming 2294 modules, done in 2.3s \n##[group]Run step 3: pnpm install --frozen-lockfile\n   Progress: resolved 2077 modules, done in 3.3s \n##[group]Run step 4: docker build -t app:ci .\n   transforming 1103 modules, done in 12.5s \n##[group]Run step 5: pnpm -r build\n   rendering chunks 2441 modules, done in 12.6s \n   FAIL  src/orders.test.ts > case 5\n   AssertionError: expected 7 to equal 52\n##[group]Run step 6: pnpm install --frozen-lockfile\n   Progress: resolved 2449 modules, done in 13.7s \n##[group]Run step 7: pnpm install --frozen-lockfile\n   Progress: resolved 1068 modules, done in 15.8s \n##[group]Run step 8: pnpm lint\n   transforming 459 modules, done in 5.1s \n##[group]Run step 9: pnpm -r test -- --reporter=dot\n   computing gzip size 971 modules, done in 19.1s \n##[group]Run step 10: pnpm -r build\n   computing gzip size 214 modules, done in 0.1s \n##[group]Run step 11: pnpm -r test -- --reporter=dot\n   Progress: resolved 2367 modules, done in 15.8s \n##[group]Run step 12: pnpm -r build\n   transforming 118 modules, done in 18.3s \n##[group]Run step 13: pnpm -r test -- --reporter=dot\n   transforming 2599 modules, done in 0.3s \n##[group]Run step 14: docker build -t app:ci .\n   Progress: resolved 439 modules, done in 10.1s \n##[group]Run step 15: pnpm lint\n   computing gzip size 2780 modules, done in 13.8s \n##[group]Run step 16: pnpm install --frozen-lockfile\n   computing gzip size 2867 modules, done in 18.3s \n   FAIL  src/orders.test.ts > case 16\n   AssertionError: expected 79 to equal 77\n##[group]Run step 17: pnpm -r test -- --reporter=dot\n   transforming 1790 modules, done in 13.4s \n##[group]Run step 18: pnpm install --frozen-lockfile\n   Progress: resolved 1250 modules, done in 12.9s \n##[group]Run step 19: pnpm -r test -- --reporter=dot\n   transforming 397 modules, done in 12.2s \n##[group]Run step 20: docker build -t app:ci .\n   rendering chunks 2450 modules, done in 4.8s \n##[group]Run step 21: pnpm install --frozen-lockfile\n   rendering chunks 152 modules, done in 0.2s \n##[group]Run step 22: pnpm lint\n   Progress: resolved 453 modules, done in 15.3s \n##[group]Run step 23: pnpm install --frozen-lockfile\n   rendering chunks 1269 modules, done in 2.1s \n##[group]Run step 24: pnpm -r build\n   rendering chunks 2112 modules, done in 0.7s \n##[group]Run step 25: docker build -t app:ci .\n   Progress: resolved 2133 modules, done in 11.6s \n##[group]Run step 26: pnpm lint\n   rendering chunks 2890 modules, done in 7.2s \n##[group]Run step 27: pnpm lint\n   transforming 857 modules, done in 5.1s \n   FAIL  src/orders.test.ts > case 27\n   AssertionError: expected 63 to equal 15\n##[group]Run step 28: pnpm lint\n   Progress: resolved 2007 modules, done in 10.1s \n##[group]Run step 29: pnpm install --frozen-lockfile\n   transforming 307 modules, done in 8.7s \n##[group]Run step 30: pnpm install --frozen-lockfile\n   transforming 432 modules, done in 7.3s \n##[group]Run step 31: docker build -t app:ci .\n   transforming 1507 modules, done in 8.0s \n##[group]Run step 32: pnpm -r build\n   computing gzip size 176 modules, done in 13.7s \n##[group]Run step 33: pnpm -r build\n   transforming 1934 modules, done in 9.6s \n##[group]Run step 34: pnpm -r test -- --reporter=dot\n   computing gzip size 187 modules, done in 18.1s \n##[group]Run step 35: pnpm install --frozen-lockfile\n   Progress: resolved 2054 modules, done in 13.6s \n##[group]Run step 36: pnpm -r build\n   computing gzip size 615 modules, done in 7.7s \n##[group]Run step 37: pnpm -r build\n   computing gzip size 1114 modules, done in 18.5s \n##[group]Run step 38: pnpm install --frozen-lockfile\n   Progress: resolved 2330 modules, done in 6.4s \n   FAIL  src/auth.test.ts > case 38\n   AssertionError: expected 44 to equal 3\n##[group]Run step 39: pnpm install --frozen-lockfile\n   computing gzip size 1669 modules, done in 19.1s \n##[group]Run step 40: pnpm install --frozen-lockfile\n   computing gzip size 1268 modules, done in 8.5s \n##[group]Run step 41: pnpm install --frozen-lockfile\n   transforming 348 modules, done in 5.5s "
+        },
+        {
+          "role": "assistant",
+          "content": "构建产物体积没有异常，警告都是 chunk 大小提示，可以忽略。"
+        },
+        {
+          "role": "user",
+          "content": "好，日志都看完了，先修那两个 vitest 用例。刚才那个方案作废，后端排期排不上，这事先放着。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我先看那两个失败用例。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "文案一律走 i18n，key 用 snake.case，zh-CN 是源语言，别在组件里写死中文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，key 形如 order.list.empty_hint，中文放 zh-CN.json，英文由翻译同学补。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "TS 里禁止 any，实在要用就 unknown 再收窄，我们 CI 开了 no-explicit-any。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，不确定的类型用 unknown，再用类型守卫收窄。"
+        },
+        {
+          "role": "user",
+          "content": "接口返回值用 zod 校验。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，用 zod schema 推导类型。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "分支名用 feat/xxx、fix/xxx，别用我名字拼音当前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，分支都按 type/短描述 来命名。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "前端错误上报用 Sentry，release 名用 git sha 的前 8 位，别用版本号。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，构建时把 git sha 前 8 位注入为 release，sourcemap 一并上传。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "回答别用表格，用短列表，我在小屏上看。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后用短列表，不再出表格。"
+        }
+      ]
+    ],
+    "group": "window-anaphora",
+    "mechanism": "window-anaphora",
+    "trap": "决定后隔着三段粘贴日志，撤回只说“刚才那个方案”。",
+    "b_hypothesis": "“改成后端异步任务”的决定在长 session 的第一个回合（窗口 1）；撤回在三段粘贴构建 / 测试日志之后的分块 2 里，只说“刚才那个方案作废，后端排期排不上”，没有任何和旧笔记描述重合的词，B 只看到新分块 + 索引描述，旧决定留在笔记里。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "商品批量导入现在是前端解析 Excel 再分批传给后端的，我拍板改成后端异步任务",
+        "role": "decision"
+      },
+      {
+        "session": 2,
+        "turn": 8,
+        "quote": "刚才那个方案作废，后端排期排不上",
+        "role": "retraction"
+      }
+    ],
+    "answer_keys": [
+      "前端解析 Excel",
+      "作废"
+    ],
+    "stale_keys": [
+      "后端异步",
+      "轮询"
+    ]
+  },
+  {
+    "question_id": "v2_wa_03",
+    "question_type": "knowledge-update",
+    "question": "今年 Q4 我们要不要做 ClickHouse 集群扩容？",
+    "answer": "不做了：此前定下的 Q4 扩容大工程后来取消了，原因是预算被砍。",
+    "question_date": "2026/09/18 (Fri) 01:50",
+    "haystack_session_ids": [
+      "v2_wa_03-s1",
+      "v2_wa_03-s2",
+      "v2_wa_03-s3",
+      "v2_wa_03-s4",
+      "v2_wa_03-s5",
+      "v2_wa_03-s6",
+      "v2_wa_03-s7",
+      "v2_wa_03-s8",
+      "v2_wa_03-s9",
+      "v2_wa_03-s10",
+      "v2_wa_03-s11"
+    ],
+    "haystack_dates": [
+      "2026/09/05 (Sat) 19:50",
+      "2026/09/05 (Sat) 20:27",
+      "2026/09/06 (Sun) 20:41",
+      "2026/09/07 (Mon) 21:32",
+      "2026/09/08 (Tue) 22:00",
+      "2026/09/09 (Wed) 22:05",
+      "2026/09/09 (Wed) 22:47",
+      "2026/09/10 (Thu) 23:06",
+      "2026/09/11 (Fri) 00:02",
+      "2026/09/13 (Sun) 00:35",
+      "2026/09/15 (Tue) 00:45"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Python 代码用 ruff 格式化，行宽 100，别用 black。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后按 ruff format、行宽 100 来写。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "先说下背景：我在数据平台组，主要负责日志和订单两条管道，风控那条是别的同事的。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我会以日志和订单两条管道为主来理解你的问题。"
+        },
+        {
+          "role": "user",
+          "content": "对，风控的我只在联调时碰一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "dbt 模型命名：staging 层用 stg_ 前缀，事实表 fct_，维度表 dim_，别自己发明前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，stg_、fct_、dim_ 三种前缀，其余模型先问你。"
+        },
+        {
+          "role": "user",
+          "content": "中间层 int_ 也是允许的，但要先和我说。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，int_ 先问你。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "ClickHouse 集群的扩容我们定了：Q4 做，从 3 个 shard 扩到 6 个，我来牵头，这是今年最大的工程。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。扩 shard 之后需要重新做数据均衡，我先列个迁移步骤？"
+        },
+        {
+          "role": "user",
+          "content": "先不列。我先给你看现在集群的慢查询。\n2026-09-12 03:00:00 UTC [20000] LOG:  duration: 2298.561 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 1 ORDER BY t.updated_at LIMIT 700\n2026-09-12 03:00:01 UTC [20001] LOG:  duration: 3771.404 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 2 ORDER BY t.updated_at LIMIT 300\n2026-09-12 03:00:02 UTC [20002] LOG:  duration: 3626.689 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 4 ORDER BY t.updated_at LIMIT 500\n2026-09-12 03:00:03 UTC [20003] LOG:  duration: 4455.55 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 0 ORDER BY t.updated_at LIMIT 600\n2026-09-12 03:00:04 UTC [20004] LOG:  duration: 3800.334 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 14 ORDER BY t.updated_at LIMIT 600\n2026-09-12 03:00:05 UTC [20005] LOG:  duration: 4873.273 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 1 ORDER BY t.updated_at LIMIT 900\n2026-09-12 03:00:06 UTC [20006] LOG:  duration: 2332.607 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 2 ORDER BY t.updated_at LIMIT 400\n2026-09-12 03:00:07 UTC [20007] LOG:  duration: 4955.750 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 15 ORDER BY t.updated_at LIMIT 800\n2026-09-12 03:00:08 UTC [20008] LOG:  duration: 5555.492 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 13 ORDER BY t.updated_at LIMIT 300\n2026-09-12 03:00:09 UTC [20009] LOG:  duration: 3274.667 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 11 ORDER BY t.updated_at LIMIT 900\n2026-09-12 03:00:10 UTC [20010] LOG:  duration: 4909.739 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 1 ORDER BY t.updated_at LIMIT 200\n2026-09-12 03:00:11 UTC [20011] LOG:  duration: 7908.732 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 5 ORDER BY t.updated_at LIMIT 100\n2026-09-12 03:00:12 UTC [20012] LOG:  duration: 8250.748 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 9 ORDER BY t.updated_at LIMIT 700\n2026-09-12 03:00:13 UTC [20013] LOG:  duration: 2024.717 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 14 ORDER BY t.updated_at LIMIT 600\n2026-09-12 03:00:14 UTC [20014] LOG:  duration: 4788.115 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 3 ORDER BY t.updated_at LIMIT 400\n2026-09-12 03:00:15 UTC [20015] LOG:  duration: 5428.320 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 12 ORDER BY t.updated_at LIMIT 100\n2026-09-12 03:00:16 UTC [20016] LOG:  duration: 6178.177 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 14 ORDER BY t.updated_at LIMIT 200\n2026-09-12 03:00:17 UTC [20017] LOG:  duration: 5890.190 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 10 ORDER BY t.updated_at LIMIT 900\n2026-09-12 03:00:18 UTC [20018] LOG:  duration: 9947.372 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 2 ORDER BY t.updated_at LIMIT 300\n2026-09-12 03:00:19 UTC [20019] LOG:  duration: 1992.289 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 5 ORDER BY t.updated_at LIMIT 300\n2026-09-12 03:00:20 UTC [20020] LOG:  duration: 4726.686 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 0 ORDER BY t.updated_at LIMIT 900\n2026-09-12 03:00:21 UTC [20021] LOG:  duration: 2121.779 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 9 ORDER BY t.updated_at LIMIT 900\n2026-09-12 03:00:22 UTC [20022] LOG:  duration: 5942.311 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 10 ORDER BY t.updated_at LIMIT 700\n2026-09-12 03:00:23 UTC [20023] LOG:  duration: 7121.424 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 4 ORDER BY t.updated_at LIMIT 700\n2026-09-12 03:00:24 UTC [20024] LOG:  duration: 1556.637 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 14 ORDER BY t.updated_at LIMIT 100\n2026-09-12 03:00:25 UTC [20025] LOG:  duration: 2611.362 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 7 ORDER BY t.updated_at LIMIT 200\n2026-09-12 03:00:26 UTC [20026] LOG:  duration: 3368.748 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 0 ORDER BY t.updated_at LIMIT 900\n2026-09-12 03:00:27 UTC [20027] LOG:  duration: 4007.556 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 13 ORDER BY t.updated_at LIMIT 400\n2026-09-12 03:00:28 UTC [20028] LOG:  duration: 9251.518 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 4 ORDER BY t.updated_at LIMIT 600\n2026-09-12 03:00:29 UTC [20029] LOG:  duration: 8651.474 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 15 ORDER BY t.updated_at LIMIT 100\n2026-09-12 03:00:30 UTC [20030] LOG:  duration: 5623.726 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 15 ORDER BY t.updated_at LIMIT 700\n2026-09-12 03:00:31 UTC [20031] LOG:  duration: 3939.196 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 0 ORDER BY t.updated_at LIMIT 500"
+        },
+        {
+          "role": "assistant",
+          "content": "慢查询集中在 events_raw 的大时间范围扫描上，和 shard 数有一定关系。还有别的吗？"
+        },
+        {
+          "role": "user",
+          "content": "再贴一份 Airflow scheduler 的日志。\n2026-09-12T02:00:00.191Z INFO  [scheduler] batch=1000 fetched=816 matched=584 elapsed=207ms\n2026-09-12T02:00:01.445Z INFO  [scheduler] batch=1001 fetched=367 matched=748 elapsed=819ms\n2026-09-12T02:00:02.662Z INFO  [scheduler] batch=1002 fetched=215 matched=290 elapsed=714ms\n2026-09-12T02:00:03.266Z INFO  [scheduler] batch=1003 fetched=633 matched=525 elapsed=332ms\n2026-09-12T02:00:04.889Z ERROR [scheduler] batch=1004 upstream request failed: ECONNRESET after 4713ms (attempt 2/3)\n2026-09-12T02:00:05.513Z INFO  [scheduler] batch=1005 fetched=16 matched=6 elapsed=371ms\n2026-09-12T02:00:06.424Z INFO  [scheduler] batch=1006 fetched=702 matched=232 elapsed=99ms\n2026-09-12T02:00:07.374Z WARN  [scheduler] batch=1007 slow step=fetch elapsed=4106ms\n2026-09-12T02:00:08.431Z INFO  [scheduler] batch=1008 fetched=324 matched=80 elapsed=608ms\n2026-09-12T02:00:09.184Z INFO  [scheduler] batch=1009 fetched=131 matched=600 elapsed=39ms\n2026-09-12T02:00:10.014Z INFO  [scheduler] batch=1010 fetched=673 matched=123 elapsed=146ms\n2026-09-12T02:00:11.513Z INFO  [scheduler] batch=1011 fetched=741 matched=257 elapsed=687ms\n2026-09-12T02:00:12.172Z INFO  [scheduler] batch=1012 fetched=450 matched=295 elapsed=458ms\n2026-09-12T02:00:13.998Z ERROR [scheduler] batch=1013 upstream request failed: ECONNRESET after 3565ms (attempt 2/3)\n2026-09-12T02:00:14.784Z INFO  [scheduler] batch=1014 fetched=60 matched=796 elapsed=767ms\n2026-09-12T02:00:15.606Z INFO  [scheduler] batch=1015 fetched=4 matched=44 elapsed=581ms\n2026-09-12T02:00:16.014Z INFO  [scheduler] batch=1016 fetched=346 matched=115 elapsed=623ms\n2026-09-12T02:00:17.747Z INFO  [scheduler] batch=1017 fetched=188 matched=683 elapsed=459ms\n2026-09-12T02:00:18.670Z INFO  [scheduler] batch=1018 fetched=81 matched=639 elapsed=409ms\n2026-09-12T02:00:19.960Z INFO  [scheduler] batch=1019 fetched=727 matched=817 elapsed=1ms\n2026-09-12T02:00:20.300Z WARN  [scheduler] batch=1020 slow step=diff elapsed=7537ms\n2026-09-12T02:00:21.572Z INFO  [scheduler] batch=1021 fetched=726 matched=464 elapsed=682ms\n2026-09-12T02:00:22.697Z ERROR [scheduler] batch=1022 upstream request failed: ECONNRESET after 5666ms (attempt 2/3)\n2026-09-12T02:00:23.689Z INFO  [scheduler] batch=1023 fetched=1 matched=448 elapsed=385ms\n2026-09-12T02:00:24.049Z INFO  [scheduler] batch=1024 fetched=615 matched=710 elapsed=173ms\n2026-09-12T02:00:25.491Z INFO  [scheduler] batch=1025 fetched=366 matched=255 elapsed=76ms\n2026-09-12T02:00:26.157Z INFO  [scheduler] batch=1026 fetched=535 matched=622 elapsed=254ms\n2026-09-12T02:00:27.064Z INFO  [scheduler] batch=1027 fetched=816 matched=645 elapsed=9ms\n2026-09-12T02:00:28.721Z INFO  [scheduler] batch=1028 fetched=167 matched=195 elapsed=191ms\n2026-09-12T02:00:29.645Z INFO  [scheduler] batch=1029 fetched=431 matched=35 elapsed=523ms\n2026-09-12T02:00:30.908Z INFO  [scheduler] batch=1030 fetched=892 matched=281 elapsed=794ms\n2026-09-12T02:00:31.108Z ERROR [scheduler] batch=1031 upstream request failed: ECONNRESET after 222ms (attempt 2/3)\n2026-09-12T02:00:32.198Z INFO  [scheduler] batch=1032 fetched=711 matched=357 elapsed=227ms\n2026-09-12T02:00:33.359Z WARN  [scheduler] batch=1033 slow step=write elapsed=4829ms\n2026-09-12T02:00:34.892Z INFO  [scheduler] batch=1034 fetched=619 matched=35 elapsed=589ms\n2026-09-12T02:00:35.604Z INFO  [scheduler] batch=1035 fetched=28 matched=561 elapsed=414ms\n2026-09-12T02:00:36.216Z INFO  [scheduler] batch=1036 fetched=847 matched=220 elapsed=260ms\n2026-09-12T02:00:37.564Z INFO  [scheduler] batch=1037 fetched=649 matched=876 elapsed=121ms\n2026-09-12T02:00:38.067Z INFO  [scheduler] batch=1038 fetched=249 matched=227 elapsed=407ms\n2026-09-12T02:00:39.839Z INFO  [scheduler] batch=1039 fetched=476 matched=859 elapsed=519ms\n2026-09-12T02:00:40.417Z ERROR [scheduler] batch=1040 upstream request failed: ECONNRESET after 3836ms (attempt 2/3)\n2026-09-12T02:00:41.563Z INFO  [scheduler] batch=1041 fetched=284 matched=405 elapsed=723ms\n2026-09-12T02:00:42.940Z INFO  [scheduler] batch=1042 fetched=580 matched=819 elapsed=546ms\n2026-09-12T02:00:43.378Z INFO  [scheduler] batch=1043 fetched=538 matched=593 elapsed=235ms\n2026-09-12T02:00:44.891Z INFO  [scheduler] batch=1044 fetched=708 matched=408 elapsed=154ms\n2026-09-12T02:00:45.950Z INFO  [scheduler] batch=1045 fetched=146 matched=640 elapsed=591ms\n2026-09-12T02:00:46.112Z WARN  [scheduler] batch=1046 slow step=write elapsed=5706ms\n2026-09-12T02:00:47.805Z INFO  [scheduler] batch=1047 fetched=225 matched=612 elapsed=359ms\n2026-09-12T02:00:48.022Z INFO  [scheduler] batch=1048 fetched=297 matched=326 elapsed=763ms\n2026-09-12T02:00:49.299Z ERROR [scheduler] batch=1049 upstream request failed: ECONNRESET after 8523ms (attempt 2/3)\n2026-09-12T02:00:50.343Z INFO  [scheduler] batch=1050 fetched=380 matched=411 elapsed=63ms\n2026-09-12T02:00:51.845Z INFO  [scheduler] batch=1051 fetched=444 matched=791 elapsed=624ms\n2026-09-12T02:00:52.652Z INFO  [scheduler] batch=1052 fetched=521 matched=453 elapsed=324ms\n2026-09-12T02:00:53.571Z INFO  [scheduler] batch=1053 fetched=575 matched=86 elapsed=665ms\n2026-09-12T02:00:54.262Z INFO  [scheduler] batch=1054 fetched=676 matched=50 elapsed=664ms\n2026-09-12T02:00:55.341Z INFO  [scheduler] batch=1055 fetched=685 matched=255 elapsed=751ms\n2026-09-12T02:00:56.888Z INFO  [scheduler] batch=1056 fetched=646 matched=773 elapsed=517ms\n2026-09-12T02:00:57.748Z INFO  [scheduler] batch=1057 fetched=169 matched=517 elapsed=423ms\n2026-09-12T02:00:58.279Z ERROR [scheduler] batch=1058 upstream request failed: ECONNRESET after 6920ms (attempt 2/3)\n2026-09-12T02:00:59.550Z WARN  [scheduler] batch=1059 slow step=write elapsed=4536ms\n2026-09-12T02:01:00.375Z INFO  [scheduler] batch=1060 fetched=434 matched=370 elapsed=223ms\n2026-09-12T02:01:01.141Z INFO  [scheduler] batch=1061 fetched=243 matched=347 elapsed=317ms\n2026-09-12T02:01:02.995Z INFO  [scheduler] batch=1062 fetched=36 matched=498 elapsed=692ms\n2026-09-12T02:01:03.260Z INFO  [scheduler] batch=1063 fetched=757 matched=483 elapsed=233ms\n2026-09-12T02:01:04.834Z INFO  [scheduler] batch=1064 fetched=460 matched=81 elapsed=124ms\n2026-09-12T02:01:05.797Z INFO  [scheduler] batch=1065 fetched=450 matched=299 elapsed=30ms\n2026-09-12T02:01:06.510Z INFO  [scheduler] batch=1066 fetched=584 matched=889 elapsed=170ms"
+        },
+        {
+          "role": "assistant",
+          "content": "日志里有若干次 ECONNRESET，是连接 ClickHouse 超时导致的任务重试。"
+        },
+        {
+          "role": "user",
+          "content": "好，我心里有数了，今天先看慢查询的优化。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，先从 events_raw 的主键顺序看起。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "涉及用户手机号、身份证的字段一律哈希后再落仓，也不要给我看明文样例，造数据时用假的。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，落仓前用 sha256 加盐哈希，示例数据我都用随机生成的假值。"
+        },
+        {
+          "role": "user",
+          "content": "盐放在 Vault 里，别写进 DAG。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，盐从 Vault 取。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "SQL 关键字写小写，逗号放行尾，别用逗号前置风格。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，select / from / where 全小写，逗号在行尾。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "调度的 cron 一律用 UTC 写，别用本地时间，我们每次夏令时附近都出事。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，所有 DAG 的 schedule 都用 UTC，注释里再写一下对应的北京时间。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "告警统一走飞书机器人，不发邮件。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，on_failure_callback 都接飞书机器人 webhook。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "先说件事，前阵子说的那个大工程不搞了，预算被砍了。今天想看一下 dp_orders_daily 这个 DAG 的重试策略。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，不再推进了。dp_orders_daily 的重试我先看一下现在的配置。"
+        },
+        {
+          "role": "user",
+          "content": "你看下 retries 和 retry_delay，我觉得对下游 API 不友好。"
+        },
+        {
+          "role": "assistant",
+          "content": "目前是 retries=2、retry_delay=5 分钟，对下游限流的场景确实偏激进，可以加指数退避。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "不要主动重构我没让你改的代码，只改我指出的地方。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，只改你指出的部分，发现别的问题我会列出来但不动手。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "本地环境用 uv 管理，别推荐 conda。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，依赖安装和虚拟环境都用 uv。"
+        }
+      ]
+    ],
+    "group": "window-anaphora",
+    "mechanism": "window-anaphora",
+    "trap": "决定在长 session 里；之后另一个 session 的撤回只称“前阵子说的那个大工程”。",
+    "b_hypothesis": "决定出现在一个超过 12000 字符的长 session（含粘贴日志）的开头，被保存；撤回发生在几天之后的另一个 session，只说“前阵子说的那个大工程不搞了，预算被砍了”，没有 ClickHouse / 扩容 / Q4 这些词；B 只看到新窗口和 4000 字符内的索引描述，笔记里的“Q4 扩容”会保留。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 0,
+        "quote": "ClickHouse 集群的扩容我们定了：Q4 做，从 3 个 shard 扩到 6 个",
+        "role": "decision"
+      },
+      {
+        "session": 8,
+        "turn": 0,
+        "quote": "前阵子说的那个大工程不搞了，预算被砍了",
+        "role": "retraction"
+      }
+    ],
+    "answer_keys": [
+      "Q4",
+      "不搞了",
+      "预算被砍"
+    ],
+    "stale_keys": [
+      "Q4 做",
+      "扩到 6 个"
+    ]
+  },
+  {
+    "question_id": "v2_wa_04",
+    "question_type": "knowledge-update",
+    "question": "固件 OTA 升级现在是怎么往设备推的？",
+    "answer": "一次性全量推送；之前定的分批灰度方案已经作废，因为厂商合同里写死了要一次推完。",
+    "question_date": "2026/09/17 (Thu) 02:00",
+    "haystack_session_ids": [
+      "v2_wa_04-s1",
+      "v2_wa_04-s2",
+      "v2_wa_04-s3",
+      "v2_wa_04-s4",
+      "v2_wa_04-s5",
+      "v2_wa_04-s6",
+      "v2_wa_04-s7",
+      "v2_wa_04-s8",
+      "v2_wa_04-s9",
+      "v2_wa_04-s10"
+    ],
+    "haystack_dates": [
+      "2026/09/06 (Sun) 20:10",
+      "2026/09/06 (Sun) 20:47",
+      "2026/09/07 (Mon) 21:01",
+      "2026/09/08 (Tue) 21:52",
+      "2026/09/09 (Wed) 22:20",
+      "2026/09/10 (Thu) 22:25",
+      "2026/09/10 (Thu) 23:07",
+      "2026/09/11 (Fri) 23:26",
+      "2026/09/12 (Sat) 00:22",
+      "2026/09/14 (Mon) 00:55"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Go 里的错误要 wrap，用 fmt.Errorf(\"...: %w\", err)，别吞错误，也别只打日志不返回。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，错误一律带上下文 wrap 往上抛，只在边界处记录日志。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "MQTT topic 命名统一：device/{region}/{deviceId}/up 和 /down，别再发明新格式。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，上行 up、下行 down，region 用小写短码。"
+        },
+        {
+          "role": "user",
+          "content": "新增类型放在后缀，不要改前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "回答用中文，术语保留英文，别把 Pod、Deployment 翻译成中文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后术语保持英文原样。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "固件 OTA 升级我定了：改成分批灰度，每批 5%，每批之间观察 20 分钟，这个我决定了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。需要我先在升级任务里加批次字段和观察窗口的调度吗？"
+        },
+        {
+          "role": "user",
+          "content": "先不加。我先给你看今天 EMQX 的日志。\n2026-09-12T02:00:00.872Z INFO  [emqx] batch=1000 fetched=437 matched=131 elapsed=311ms\n2026-09-12T02:00:01.725Z INFO  [emqx] batch=1001 fetched=737 matched=158 elapsed=695ms\n2026-09-12T02:00:02.462Z INFO  [emqx] batch=1002 fetched=652 matched=585 elapsed=8ms\n2026-09-12T02:00:03.169Z INFO  [emqx] batch=1003 fetched=297 matched=338 elapsed=254ms\n2026-09-12T02:00:04.563Z ERROR [emqx] batch=1004 upstream request failed: ECONNRESET after 6252ms (attempt 2/3)\n2026-09-12T02:00:05.417Z INFO  [emqx] batch=1005 fetched=588 matched=573 elapsed=563ms\n2026-09-12T02:00:06.764Z INFO  [emqx] batch=1006 fetched=844 matched=480 elapsed=0ms\n2026-09-12T02:00:07.118Z WARN  [emqx] batch=1007 slow step=diff elapsed=6345ms\n2026-09-12T02:00:08.614Z INFO  [emqx] batch=1008 fetched=891 matched=342 elapsed=751ms\n2026-09-12T02:00:09.814Z INFO  [emqx] batch=1009 fetched=519 matched=150 elapsed=611ms\n2026-09-12T02:00:10.442Z INFO  [emqx] batch=1010 fetched=91 matched=801 elapsed=305ms\n2026-09-12T02:00:11.851Z INFO  [emqx] batch=1011 fetched=530 matched=166 elapsed=333ms\n2026-09-12T02:00:12.005Z INFO  [emqx] batch=1012 fetched=242 matched=773 elapsed=403ms\n2026-09-12T02:00:13.929Z ERROR [emqx] batch=1013 upstream request failed: ECONNRESET after 539ms (attempt 2/3)\n2026-09-12T02:00:14.921Z INFO  [emqx] batch=1014 fetched=52 matched=30 elapsed=753ms\n2026-09-12T02:00:15.322Z INFO  [emqx] batch=1015 fetched=21 matched=62 elapsed=402ms\n2026-09-12T02:00:16.813Z INFO  [emqx] batch=1016 fetched=887 matched=658 elapsed=597ms\n2026-09-12T02:00:17.553Z INFO  [emqx] batch=1017 fetched=119 matched=161 elapsed=473ms\n2026-09-12T02:00:18.356Z INFO  [emqx] batch=1018 fetched=699 matched=887 elapsed=718ms\n2026-09-12T02:00:19.723Z INFO  [emqx] batch=1019 fetched=542 matched=255 elapsed=411ms\n2026-09-12T02:00:20.046Z WARN  [emqx] batch=1020 slow step=diff elapsed=2764ms\n2026-09-12T02:00:21.453Z INFO  [emqx] batch=1021 fetched=561 matched=353 elapsed=292ms\n2026-09-12T02:00:22.171Z ERROR [emqx] batch=1022 upstream request failed: ECONNRESET after 3438ms (attempt 2/3)\n2026-09-12T02:00:23.445Z INFO  [emqx] batch=1023 fetched=241 matched=270 elapsed=399ms\n2026-09-12T02:00:24.775Z INFO  [emqx] batch=1024 fetched=470 matched=65 elapsed=835ms\n2026-09-12T02:00:25.457Z INFO  [emqx] batch=1025 fetched=170 matched=61 elapsed=561ms\n2026-09-12T02:00:26.326Z INFO  [emqx] batch=1026 fetched=272 matched=36 elapsed=397ms\n2026-09-12T02:00:27.090Z INFO  [emqx] batch=1027 fetched=717 matched=416 elapsed=681ms\n2026-09-12T02:00:28.738Z INFO  [emqx] batch=1028 fetched=699 matched=680 elapsed=58ms\n2026-09-12T02:00:29.320Z INFO  [emqx] batch=1029 fetched=127 matched=353 elapsed=506ms\n2026-09-12T02:00:30.433Z INFO  [emqx] batch=1030 fetched=716 matched=303 elapsed=515ms\n2026-09-12T02:00:31.971Z ERROR [emqx] batch=1031 upstream request failed: ECONNRESET after 8966ms (attempt 2/3)\n2026-09-12T02:00:32.515Z INFO  [emqx] batch=1032 fetched=828 matched=898 elapsed=505ms\n2026-09-12T02:00:33.284Z WARN  [emqx] batch=1033 slow step=write elapsed=6783ms\n2026-09-12T02:00:34.000Z INFO  [emqx] batch=1034 fetched=76 matched=867 elapsed=386ms\n2026-09-12T02:00:35.793Z INFO  [emqx] batch=1035 fetched=667 matched=422 elapsed=351ms\n2026-09-12T02:00:36.362Z INFO  [emqx] batch=1036 fetched=107 matched=217 elapsed=166ms\n2026-09-12T02:00:37.477Z INFO  [emqx] batch=1037 fetched=60 matched=653 elapsed=801ms\n2026-09-12T02:00:38.132Z INFO  [emqx] batch=1038 fetched=793 matched=838 elapsed=53ms\n2026-09-12T02:00:39.150Z INFO  [emqx] batch=1039 fetched=647 matched=490 elapsed=458ms\n2026-09-12T02:00:40.025Z ERROR [emqx] batch=1040 upstream request failed: ECONNRESET after 6036ms (attempt 2/3)\n2026-09-12T02:00:41.134Z INFO  [emqx] batch=1041 fetched=774 matched=697 elapsed=408ms\n2026-09-12T02:00:42.844Z INFO  [emqx] batch=1042 fetched=782 matched=738 elapsed=828ms\n2026-09-12T02:00:43.210Z INFO  [emqx] batch=1043 fetched=816 matched=138 elapsed=749ms\n2026-09-12T02:00:44.998Z INFO  [emqx] batch=1044 fetched=139 matched=280 elapsed=558ms\n2026-09-12T02:00:45.191Z INFO  [emqx] batch=1045 fetched=301 matched=827 elapsed=44ms\n2026-09-12T02:00:46.532Z WARN  [emqx] batch=1046 slow step=fetch elapsed=6955ms\n2026-09-12T02:00:47.041Z INFO  [emqx] batch=1047 fetched=225 matched=191 elapsed=75ms\n2026-09-12T02:00:48.058Z INFO  [emqx] batch=1048 fetched=782 matched=573 elapsed=274ms\n2026-09-12T02:00:49.781Z ERROR [emqx] batch=1049 upstream request failed: ECONNRESET after 2119ms (attempt 2/3)\n2026-09-12T02:00:50.479Z INFO  [emqx] batch=1050 fetched=132 matched=24 elapsed=135ms\n2026-09-12T02:00:51.738Z INFO  [emqx] batch=1051 fetched=852 matched=99 elapsed=239ms\n2026-09-12T02:00:52.680Z INFO  [emqx] batch=1052 fetched=697 matched=84 elapsed=96ms\n2026-09-12T02:00:53.561Z INFO  [emqx] batch=1053 fetched=371 matched=580 elapsed=350ms\n2026-09-12T02:00:54.534Z INFO  [emqx] batch=1054 fetched=29 matched=396 elapsed=1ms\n2026-09-12T02:00:55.791Z INFO  [emqx] batch=1055 fetched=529 matched=290 elapsed=272ms\n2026-09-12T02:00:56.292Z INFO  [emqx] batch=1056 fetched=164 matched=607 elapsed=566ms\n2026-09-12T02:00:57.637Z INFO  [emqx] batch=1057 fetched=831 matched=623 elapsed=122ms\n2026-09-12T02:00:58.926Z ERROR [emqx] batch=1058 upstream request failed: ECONNRESET after 439ms (attempt 2/3)"
+        },
+        {
+          "role": "assistant",
+          "content": "日志里有一批 ECONNRESET，另有几批的 write 步骤偏慢，像是连接数接近上限。还有别的吗？"
+        },
+        {
+          "role": "user",
+          "content": "再贴一份网关的 goroutine 栈。\n    at async gateway.step (/app/dist/db/client.js:88:17)\n    at Object.run (/app/dist/gateway/worker.js:31:4)\n    at async Worker.handle (/app/dist/db/client.js:90:17)\n    at async Worker.handle (/app/dist/db/client.js:91:17)\n    at async gateway.step (/app/node_modules/pg-pool/index.js:45:11)\n    at async Pool.query (node:internal/process/task_queues:95:5)\n    at async gateway.step (/app/dist/db/client.js:94:17)\n    at async Worker.handle (/app/dist/gateway/worker.js:37:10)\n    at Object.run (node:internal/process/task_queues:95:5)\n    at async gateway.step (node:internal/process/task_queues:95:5)\n    at Object.run (/app/node_modules/pg-pool/index.js:45:11)\n    at Object.run (/app/dist/db/client.js:99:17)\n    at Object.run (/app/node_modules/pg-pool/index.js:45:11)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at async gateway.step (node:internal/process/task_queues:95:5)\n    at Object.run (/app/dist/db/client.js:103:17)\n    at Object.run (/app/dist/db/client.js:104:17)\n    at Object.run (/app/dist/gateway/worker.js:47:20)\n    at async gateway.step (/app/dist/db/client.js:106:17)\n    at async gateway.step (node:internal/process/task_queues:95:5)\n    at processTicksAndRejections (/app/dist/db/client.js:108:17)\n    at async gateway.step (/app/node_modules/pg-pool/index.js:45:11)\n    at async gateway.step (/app/dist/db/client.js:110:17)\n    at processTicksAndRejections (/app/dist/gateway/worker.js:53:26)\n    at Object.run (/app/dist/db/client.js:112:17)\n    at processTicksAndRejections (/app/dist/db/client.js:113:17)\n    at async Worker.handle (/app/dist/db/client.js:114:17)\n    at async Worker.handle (node:internal/process/task_queues:95:5)\n    at Object.run (/app/node_modules/pg-pool/index.js:45:11)\n    at async Pool.query (/app/dist/db/client.js:117:17)\n    at async Worker.handle (node:internal/process/task_queues:95:5)\n    at processTicksAndRejections (/app/node_modules/pg-pool/index.js:45:11)\n    at async Pool.query (/app/dist/db/client.js:120:17)\n    at Object.run (/app/dist/gateway/worker.js:63:36)\n    at async gateway.step (node:internal/process/task_queues:95:5)\n    at async gateway.step (/app/node_modules/pg-pool/index.js:45:11)\n    at async Pool.query (/app/dist/db/client.js:124:17)\n    at processTicksAndRejections (/app/dist/db/client.js:125:17)\n    at async gateway.step (/app/node_modules/pg-pool/index.js:45:11)\n    at Object.run (/app/dist/gateway/worker.js:69:42)\n    at Object.run (/app/dist/db/client.js:128:17)\n    at async Worker.handle (node:internal/process/task_queues:95:5)\n    at async gateway.step (/app/node_modules/pg-pool/index.js:45:11)\n    at async Worker.handle (node:internal/process/task_queues:95:5)\n    at processTicksAndRejections (/app/dist/gateway/worker.js:74:7)\n    at async gateway.step (/app/node_modules/pg-pool/index.js:45:11)\n    at async Worker.handle (/app/dist/gateway/worker.js:76:9)\n    at processTicksAndRejections (/app/node_modules/pg-pool/index.js:45:11)\n    at processTicksAndRejections (/app/node_modules/pg-pool/index.js:45:11)\n    at Object.run (/app/dist/gateway/worker.js:79:12)\n    at async Pool.query (/app/dist/db/client.js:138:17)\n    at async gateway.step (/app/node_modules/pg-pool/index.js:45:11)\n    at async Worker.handle (/app/dist/db/client.js:140:17)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at Object.run (/app/node_modules/pg-pool/index.js:45:11)\n    at async gateway.step (/app/dist/db/client.js:143:17)\n    at async Worker.handle (node:internal/process/task_queues:95:5)\n    at async gateway.step (/app/dist/db/client.js:145:17)\n    at async Pool.query (/app/dist/db/client.js:146:17)\n    at async Worker.handle (node:internal/process/task_queues:95:5)\n    at Object.run (node:internal/process/task_queues:95:5)\n    at Object.run (/app/dist/gateway/worker.js:91:24)\n    at Object.run (/app/node_modules/pg-pool/index.js:45:11)\n    at Object.run (/app/node_modules/pg-pool/index.js:45:11)\n    at async Pool.query (/app/dist/gateway/worker.js:94:27)\n    at async Worker.handle (/app/dist/gateway/worker.js:95:28)\n    at Object.run (/app/node_modules/pg-pool/index.js:45:11)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at async gateway.step (/app/dist/db/client.js:156:17)\n    at async gateway.step (/app/dist/gateway/worker.js:99:32)\n    at processTicksAndRejections (/app/node_modules/pg-pool/index.js:45:11)\n    at async Pool.query (/app/dist/db/client.js:159:17)\n    at async gateway.step (node:internal/process/task_queues:95:5)\n    at async Pool.query (/app/node_modules/pg-pool/index.js:45:11)\n    at processTicksAndRejections (/app/dist/gateway/worker.js:104:37)\n    at async Pool.query (/app/dist/db/client.js:163:17)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)\n    at async Worker.handle (/app/dist/gateway/worker.js:107:40)\n    at Object.run (/app/dist/gateway/worker.js:108:41)\n    at async Worker.handle (node:internal/process/task_queues:95:5)\n    at async Worker.handle (/app/dist/gateway/worker.js:110:3)\n    at async Pool.query (/app/dist/db/client.js:169:17)\n    at async Pool.query (/app/dist/gateway/worker.js:112:5)\n    at processTicksAndRejections (node:internal/process/task_queues:95:5)"
+        },
+        {
+          "role": "assistant",
+          "content": "栈里大量 goroutine 阻塞在 channel 发送上，说明下游消费速度跟不上。"
+        },
+        {
+          "role": "user",
+          "content": "还有 TimescaleDB 的慢查询。\n2026-09-12 03:00:00 UTC [20000] LOG:  duration: 6807.313 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 9 ORDER BY t.updated_at LIMIT 700\n2026-09-12 03:00:01 UTC [20001] LOG:  duration: 4380.813 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 12 ORDER BY t.updated_at LIMIT 200\n2026-09-12 03:00:02 UTC [20002] LOG:  duration: 1487.226 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 6 ORDER BY t.updated_at LIMIT 300\n2026-09-12 03:00:03 UTC [20003] LOG:  duration: 3032.59 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 12 ORDER BY t.updated_at LIMIT 700\n2026-09-12 03:00:04 UTC [20004] LOG:  duration: 10076.792 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 15 ORDER BY t.updated_at LIMIT 500\n2026-09-12 03:00:05 UTC [20005] LOG:  duration: 6545.838 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 5 ORDER BY t.updated_at LIMIT 300\n2026-09-12 03:00:06 UTC [20006] LOG:  duration: 8896.76 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 7 ORDER BY t.updated_at LIMIT 800\n2026-09-12 03:00:07 UTC [20007] LOG:  duration: 9461.471 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 4 ORDER BY t.updated_at LIMIT 900\n2026-09-12 03:00:08 UTC [20008] LOG:  duration: 2958.140 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 8 ORDER BY t.updated_at LIMIT 500\n2026-09-12 03:00:09 UTC [20009] LOG:  duration: 8220.718 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 3 ORDER BY t.updated_at LIMIT 800\n2026-09-12 03:00:10 UTC [20010] LOG:  duration: 7570.19 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 15 ORDER BY t.updated_at LIMIT 500\n2026-09-12 03:00:11 UTC [20011] LOG:  duration: 9293.210 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 8 ORDER BY t.updated_at LIMIT 600\n2026-09-12 03:00:12 UTC [20012] LOG:  duration: 2900.569 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 8 ORDER BY t.updated_at LIMIT 600\n2026-09-12 03:00:13 UTC [20013] LOG:  duration: 3609.230 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 10 ORDER BY t.updated_at LIMIT 400\n2026-09-12 03:00:14 UTC [20014] LOG:  duration: 2973.286 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 5 ORDER BY t.updated_at LIMIT 500\n2026-09-12 03:00:15 UTC [20015] LOG:  duration: 6807.852 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 2 ORDER BY t.updated_at LIMIT 300\n2026-09-12 03:00:16 UTC [20016] LOG:  duration: 3297.406 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 13 ORDER BY t.updated_at LIMIT 700\n2026-09-12 03:00:17 UTC [20017] LOG:  duration: 1335.350 ms  statement: SELECT t.id, t.amount, t.updated_at FROM ledger_entries t WHERE t.updated_at > $1 AND t.shard = 14 ORDER BY t.updated_at LIMIT 200\n2026-09-12 03:00:18 UTC [20018] LOG:  duration: 2760.397 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 3 ORDER BY t.updated_at LIMIT 800\n2026-09-12 03:00:19 UTC [20019] LOG:  duration: 2641.297 ms  statement: SELECT t.id, t.amount, t.updated_at FROM invoices t WHERE t.updated_at > $1 AND t.shard = 11 ORDER BY t.updated_at LIMIT 600\n2026-09-12 03:00:20 UTC [20020] LOG:  duration: 8301.748 ms  statement: SELECT t.id, t.amount, t.updated_at FROM events_raw t WHERE t.updated_at > $1 AND t.shard = 7 ORDER BY t.updated_at LIMIT 500\n2026-09-12 03:00:21 UTC [20021] LOG:  duration: 5267.581 ms  statement: SELECT t.id, t.amount, t.updated_at FROM device_state t WHERE t.updated_at > $1 AND t.shard = 1 ORDER BY t.updated_at LIMIT 400"
+        },
+        {
+          "role": "assistant",
+          "content": "慢查询集中在 device_state 按时间排序的查询，缺少 (shard, updated_at) 的联合索引。"
+        },
+        {
+          "role": "user",
+          "content": "好，今天先处理 channel 阻塞的问题，别的以后再说。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我先看消费者的并发度和缓冲区大小。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我们主干开发，feature 开关用 flagr，不开长期分支。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，新功能先合到 main 并用 flagr 开关默认关闭。"
+        },
+        {
+          "role": "user",
+          "content": "开关命名用 feature.模块.功能。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "代码注释写英文，commit message 写中文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，注释英文，commit 中文。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "golangci-lint 必须通过，不要用 nolint 绕过，真要绕得先说理由。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，不加 nolint，遇到误报先来问你。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "上次说的那个方案不用了，厂商合同里写死了要一次性推完。今天我想看一下设备影子的更新频率。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，不再推进了。设备影子的更新频率你想看哪一块？"
+        },
+        {
+          "role": "user",
+          "content": "先看上行的写入频率分布。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我从 device_state 的写入量开始看。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "性能相关的改动必须附 benchmark 结果，go test -bench 的输出贴 PR 里。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，性能改动我会附 -bench 的前后对比，带 -benchmem。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "任何密钥只放在 Vault 里，不要出现在代码、配置样例或我们的对话里。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，我只写 Vault 的路径引用，不写任何密钥内容。"
+        },
+        {
+          "role": "user",
+          "content": "连测试用的假密钥也别写成真实格式。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ]
+    ],
+    "group": "window-anaphora",
+    "mechanism": "window-anaphora",
+    "trap": "决定在长 session；下一个 session 的撤回只说“上次说的那个方案”。",
+    "b_hypothesis": "“分批灰度、每批 5%”的决定在较早的长 session（含 EMQX 与网关日志粘贴，超过 12000 字符）里被保存；之后另一个 session 里用户只说“上次说的那个方案不用了，合同里写死了要一次性推完”，没有 OTA / 灰度 / 5% 等词，B 只看到新窗口 + 索引描述，旧笔记保留。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 0,
+        "quote": "固件 OTA 升级我定了：改成分批灰度，每批 5%，每批之间观察 20 分钟",
+        "role": "decision"
+      },
+      {
+        "session": 7,
+        "turn": 0,
+        "quote": "上次说的那个方案不用了，厂商合同里写死了要一次性推完",
+        "role": "retraction"
+      }
+    ],
+    "answer_keys": [
+      "一次性推完",
+      "不用了"
+    ],
+    "stale_keys": [
+      "每批 5%",
+      "分批灰度"
+    ]
+  },
+  {
+    "question_id": "v2_im_01",
+    "question_type": "knowledge-update",
+    "question": "退款超过多少钱需要财务主管审批？",
+    "answer": "超过 2 万元（20000）需要财务主管审批；原来是 5000 元，后来抬高到两万。",
+    "question_date": "2026/09/10 (Thu) 03:00",
+    "haystack_session_ids": [
+      "v2_im_01-s1",
+      "v2_im_01-s2",
+      "v2_im_01-s3",
+      "v2_im_01-s4",
+      "v2_im_01-s5",
+      "v2_im_01-s6",
+      "v2_im_01-s7",
+      "v2_im_01-s8",
+      "v2_im_01-s9",
+      "v2_im_01-s10"
+    ],
+    "haystack_dates": [
+      "2026/09/01 (Tue) 21:10",
+      "2026/09/02 (Wed) 21:47",
+      "2026/09/02 (Wed) 22:01",
+      "2026/09/03 (Thu) 22:52",
+      "2026/09/03 (Thu) 23:20",
+      "2026/09/04 (Fri) 23:25",
+      "2026/09/05 (Sat) 00:07",
+      "2026/09/06 (Sun) 00:26",
+      "2026/09/07 (Mon) 01:22",
+      "2026/09/07 (Mon) 01:55"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "commit message 以后统一用 conventional commits，scope 写模块名，比如 feat(invoice): add proration，描述用英文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后按 type(scope): subject 的格式写，subject 用英文小写开头。"
+        },
+        {
+          "role": "user",
+          "content": "另外 subject 里别带 ticket 号，放 footer。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，footer 用 Refs: BILL-123 的形式。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "数据库里的时间一律存 UTC，展示层才转 Asia/Shanghai，别在 SQL 里做时区转换。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，timestamptz 存 UTC，转换放在 API 响应序列化那一层。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "退款这块我们得定个规矩：单笔超过 5000 元的退款要财务主管审批，5000 以内客服自己点就行。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我把审批阈值做成配置项，默认 5000 元，超过的单子进入待审批状态。"
+        },
+        {
+          "role": "user",
+          "content": "审批人就是财务主管，不用走多级。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，单级审批，审批人取财务主管角色。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个测试挂了，是 mock 的 pg 和真库行为不一样。以后测试里不要 mock 数据库，用 testcontainers 起真的 Postgres。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我把这个用例改成用 testcontainers 的 Postgres，启动一次整个 suite 复用。"
+        },
+        {
+          "role": "user",
+          "content": "对，复用，别每个用例都起一个，太慢。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，用 beforeAll 起、afterAll 关，每个用例前 truncate。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个正则 /^INV-(\\d{6})-([A-Z]{2})$/ 为什么匹配不了 INV-000123-cn？"
+        },
+        {
+          "role": "assistant",
+          "content": "因为第二段是大写字母 [A-Z]，小写的 cn 不匹配，加 i 标志或改成 [A-Za-z]。"
+        },
+        {
+          "role": "user",
+          "content": "哦，加 i 就行，谢了。"
+        },
+        {
+          "role": "assistant",
+          "content": "不客气。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "code review 的时候别夸我，只列问题和严重程度。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，review 只输出问题清单，按 blocker / major / minor 标注。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "财务那边松口了，退钱这块主管签字的线从五千抬到两万了，他们嫌天天被烦。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我把阈值配置改成 20000，并更新一下相关的测试数据。"
+        },
+        {
+          "role": "user",
+          "content": "测试数据你顺手改，别的先不动。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，只改阈值和测试数据。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我本机是 Windows 加 WSL2，写脚本要兼容 bash，别用只有 macOS 才有的命令。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，脚本用 POSIX sh 兼容的写法，避免 pbcopy、open 之类。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "日志统一用 pino，不要 console.log，每条日志必须带 traceId 字段。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我会用 logger.child({ traceId }) 的方式，不再写 console.log。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "帮我写个 SQL，按月汇总 invoices 的 total_cents，按 customer_id 分组。"
+        },
+        {
+          "role": "assistant",
+          "content": "SELECT customer_id, date_trunc('month', issued_at) AS month, sum(total_cents) FROM invoices GROUP BY 1, 2 ORDER BY 2, 1;"
+        },
+        {
+          "role": "user",
+          "content": "好，够了，我拿去跑一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，数据量大的话可以先加 issued_at 的条件。"
+        }
+      ]
+    ],
+    "group": "index-mismatch",
+    "mechanism": "index-mismatch",
+    "trap": "更新用了和旧笔记描述不同的说法（退钱、签字的线），旧笔记不会被改写。",
+    "b_hypothesis": "旧笔记的描述是“退款审批阈值 5000 元”；更新说成“退钱 / 主管签字的线抬到两万”，词汇对不上，B 倾向于另开一条“签字门槛两万”的笔记，旧笔记留在索引里；提问用旧词“退款 / 审批”，召回只看描述且最多附 3 个文件，容易挂上旧笔记。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "单笔超过 5000 元的退款要财务主管审批",
+        "role": "old"
+      },
+      {
+        "session": 6,
+        "turn": 0,
+        "quote": "主管签字的线从五千抬到两万了",
+        "role": "update"
+      }
+    ],
+    "answer_keys": [
+      "两万|20000|2万",
+      "5000|五千"
+    ],
+    "stale_keys": [
+      "5000",
+      "五千"
+    ],
+    "key_variants": {
+      "两万|20000|2万": [
+        "两万",
+        "20000",
+        "20,000",
+        "2万",
+        "2 万"
+      ],
+      "5000|五千": [
+        "5000",
+        "5,000",
+        "五千"
+      ]
+    }
+  },
+  {
+    "question_id": "v2_im_02",
+    "question_type": "knowledge-update",
+    "question": "订单列表默认每页显示多少条？",
+    "answer": "默认每页 50 条（原来是 20 条，后来改成 50）。",
+    "question_date": "2026/09/12 (Sat) 01:20",
+    "haystack_session_ids": [
+      "v2_im_02-s1",
+      "v2_im_02-s2",
+      "v2_im_02-s3",
+      "v2_im_02-s4",
+      "v2_im_02-s5",
+      "v2_im_02-s6",
+      "v2_im_02-s7",
+      "v2_im_02-s8",
+      "v2_im_02-s9",
+      "v2_im_02-s10",
+      "v2_im_02-s11"
+    ],
+    "haystack_dates": [
+      "2026/09/02 (Wed) 19:20",
+      "2026/09/03 (Thu) 19:57",
+      "2026/09/03 (Thu) 20:11",
+      "2026/09/04 (Fri) 21:02",
+      "2026/09/04 (Fri) 21:30",
+      "2026/09/05 (Sat) 21:35",
+      "2026/09/05 (Sat) 22:17",
+      "2026/09/06 (Sun) 22:36",
+      "2026/09/07 (Mon) 23:32",
+      "2026/09/08 (Tue) 00:05",
+      "2026/09/09 (Wed) 00:15"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "包管理器就用 pnpm，别给我写 npm install，也别生成 package-lock.json。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后命令都用 pnpm，lockfile 只保留 pnpm-lock.yaml。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "文案一律走 i18n，key 用 snake.case，zh-CN 是源语言，别在组件里写死中文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，key 形如 order.list.empty_hint，中文放 zh-CN.json，英文由翻译同学补。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "订单列表的分页，每页默认 20 条，pageSizeOptions 给到 10、20、50、100。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，pageSize 默认 20，选项 10、20、50、100，用 antd Table 自带的分页器。"
+        },
+        {
+          "role": "user",
+          "content": "对，分页器放右下角。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "TS 里禁止 any，实在要用就 unknown 再收窄，我们 CI 开了 no-explicit-any。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，不确定的类型用 unknown，再用类型守卫收窄。"
+        },
+        {
+          "role": "user",
+          "content": "接口返回值用 zod 校验。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，用 zod schema 推导类型。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个按钮在表格里为什么没垂直居中？"
+        },
+        {
+          "role": "assistant",
+          "content": "看 td 的 vertical-align 和按钮外层 flex 容器，把 align-items 设成 center 就行。"
+        },
+        {
+          "role": "user",
+          "content": "好了，是 line-height 的问题，谢了。"
+        },
+        {
+          "role": "assistant",
+          "content": "不客气。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "e2e 用 Playwright，只覆盖下单和退款两条主流程，其他页面别写 e2e，维护不起。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，e2e 只写这两条，其余页面靠组件测试。"
+        },
+        {
+          "role": "user",
+          "content": "组件测试用 vitest 加 testing-library。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "后台系统不需要做无障碍适配，别在这上面花时间。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，不做 a11y 适配，也不加 aria 属性的专项检查。"
+        },
+        {
+          "role": "user",
+          "content": "键盘 tab 顺序正常就行。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "运营嫌翻页太累，订单那个表默认一屏给他们放 50 行吧。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，那把订单表的默认 pageSize 调到 50，选项也相应调整吗？"
+        },
+        {
+          "role": "user",
+          "content": "选项不动，只改默认。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，只改默认值。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "前端错误上报用 Sentry，release 名用 git sha 的前 8 位，别用版本号。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，构建时把 git sha 前 8 位注入为 release，sourcemap 一并上传。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "分支名用 feat/xxx、fix/xxx，别用我名字拼音当前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，分支都按 type/短描述 来命名。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "vite build 内存溢出了，怎么办？"
+        },
+        {
+          "role": "assistant",
+          "content": "临时可以 NODE_OPTIONS=--max-old-space-size=4096 pnpm build，长期要看是不是 chunk 太大。"
+        },
+        {
+          "role": "user",
+          "content": "行，这次先这样顶过去。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ]
+    ],
+    "group": "index-mismatch",
+    "mechanism": "index-mismatch",
+    "trap": "更新换了说法（一屏放 50 行），旧笔记不会被改写；提问用旧说法。",
+    "b_hypothesis": "旧笔记描述是“订单列表分页默认每页 20 条”；更新说成“订单那个表默认一屏放 50 行”，不含“分页 / 每页 / 条”，B 倾向新写一条“表格一屏 50 行”，旧笔记留在索引里；提问沿用旧词“每页多少条”，召回按描述匹配会先附上旧笔记。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "订单列表的分页，每页默认 20 条",
+        "role": "old"
+      },
+      {
+        "session": 7,
+        "turn": 0,
+        "quote": "订单那个表默认一屏给他们放 50 行吧",
+        "role": "update"
+      }
+    ],
+    "answer_keys": [
+      "50 行|50行|50 条|50条|50",
+      "20 条|20条"
+    ],
+    "stale_keys": [
+      "20 条",
+      "20条"
+    ],
+    "key_variants": {
+      "50 行|50行|50 条|50条|50": [
+        "50 行",
+        "50行",
+        "50 条",
+        "50条",
+        "每页 50",
+        "每页50",
+        "50"
+      ],
+      "20 条|20条": [
+        "20 条",
+        "20条"
+      ]
+    }
+  },
+  {
+    "question_id": "v2_im_03",
+    "question_type": "knowledge-update",
+    "question": "S3 里的原始日志保留多久后删除？",
+    "answer": "保留 365 天（原来是 90 天，合规要求后改为一年）。",
+    "question_date": "2026/09/14 (Mon) 03:17",
+    "haystack_session_ids": [
+      "v2_im_03-s1",
+      "v2_im_03-s2",
+      "v2_im_03-s3",
+      "v2_im_03-s4",
+      "v2_im_03-s5",
+      "v2_im_03-s6",
+      "v2_im_03-s7",
+      "v2_im_03-s8",
+      "v2_im_03-s9",
+      "v2_im_03-s10",
+      "v2_im_03-s11",
+      "v2_im_03-s12"
+    ],
+    "haystack_dates": [
+      "2026/09/03 (Thu) 20:30",
+      "2026/09/05 (Sat) 21:07",
+      "2026/09/05 (Sat) 21:21",
+      "2026/09/06 (Sun) 22:12",
+      "2026/09/06 (Sun) 22:40",
+      "2026/09/07 (Mon) 22:45",
+      "2026/09/07 (Mon) 23:27",
+      "2026/09/08 (Tue) 23:46",
+      "2026/09/10 (Thu) 00:42",
+      "2026/09/10 (Thu) 01:15",
+      "2026/09/11 (Fri) 01:25",
+      "2026/09/11 (Fri) 02:12"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Python 代码用 ruff 格式化，行宽 100，别用 black。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后按 ruff format、行宽 100 来写。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "先说下背景：我在数据平台组，主要负责日志和订单两条管道，风控那条是别的同事的。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我会以日志和订单两条管道为主来理解你的问题。"
+        },
+        {
+          "role": "user",
+          "content": "对，风控的我只在联调时碰一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "涉及用户手机号、身份证的字段一律哈希后再落仓，也不要给我看明文样例，造数据时用假的。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，落仓前用 sha256 加盐哈希，示例数据我都用随机生成的假值。"
+        },
+        {
+          "role": "user",
+          "content": "盐放在 Vault 里，别写进 DAG。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，盐从 Vault 取。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "raw 层 S3 里的日志留 90 天后就删，生命周期规则按这个配。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，lifecycle 规则设为 90 天过期，delete marker 一并清理。"
+        },
+        {
+          "role": "user",
+          "content": "对，就按 90 天。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 DAG 为啥一直卡在 queued？"
+        },
+        {
+          "role": "assistant",
+          "content": "大概率是 pool 的 slot 被占满，看 Admin 里的 Pools，或者 scheduler 的 parallelism 太低。"
+        },
+        {
+          "role": "user",
+          "content": "是 pool 满了，我手动清了几个僵尸任务，好了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，下次可以给这个 pool 设个超时。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "调度的 cron 一律用 UTC 写，别用本地时间，我们每次夏令时附近都出事。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，所有 DAG 的 schedule 都用 UTC，注释里再写一下对应的北京时间。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "本地环境用 uv 管理，别推荐 conda。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，依赖安装和虚拟环境都用 uv。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "SQL 关键字写小写，逗号放行尾，别用逗号前置风格。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，select / from / where 全小写，逗号在行尾。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "合规那边来了通知，原始埋点最少得存一年，所以 S3 那个过期删除的天数改成 365。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，把 lifecycle 的 expiration 改成 365 天，存储成本会上升，需要同步给成本负责人吗？"
+        },
+        {
+          "role": "user",
+          "content": "成本的事我自己同步，你只管改配置。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，只改 lifecycle 配置。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "dbt 模型命名：staging 层用 stg_ 前缀，事实表 fct_，维度表 dim_，别自己发明前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，stg_、fct_、dim_ 三种前缀，其余模型先问你。"
+        },
+        {
+          "role": "user",
+          "content": "中间层 int_ 也是允许的，但要先和我说。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，int_ 先问你。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "告警统一走飞书机器人，不发邮件。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，on_failure_callback 都接飞书机器人 webhook。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "review 代码时先说有没有 blocker，再列别的问题。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，先给出有无 blocker 的结论，再逐条列。"
+        }
+      ]
+    ],
+    "group": "index-mismatch",
+    "mechanism": "index-mismatch",
+    "trap": "更新换了说法（原始埋点、过期删除的天数），旧笔记不会被改写。",
+    "b_hypothesis": "旧笔记描述是“S3 原始日志保留 90 天后删除”；更新说成“原始埋点最少得存一年，过期删除的天数改成 365”，词汇（埋点 / 过期删除的天数）对不上，B 倾向于另写一条；提问沿用“原始日志保留多久”，召回按描述匹配会挂旧笔记。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 0,
+        "quote": "raw 层 S3 里的日志留 90 天后就删",
+        "role": "old"
+      },
+      {
+        "session": 8,
+        "turn": 0,
+        "quote": "原始埋点最少得存一年，所以 S3 那个过期删除的天数改成 365",
+        "role": "update"
+      }
+    ],
+    "answer_keys": [
+      "365",
+      "90"
+    ],
+    "stale_keys": [
+      "90 天",
+      "90天"
+    ],
+    "key_variants": {
+      "90": [
+        "90",
+        "三个月",
+        "3 个月"
+      ],
+      "365": [
+        "365",
+        "一年",
+        "1 年",
+        "1年",
+        "12 个月"
+      ]
+    }
+  },
+  {
+    "question_id": "v2_im_04",
+    "question_type": "knowledge-update",
+    "question": "设备多久没有心跳就算离线？",
+    "answer": "2 分钟（120 秒）没有心跳算离线；原来是 60 秒。",
+    "question_date": "2026/09/15 (Tue) 04:27",
+    "haystack_session_ids": [
+      "v2_im_04-s1",
+      "v2_im_04-s2",
+      "v2_im_04-s3",
+      "v2_im_04-s4",
+      "v2_im_04-s5",
+      "v2_im_04-s6",
+      "v2_im_04-s7",
+      "v2_im_04-s8",
+      "v2_im_04-s9",
+      "v2_im_04-s10",
+      "v2_im_04-s11",
+      "v2_im_04-s12"
+    ],
+    "haystack_dates": [
+      "2026/09/04 (Fri) 21:40",
+      "2026/09/06 (Sun) 22:17",
+      "2026/09/06 (Sun) 22:31",
+      "2026/09/07 (Mon) 23:22",
+      "2026/09/07 (Mon) 23:50",
+      "2026/09/08 (Tue) 23:55",
+      "2026/09/09 (Wed) 00:37",
+      "2026/09/10 (Thu) 00:56",
+      "2026/09/11 (Fri) 01:52",
+      "2026/09/11 (Fri) 02:25",
+      "2026/09/12 (Sat) 02:35",
+      "2026/09/12 (Sat) 03:22"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Go 里的错误要 wrap，用 fmt.Errorf(\"...: %w\", err)，别吞错误，也别只打日志不返回。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，错误一律带上下文 wrap 往上抛，只在边界处记录日志。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "回答用中文，术语保留英文，别把 Pod、Deployment 翻译成中文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后术语保持英文原样。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "设备的心跳超时定 60 秒，超过 60 秒没收到心跳就判定离线。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，离线判定用 60 秒心跳超时，状态变化时发一条离线事件。"
+        },
+        {
+          "role": "user",
+          "content": "对，只发一次，别重复发。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，用状态机去重。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 Pod 一直 CrashLoopBackOff，怎么看原因？"
+        },
+        {
+          "role": "assistant",
+          "content": "kubectl describe pod 看 Events，再 kubectl logs --previous 看上一次的退出日志。"
+        },
+        {
+          "role": "user",
+          "content": "看到了，是配置里少了个环境变量，补上了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "golangci-lint 必须通过，不要用 nolint 绕过，真要绕得先说理由。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，不加 nolint，遇到误报先来问你。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我用 macOS，本地用 k3d 起集群，别给我 minikube 的方案。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，本地集群方案都按 k3d 给。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "PR 描述里要写清楚影响面和回滚方式，别只写做了什么。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，PR 模板里加上影响面和回滚两项。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "现场信号差的点位总是抖，断线检测的窗口放宽到两分钟吧。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我把判定窗口改成 120 秒，并把相关测试的时间常量一起调整。"
+        },
+        {
+          "role": "user",
+          "content": "测试里的常量你顺手改，别的不要动。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，只改窗口和测试常量。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "任何密钥只放在 Vault 里，不要出现在代码、配置样例或我们的对话里。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，我只写 Vault 的路径引用，不写任何密钥内容。"
+        },
+        {
+          "role": "user",
+          "content": "连测试用的假密钥也别写成真实格式。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我们主干开发，feature 开关用 flagr，不开长期分支。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，新功能先合到 main 并用 flagr 开关默认关闭。"
+        },
+        {
+          "role": "user",
+          "content": "开关命名用 feature.模块.功能。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "性能相关的改动必须附 benchmark 结果，go test -bench 的输出贴 PR 里。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，性能改动我会附 -bench 的前后对比，带 -benchmem。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "代码注释写英文，commit message 写中文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，注释英文，commit 中文。"
+        }
+      ]
+    ],
+    "group": "index-mismatch",
+    "mechanism": "index-mismatch",
+    "trap": "更新换了说法（断线检测的窗口放宽到两分钟），旧笔记不会被改写。",
+    "b_hypothesis": "旧笔记描述是“心跳超时 60 秒判定设备离线”；更新说成“断线检测的窗口放宽到两分钟”，词汇（断线检测的窗口）对不上，B 倾向另写一条；提问沿用“心跳 / 离线”，召回会挂旧笔记。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "设备的心跳超时定 60 秒，超过 60 秒没收到心跳就判定离线",
+        "role": "old"
+      },
+      {
+        "session": 7,
+        "turn": 0,
+        "quote": "断线检测的窗口放宽到两分钟吧",
+        "role": "update"
+      }
+    ],
+    "answer_keys": [
+      "120 秒|两分钟|2 分钟|120秒|2分钟",
+      "60 秒|60秒"
+    ],
+    "stale_keys": [
+      "60 秒",
+      "60秒"
+    ],
+    "key_variants": {
+      "120 秒|两分钟|2 分钟|120秒|2分钟": [
+        "120 秒",
+        "120秒",
+        "两分钟",
+        "2 分钟",
+        "2分钟",
+        "120s"
+      ],
+      "60 秒|60秒": [
+        "60 秒",
+        "60秒",
+        "60s"
+      ]
+    }
+  },
+  {
+    "question_id": "v2_fr_01",
+    "question_type": "multi-session",
+    "question": "有个新服务要接入计费网关，需要做哪些事？",
+    "answer": "1) 在 gateway-registry 注册 service id（格式 svc-<team>-<name>）；2) 用内部 CA 的 cert-bot 申请 mTLS 证书，不能自签；3) 默认限流 200 rps，更高要找架构组批；4) 请求必须带 Idempotency-Key 头，否则网关直接 400；5) 上线前在 staging 跑 loadtest/billing.js 的 k6 压测，p99 要小于 300ms；6) 在 #billing-oncall 频道登记值班人。",
+    "question_date": "2026/09/22 (Tue) 03:42",
+    "haystack_session_ids": [
+      "v2_fr_01-s1",
+      "v2_fr_01-s2",
+      "v2_fr_01-s3",
+      "v2_fr_01-s4",
+      "v2_fr_01-s5",
+      "v2_fr_01-s6",
+      "v2_fr_01-s7",
+      "v2_fr_01-s8",
+      "v2_fr_01-s9",
+      "v2_fr_01-s10",
+      "v2_fr_01-s11",
+      "v2_fr_01-s12",
+      "v2_fr_01-s13",
+      "v2_fr_01-s14"
+    ],
+    "haystack_dates": [
+      "2026/09/03 (Thu) 20:30",
+      "2026/09/05 (Sat) 21:07",
+      "2026/09/07 (Mon) 21:21",
+      "2026/09/09 (Wed) 22:12",
+      "2026/09/09 (Wed) 22:40",
+      "2026/09/11 (Fri) 22:45",
+      "2026/09/13 (Sun) 23:27",
+      "2026/09/13 (Sun) 23:46",
+      "2026/09/16 (Wed) 00:42",
+      "2026/09/16 (Wed) 01:15",
+      "2026/09/18 (Fri) 01:25",
+      "2026/09/18 (Fri) 02:12",
+      "2026/09/19 (Sat) 02:36",
+      "2026/09/19 (Sat) 02:37"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "commit message 以后统一用 conventional commits，scope 写模块名，比如 feat(invoice): add proration，描述用英文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后按 type(scope): subject 的格式写，subject 用英文小写开头。"
+        },
+        {
+          "role": "user",
+          "content": "另外 subject 里别带 ticket 号，放 footer。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，footer 用 Refs: BILL-123 的形式。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "pay-sandbox 要接计费网关了，网关那边要求先在 gateway-registry 里登记 service id，格式是 svc-<team>-<name>，我回头去办。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，那我们的服务名按 svc-pay-sandbox 来命名，路由配置里也用这个 id。"
+        },
+        {
+          "role": "user",
+          "content": "对，就用这个。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，已经按这个命名。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个测试挂了，是 mock 的 pg 和真库行为不一样。以后测试里不要 mock 数据库，用 testcontainers 起真的 Postgres。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我把这个用例改成用 testcontainers 的 Postgres，启动一次整个 suite 复用。"
+        },
+        {
+          "role": "user",
+          "content": "对，复用，别每个用例都起一个，太慢。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，用 beforeAll 起、afterAll 关，每个用例前 truncate。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "网关是双向 TLS 的，证书得向 cert-bot 申请，走公司内部 CA，别自己 openssl 签一个就上，会被网关拒。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，我在 deploy 配置里留好证书挂载路径，证书从 cert-bot 下发。"
+        },
+        {
+          "role": "user",
+          "content": "嗯，挂载路径你自己定。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 PR 有 900 行 diff，以后超过 400 行我会直接要求拆，你写的时候就控制一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，之后一个 PR 控制在 400 行以内，大改动按层拆成几个。"
+        },
+        {
+          "role": "user",
+          "content": "拆的时候保证每个 PR 单独能过 CI。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，每个 PR 都保持可独立合并。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个正则 /^INV-(\\d{6})-([A-Z]{2})$/ 为什么匹配不了 INV-000123-cn？"
+        },
+        {
+          "role": "assistant",
+          "content": "因为第二段是大写字母 [A-Z]，小写的 cn 不匹配，加 i 标志或改成 [A-Za-z]。"
+        },
+        {
+          "role": "user",
+          "content": "哦，加 i 就行，谢了。"
+        },
+        {
+          "role": "assistant",
+          "content": "不客气。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "限流的事问过了，新接入的服务默认 200 rps，要更高得找架构组批，别自己在网关上调。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，压测的目标 QPS 我先按 200 rps 以内来设计。"
+        },
+        {
+          "role": "user",
+          "content": "可以，先别超。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "日志统一用 pino，不要 console.log，每条日志必须带 traceId 字段。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我会用 logger.child({ traceId }) 的方式，不再写 console.log。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "联调时网关一直返回 400，查了半天，原来是网关要求每个写请求都带 Idempotency-Key 头，没带直接 400。"
+        },
+        {
+          "role": "assistant",
+          "content": "那我在 HTTP 客户端里统一加上这个头，用请求的 uuid v4 做值。"
+        },
+        {
+          "role": "user",
+          "content": "行，写请求才加，GET 不用。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，只对 POST 和 PUT 加。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "数据库里的时间一律存 UTC，展示层才转 Asia/Shanghai，别在 SQL 里做时区转换。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，timestamptz 存 UTC，转换放在 API 响应序列化那一层。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "code review 的时候别夸我，只列问题和严重程度。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，review 只输出问题清单，按 blocker / major / minor 标注。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "上线前的压测别忘了，要在 staging 上跑 loadtest/billing.js 这个 k6 脚本，p99 必须小于 300ms 才放行。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我先在 staging 跑一遍，把 p99 的结果贴给你。"
+        },
+        {
+          "role": "user",
+          "content": "嗯。"
+        },
+        {
+          "role": "assistant",
+          "content": "结果出来后我再汇报。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "新增依赖之前先问我，我们有 license 白名单：MIT、Apache-2.0、BSD。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，要加依赖我会先列出名称、license 和用途请你确认。"
+        },
+        {
+          "role": "user",
+          "content": "嗯，GPL 系的一律不行。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "哦对，还差一步，上线那天要在 #billing-oncall 频道里登记当天的值班人，不登记网关组不给放量。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，上线 checklist 里加一条登记值班人。"
+        },
+        {
+          "role": "user",
+          "content": "行。"
+        },
+        {
+          "role": "assistant",
+          "content": "已加入。"
+        }
+      ]
+    ],
+    "group": "fragmentation",
+    "mechanism": "fragmentation",
+    "trap": "同一主题（接入网关）散在 6 个 session，措辞每次不同，答案需要全部拼起来。",
+    "b_hypothesis": "六件事分散在六个 session、每次一句、措辞各不相同（注册 / 证书 / 限流 / 幂等头 / 压测 / 值班），没有一个窗口里出现“接入清单”这个主题，B 很可能写成多条互不关联的小笔记或漏掉其中几条；召回最多附 3 个文件 / 3000 字符，拼不全。",
+    "evidence": [
+      {
+        "session": 1,
+        "turn": 0,
+        "quote": "先在 gateway-registry 里登记 service id，格式是 svc-<team>-<name>"
+      },
+      {
+        "session": 3,
+        "turn": 0,
+        "quote": "证书得向 cert-bot 申请，走公司内部 CA"
+      },
+      {
+        "session": 6,
+        "turn": 0,
+        "quote": "新接入的服务默认 200 rps，要更高得找架构组批"
+      },
+      {
+        "session": 8,
+        "turn": 0,
+        "quote": "每个写请求都带 Idempotency-Key 头，没带直接 400"
+      },
+      {
+        "session": 11,
+        "turn": 0,
+        "quote": "要在 staging 上跑 loadtest/billing.js 这个 k6 脚本，p99 必须小于 300ms"
+      },
+      {
+        "session": 13,
+        "turn": 0,
+        "quote": "要在 #billing-oncall 频道里登记当天的值班人"
+      }
+    ],
+    "answer_keys": [
+      "gateway-registry",
+      "cert-bot",
+      "200 rps",
+      "Idempotency-Key",
+      "loadtest/billing.js",
+      "#billing-oncall"
+    ]
+  },
+  {
+    "question_id": "v2_fr_02",
+    "question_type": "multi-session",
+    "question": "前端发一次 prod 版本，完整的步骤是什么？",
+    "answer": "1) 打 tag，格式 admin-vYYYY.MM.DD 并推到 origin；2) 在 Jenkins 的 admin-web-release 任务里选这个 tag 构建；3) 构建完手动刷新 CDN 的 /static/admin/* 路径；4) 刷新后跑 pnpm smoke:prod 冒烟；5) 最后在 Sentry 里建 release 并关联 commit。",
+    "question_date": "2026/09/23 (Wed) 04:51",
+    "haystack_session_ids": [
+      "v2_fr_02-s1",
+      "v2_fr_02-s2",
+      "v2_fr_02-s3",
+      "v2_fr_02-s4",
+      "v2_fr_02-s5",
+      "v2_fr_02-s6",
+      "v2_fr_02-s7",
+      "v2_fr_02-s8",
+      "v2_fr_02-s9",
+      "v2_fr_02-s10",
+      "v2_fr_02-s11",
+      "v2_fr_02-s12",
+      "v2_fr_02-s13"
+    ],
+    "haystack_dates": [
+      "2026/09/04 (Fri) 21:40",
+      "2026/09/06 (Sun) 22:17",
+      "2026/09/08 (Tue) 22:31",
+      "2026/09/10 (Thu) 23:22",
+      "2026/09/10 (Thu) 23:50",
+      "2026/09/12 (Sat) 23:55",
+      "2026/09/15 (Tue) 00:37",
+      "2026/09/15 (Tue) 00:56",
+      "2026/09/17 (Thu) 01:52",
+      "2026/09/17 (Thu) 02:25",
+      "2026/09/19 (Sat) 02:35",
+      "2026/09/19 (Sat) 03:22",
+      "2026/09/20 (Sun) 03:46"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "包管理器就用 pnpm，别给我写 npm install，也别生成 package-lock.json。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后命令都用 pnpm，lockfile 只保留 pnpm-lock.yaml。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "今天要发版，tag 先打上：我们的 tag 格式是 admin-vYYYY.MM.DD，打完要推到 origin，Jenkins 才看得到。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，git tag admin-v2026.09.14 并 git push origin admin-v2026.09.14。"
+        },
+        {
+          "role": "user",
+          "content": "嗯，推吧。"
+        },
+        {
+          "role": "assistant",
+          "content": "已经推送。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "组件库只用 Ant Design 5，别自己引别的 UI 库，样式也别再装 tailwind。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，只用 antd 5 的组件和 token，需要定制就走 ConfigProvider 的 theme。"
+        },
+        {
+          "role": "user",
+          "content": "对，主题色走 token，不要写死色值。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "回答别用表格，用短列表，我在小屏上看。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后用短列表，不再出表格。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "Jenkins 上构建不用选分支，我们是在 admin-web-release 这个任务里选 tag 去构建的。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，选 tag 构建而不是分支，这样产物可以追溯到确定的版本。"
+        },
+        {
+          "role": "user",
+          "content": "对。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "文案一律走 i18n，key 用 snake.case，zh-CN 是源语言，别在组件里写死中文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，key 形如 order.list.empty_hint，中文放 zh-CN.json，英文由翻译同学补。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个按钮在表格里为什么没垂直居中？"
+        },
+        {
+          "role": "assistant",
+          "content": "看 td 的 vertical-align 和按钮外层 flex 容器，把 align-items 设成 center 就行。"
+        },
+        {
+          "role": "user",
+          "content": "好了，是 line-height 的问题，谢了。"
+        },
+        {
+          "role": "assistant",
+          "content": "不客气。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "构建完页面还是旧的，原来 CDN 缓存没刷。要手动刷新 /static/admin/* 这个路径，不刷的话用户要等一小时。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，需要我写个脚本调用 CDN 的刷新接口吗？"
+        },
+        {
+          "role": "user",
+          "content": "先不用，手动刷就行。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "TS 里禁止 any，实在要用就 unknown 再收窄，我们 CI 开了 no-explicit-any。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，不确定的类型用 unknown，再用类型守卫收窄。"
+        },
+        {
+          "role": "user",
+          "content": "接口返回值用 zod 校验。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，用 zod schema 推导类型。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "e2e 用 Playwright，只覆盖下单和退款两条主流程，其他页面别写 e2e，维护不起。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，e2e 只写这两条，其余页面靠组件测试。"
+        },
+        {
+          "role": "user",
+          "content": "组件测试用 vitest 加 testing-library。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "刷完 CDN 之后跑一遍 pnpm smoke:prod，这个是冒烟脚本，红了就回滚。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，smoke:prod 覆盖登录、订单列表和退款页的可达性。"
+        },
+        {
+          "role": "user",
+          "content": "对。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "后台系统不需要做无障碍适配，别在这上面花时间。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，不做 a11y 适配，也不加 aria 属性的专项检查。"
+        },
+        {
+          "role": "user",
+          "content": "键盘 tab 顺序正常就行。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "发布的最后一步我老忘：要去 Sentry 里建 release，并关联这次的 commit，不然线上报错的来源映射对不上。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，Sentry 的 release 名用 git sha 前 8 位，关联 commit 后 sourcemap 才会生效。"
+        },
+        {
+          "role": "user",
+          "content": "对，就是这个。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ]
+    ],
+    "group": "fragmentation",
+    "mechanism": "fragmentation",
+    "trap": "发布流程散在 6 个 session，每次只提其中一步。",
+    "b_hypothesis": "五个步骤分散在五个 session、每次是闲聊里顺带的一句（打 tag / 选任务 / 刷 CDN / 冒烟 / Sentry），没有哪个窗口出现完整流程；B 可能只记下其中一两条或各写一条小笔记，召回最多 3 个文件，拼不全。",
+    "evidence": [
+      {
+        "session": 1,
+        "turn": 0,
+        "quote": "我们的 tag 格式是 admin-vYYYY.MM.DD，打完要推到 origin"
+      },
+      {
+        "session": 4,
+        "turn": 0,
+        "quote": "在 admin-web-release 这个任务里选 tag 去构建"
+      },
+      {
+        "session": 7,
+        "turn": 0,
+        "quote": "要手动刷新 /static/admin/* 这个路径"
+      },
+      {
+        "session": 10,
+        "turn": 0,
+        "quote": "刷完 CDN 之后跑一遍 pnpm smoke:prod"
+      },
+      {
+        "session": 12,
+        "turn": 0,
+        "quote": "要去 Sentry 里建 release，并关联这次的 commit"
+      }
+    ],
+    "answer_keys": [
+      "admin-vYYYY.MM.DD",
+      "admin-web-release",
+      "/static/admin/*",
+      "pnpm smoke:prod",
+      "Sentry"
+    ]
+  },
+  {
+    "question_id": "v2_fr_03",
+    "question_type": "multi-session",
+    "question": "新建一个 Airflow DAG 要满足哪些要求才能上线？",
+    "answer": "1) dag_id 以 dp_ 开头；2) owner 必填且用飞书邮箱；3) 必须设置 SLA 2 小时；4) 必须配 on_failure_callback 发飞书；5) 上线前在 airflow-dev 空跑一次，backfill 3 天。",
+    "question_date": "2026/09/22 (Tue) 03:02",
+    "haystack_session_ids": [
+      "v2_fr_03-s1",
+      "v2_fr_03-s2",
+      "v2_fr_03-s3",
+      "v2_fr_03-s4",
+      "v2_fr_03-s5",
+      "v2_fr_03-s6",
+      "v2_fr_03-s7",
+      "v2_fr_03-s8",
+      "v2_fr_03-s9",
+      "v2_fr_03-s10",
+      "v2_fr_03-s11",
+      "v2_fr_03-s12",
+      "v2_fr_03-s13",
+      "v2_fr_03-s14"
+    ],
+    "haystack_dates": [
+      "2026/09/05 (Sat) 19:50",
+      "2026/09/05 (Sat) 20:27",
+      "2026/09/07 (Mon) 20:41",
+      "2026/09/09 (Wed) 21:32",
+      "2026/09/09 (Wed) 22:00",
+      "2026/09/11 (Fri) 22:05",
+      "2026/09/13 (Sun) 22:47",
+      "2026/09/13 (Sun) 23:06",
+      "2026/09/16 (Wed) 00:02",
+      "2026/09/16 (Wed) 00:35",
+      "2026/09/18 (Fri) 00:45",
+      "2026/09/18 (Fri) 01:32",
+      "2026/09/19 (Sat) 01:56",
+      "2026/09/19 (Sat) 01:57"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Python 代码用 ruff 格式化，行宽 100，别用 black。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后按 ruff format、行宽 100 来写。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "先说下背景：我在数据平台组，主要负责日志和订单两条管道，风控那条是别的同事的。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我会以日志和订单两条管道为主来理解你的问题。"
+        },
+        {
+          "role": "user",
+          "content": "对，风控的我只在联调时碰一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "新建的 DAG 命名要统一，dag_id 一律以 dp_ 开头，比如 dp_orders_daily，别再出现 etl_ 之类的老前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后新 DAG 都用 dp_ 前缀，老的我不动。"
+        },
+        {
+          "role": "user",
+          "content": "老的先不动。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "dbt 模型命名：staging 层用 stg_ 前缀，事实表 fct_，维度表 dim_，别自己发明前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，stg_、fct_、dim_ 三种前缀，其余模型先问你。"
+        },
+        {
+          "role": "user",
+          "content": "中间层 int_ 也是允许的，但要先和我说。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，int_ 先问你。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "SQL 关键字写小写，逗号放行尾，别用逗号前置风格。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，select / from / where 全小写，逗号在行尾。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "DAG 的 owner 别填人名缩写，填飞书邮箱，不然失败告警找不到人。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，default_args 里的 owner 填飞书邮箱，比如 name@corp.com。"
+        },
+        {
+          "role": "user",
+          "content": "对。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 DAG 为啥一直卡在 queued？"
+        },
+        {
+          "role": "assistant",
+          "content": "大概率是 pool 的 slot 被占满，看 Admin 里的 Pools，或者 scheduler 的 parallelism 太低。"
+        },
+        {
+          "role": "user",
+          "content": "是 pool 满了，我手动清了几个僵尸任务，好了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，下次可以给这个 pool 设个超时。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "不要主动重构我没让你改的代码，只改我指出的地方。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，只改你指出的部分，发现别的问题我会列出来但不动手。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "每个 DAG 都要设 SLA，统一 2 小时，超了会自动提醒我们。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，default_args 里设 sla=timedelta(hours=2)，并配置 sla_miss_callback。"
+        },
+        {
+          "role": "user",
+          "content": "对。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "涉及用户手机号、身份证的字段一律哈希后再落仓，也不要给我看明文样例，造数据时用假的。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，落仓前用 sha256 加盐哈希，示例数据我都用随机生成的假值。"
+        },
+        {
+          "role": "user",
+          "content": "盐放在 Vault 里，别写进 DAG。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，盐从 Vault 取。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "调度的 cron 一律用 UTC 写，别用本地时间，我们每次夏令时附近都出事。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，所有 DAG 的 schedule 都用 UTC，注释里再写一下对应的北京时间。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "任务失败的通知别靠默认邮件，on_failure_callback 必须配上，发到飞书群。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，on_failure_callback 统一用 notify_feishu，带上 dag_id、task_id 和日志链接。"
+        },
+        {
+          "role": "user",
+          "content": "嗯，可以。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "本地环境用 uv 管理，别推荐 conda。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，依赖安装和虚拟环境都用 uv。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "上线之前别直接推 prod，先在 airflow-dev 上空跑一次，backfill 三天的数据看看结果对不对，没问题再合并。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，流程是 airflow-dev 上 backfill 3 天，校验通过后再合并到 main。"
+        },
+        {
+          "role": "user",
+          "content": "对，就是这样。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ]
+    ],
+    "group": "fragmentation",
+    "mechanism": "fragmentation",
+    "trap": "DAG 上线要求散在 6 个 session，每次只提一条。",
+    "b_hypothesis": "五条上线要求分散在五个 session，每次顺带一句，措辞不同（命名 / owner / SLA / 失败回调 / 预发空跑），没有一个窗口集中出现；B 倾向写成零散小笔记或漏掉，召回最多 3 个文件，拼不全。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "dag_id 一律以 dp_ 开头"
+      },
+      {
+        "session": 5,
+        "turn": 0,
+        "quote": "DAG 的 owner 别填人名缩写，填飞书邮箱"
+      },
+      {
+        "session": 8,
+        "turn": 0,
+        "quote": "每个 DAG 都要设 SLA，统一 2 小时"
+      },
+      {
+        "session": 11,
+        "turn": 0,
+        "quote": "on_failure_callback 必须配上，发到飞书群"
+      },
+      {
+        "session": 13,
+        "turn": 0,
+        "quote": "先在 airflow-dev 上空跑一次，backfill 三天的数据"
+      }
+    ],
+    "answer_keys": [
+      "dp_",
+      "飞书邮箱",
+      "SLA",
+      "on_failure_callback",
+      "airflow-dev"
+    ]
+  },
+  {
+    "question_id": "v2_fr_04",
+    "question_type": "multi-session",
+    "question": "接入一款新型号的设备，需要走哪些步骤？",
+    "answer": "1) 在 device-registry 登记型号编码（格式 TYPE-xxxx）；2) 向 EMQX 申请 ACL，topic 前缀按 device/{region}/；3) 把物模型 JSON 提交到 thing-models 仓库；4) 做 24 小时拷机，掉线率要低于 0.5%；5) 在 Grafana 复制 device-template 看板。",
+    "question_date": "2026/09/24 (Thu) 04:00",
+    "haystack_session_ids": [
+      "v2_fr_04-s1",
+      "v2_fr_04-s2",
+      "v2_fr_04-s3",
+      "v2_fr_04-s4",
+      "v2_fr_04-s5",
+      "v2_fr_04-s6",
+      "v2_fr_04-s7",
+      "v2_fr_04-s8",
+      "v2_fr_04-s9",
+      "v2_fr_04-s10",
+      "v2_fr_04-s11",
+      "v2_fr_04-s12",
+      "v2_fr_04-s13",
+      "v2_fr_04-s14",
+      "v2_fr_04-s15"
+    ],
+    "haystack_dates": [
+      "2026/09/06 (Sun) 20:10",
+      "2026/09/06 (Sun) 20:47",
+      "2026/09/08 (Tue) 21:01",
+      "2026/09/10 (Thu) 21:52",
+      "2026/09/10 (Thu) 22:20",
+      "2026/09/12 (Sat) 22:25",
+      "2026/09/14 (Mon) 23:07",
+      "2026/09/14 (Mon) 23:26",
+      "2026/09/17 (Thu) 00:22",
+      "2026/09/17 (Thu) 00:55",
+      "2026/09/19 (Sat) 01:05",
+      "2026/09/19 (Sat) 01:52",
+      "2026/09/20 (Sun) 02:16",
+      "2026/09/20 (Sun) 02:17",
+      "2026/09/21 (Mon) 02:55"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Go 里的错误要 wrap，用 fmt.Errorf(\"...: %w\", err)，别吞错误，也别只打日志不返回。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，错误一律带上下文 wrap 往上抛，只在边界处记录日志。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "回答用中文，术语保留英文，别把 Pod、Deployment 翻译成中文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后术语保持英文原样。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "新型号设备来了，第一步先去 device-registry 登记型号编码，格式是 TYPE-xxxx，不登记后面的流程都进不去。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，型号编码我先按 TYPE-xxxx 的格式校验。"
+        },
+        {
+          "role": "user",
+          "content": "对。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "MQTT topic 命名统一：device/{region}/{deviceId}/up 和 /down，别再发明新格式。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，上行 up、下行 down，region 用小写短码。"
+        },
+        {
+          "role": "user",
+          "content": "新增类型放在后缀，不要改前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 Pod 一直 CrashLoopBackOff，怎么看原因？"
+        },
+        {
+          "role": "assistant",
+          "content": "kubectl describe pod 看 Events，再 kubectl logs --previous 看上一次的退出日志。"
+        },
+        {
+          "role": "user",
+          "content": "看到了，是配置里少了个环境变量，补上了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "设备能连上 EMQX 之前得先申请 ACL，topic 前缀按 device/{region}/ 来，别放开成通配。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，ACL 里只放 device/{region}/{deviceId}/# 这一类前缀，不给全通配。"
+        },
+        {
+          "role": "user",
+          "content": "对，不给通配。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "golangci-lint 必须通过，不要用 nolint 绕过，真要绕得先说理由。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，不加 nolint，遇到误报先来问你。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "PR 描述里要写清楚影响面和回滚方式，别只写做了什么。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，PR 模板里加上影响面和回滚两项。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "厂商给了物模型的 JSON，要提交到 thing-models 仓库，我们的解析是从那里拉的。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我先校验 JSON 的字段类型，再提 PR 到 thing-models。"
+        },
+        {
+          "role": "user",
+          "content": "对，先校验再提。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我用 macOS，本地用 k3d 起集群，别给我 minikube 的方案。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，本地集群方案都按 k3d 给。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我们主干开发，feature 开关用 flagr，不开长期分支。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，新功能先合到 main 并用 flagr 开关默认关闭。"
+        },
+        {
+          "role": "user",
+          "content": "开关命名用 feature.模块.功能。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "新型号上线前要做 24 小时拷机，掉线率必须低于 0.5% 才算过。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，拷机脚本跑 24 小时，统计掉线次数和总在线时长。"
+        },
+        {
+          "role": "user",
+          "content": "嗯。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "性能相关的改动必须附 benchmark 结果，go test -bench 的输出贴 PR 里。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，性能改动我会附 -bench 的前后对比，带 -benchmem。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "任何密钥只放在 Vault 里，不要出现在代码、配置样例或我们的对话里。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，我只写 Vault 的路径引用，不写任何密钥内容。"
+        },
+        {
+          "role": "user",
+          "content": "连测试用的假密钥也别写成真实格式。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "最后在 Grafana 里给新型号建看板，直接复制 device-template 这个模板，改下型号变量就行。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，复制 device-template，把 model 变量改成新型号编码。"
+        },
+        {
+          "role": "user",
+          "content": "对。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ]
+    ],
+    "group": "fragmentation",
+    "mechanism": "fragmentation",
+    "trap": "新设备接入步骤散在 6 个 session，每次只提一步。",
+    "b_hypothesis": "五个接入步骤分散在五个 session，每次只提一句，措辞不同（登记 / 权限 / 物模型 / 拷机 / 看板），B 倾向写成零散小笔记或漏掉；召回最多附 3 个文件，拼不全。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "第一步先去 device-registry 登记型号编码，格式是 TYPE-xxxx"
+      },
+      {
+        "session": 5,
+        "turn": 0,
+        "quote": "设备能连上 EMQX 之前得先申请 ACL，topic 前缀按 device/{region}/ 来"
+      },
+      {
+        "session": 8,
+        "turn": 0,
+        "quote": "要提交到 thing-models 仓库"
+      },
+      {
+        "session": 11,
+        "turn": 0,
+        "quote": "新型号上线前要做 24 小时拷机，掉线率必须低于 0.5%"
+      },
+      {
+        "session": 14,
+        "turn": 0,
+        "quote": "直接复制 device-template 这个模板"
+      }
+    ],
+    "answer_keys": [
+      "device-registry",
+      "ACL",
+      "thing-models",
+      "24 小时",
+      "device-template"
+    ]
+  },
+  {
+    "question_id": "v2_dw_01",
+    "question_type": "single-session-user",
+    "question": "线上支付成功率低到多少，就得回滚这次发布？",
+    "answer": "支付成功率低于 99.5% 就要回滚。",
+    "question_date": "2026/09/14 (Mon) 00:31",
+    "haystack_session_ids": [
+      "v2_dw_01-s1",
+      "v2_dw_01-s2",
+      "v2_dw_01-s3",
+      "v2_dw_01-s4",
+      "v2_dw_01-s5",
+      "v2_dw_01-s6",
+      "v2_dw_01-s7",
+      "v2_dw_01-s8"
+    ],
+    "haystack_dates": [
+      "2026/09/06 (Sun) 20:10",
+      "2026/09/06 (Sun) 20:47",
+      "2026/09/07 (Mon) 21:01",
+      "2026/09/07 (Mon) 21:52",
+      "2026/09/08 (Tue) 22:20",
+      "2026/09/09 (Wed) 22:25",
+      "2026/09/10 (Thu) 23:07",
+      "2026/09/10 (Thu) 23:26"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "commit message 以后统一用 conventional commits，scope 写模块名，比如 feat(invoice): add proration，描述用英文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后按 type(scope): subject 的格式写，subject 用英文小写开头。"
+        },
+        {
+          "role": "user",
+          "content": "另外 subject 里别带 ticket 号，放 footer。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，footer 用 Refs: BILL-123 的形式。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我本机是 Windows 加 WSL2，写脚本要兼容 bash，别用只有 macOS 才有的命令。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，脚本用 POSIX sh 兼容的写法，避免 pbcopy、open 之类。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "帮我写个 SQL，按月汇总 invoices 的 total_cents，按 customer_id 分组。"
+        },
+        {
+          "role": "assistant",
+          "content": "SELECT customer_id, date_trunc('month', issued_at) AS month, sum(total_cents) FROM invoices GROUP BY 1, 2 ORDER BY 2, 1;"
+        },
+        {
+          "role": "user",
+          "content": "好，够了，我拿去跑一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，数据量大的话可以先加 issued_at 的条件。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "新来的同事要接手发布，我把我们的发布约定一次说完。发布窗口只放在每周二和周四下午 2 点到 4 点；prod 变更之前要在 #change-log 频道发公告；数据库迁移必须提前一天给 DBA 老陈 review。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我先记下这三条：发布窗口、变更公告、迁移 review。"
+        },
+        {
+          "role": "user",
+          "content": "接着说。灰度先放 5% 流量，观察 30 分钟再放量；回滚负责人是当天值班的人，不是发起人；大促前两周冻结发版。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，灰度、回滚负责人、大促冻结也记下了。"
+        },
+        {
+          "role": "user",
+          "content": "最后几条：客户可见的文案改动要产品小林确认；每个版本都要打 tag，格式 billing-vYYYY.MM.DD；支付成功率低于 99.5% 就要回滚。"
+        },
+        {
+          "role": "assistant",
+          "content": "都记下了。需要我整理成一页发布手册吗？"
+        },
+        {
+          "role": "user",
+          "content": "不用了，你把今天这个 release 的变更清单整理出来给我就行。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我按模块整理变更清单。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "日志统一用 pino，不要 console.log，每条日志必须带 traceId 字段。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我会用 logger.child({ traceId }) 的方式，不再写 console.log。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "code review 的时候别夸我，只列问题和严重程度。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，review 只输出问题清单，按 blocker / major / minor 标注。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 PR 有 900 行 diff，以后超过 400 行我会直接要求拆，你写的时候就控制一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，之后一个 PR 控制在 400 行以内，大改动按层拆成几个。"
+        },
+        {
+          "role": "user",
+          "content": "拆的时候保证每个 PR 单独能过 CI。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，每个 PR 都保持可独立合并。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "新增依赖之前先问我，我们有 license 白名单：MIT、Apache-2.0、BSD。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，要加依赖我会先列出名称、license 和用途请你确认。"
+        },
+        {
+          "role": "user",
+          "content": "嗯，GPL 系的一律不行。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到。"
+        }
+      ]
+    ],
+    "group": "dense-window",
+    "mechanism": "dense-window",
+    "trap": "一个窗口里 9 条发布约定，B 一次最多存 5 条，被问到的是靠后的一条。",
+    "b_hypothesis": "开头 3 个用户回合（同一个 3 轮组、同一个分块）里一次说了 9 条互不相关的发布约定；auto-extract 每次最多 save 5 条，目标事实排在第 8 位，容易被丢掉；记下的几条也可能是合并后的概述。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 4,
+        "quote": "支付成功率低于 99.5% 就要回滚",
+        "role": "target"
+      }
+    ],
+    "answer_keys": [
+      "99.5%"
+    ],
+    "dense_facts": [
+      "发布窗口只放在每周二和周四下午 2 点到 4 点",
+      "prod 变更之前要在 #change-log 频道发公告",
+      "数据库迁移必须提前一天给 DBA 老陈 review",
+      "灰度先放 5% 流量，观察 30 分钟再放量",
+      "回滚负责人是当天值班的人，不是发起人",
+      "大促前两周冻结发版",
+      "客户可见的文案改动要产品小林确认",
+      "每个版本都要打 tag，格式 billing-vYYYY.MM.DD",
+      "支付成功率低于 99.5% 就要回滚"
+    ]
+  },
+  {
+    "question_id": "v2_dw_02",
+    "question_type": "single-session-user",
+    "question": "运营导出报表，一次最多能导多少行？",
+    "answer": "一次最多 3 万行。",
+    "question_date": "2026/09/16 (Wed) 01:41",
+    "haystack_session_ids": [
+      "v2_dw_02-s1",
+      "v2_dw_02-s2",
+      "v2_dw_02-s3",
+      "v2_dw_02-s4",
+      "v2_dw_02-s5",
+      "v2_dw_02-s6",
+      "v2_dw_02-s7",
+      "v2_dw_02-s8"
+    ],
+    "haystack_dates": [
+      "2026/09/07 (Mon) 21:20",
+      "2026/09/08 (Tue) 21:57",
+      "2026/09/09 (Wed) 22:11",
+      "2026/09/09 (Wed) 23:02",
+      "2026/09/10 (Thu) 23:30",
+      "2026/09/11 (Fri) 23:35",
+      "2026/09/13 (Sun) 00:17",
+      "2026/09/13 (Sun) 00:36"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "包管理器就用 pnpm，别给我写 npm install，也别生成 package-lock.json。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后命令都用 pnpm，lockfile 只保留 pnpm-lock.yaml。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "组件库只用 Ant Design 5，别自己引别的 UI 库，样式也别再装 tailwind。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，只用 antd 5 的组件和 token，需要定制就走 ConfigProvider 的 theme。"
+        },
+        {
+          "role": "user",
+          "content": "对，主题色走 token，不要写死色值。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "vite build 内存溢出了，怎么办？"
+        },
+        {
+          "role": "assistant",
+          "content": "临时可以 NODE_OPTIONS=--max-old-space-size=4096 pnpm build，长期要看是不是 chunk 太大。"
+        },
+        {
+          "role": "user",
+          "content": "行，这次先这样顶过去。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我把后台项目的协作约定一次说完。设计稿都在 Figma 的 Admin-2026 文件里；产品是小林，设计是阿杰；每周三下午 3 点站会。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，设计稿位置、产品和设计的人选、站会时间我先记着。"
+        },
+        {
+          "role": "user",
+          "content": "再说几条。需求单都建在 Linear 的 SHOP 项目；测试环境的账号都以 qa_ 开头；618 前三周冻结新需求。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，需求单、测试账号规则、618 冻结也记下了。"
+        },
+        {
+          "role": "user",
+          "content": "还有三条。价格展示一律保留两位小数并带千分位；运营导出报表一次最多 3 万行；导出的文件名统一用 report_<业务>_<日期>.xlsx。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，都记下了。接下来想做什么？"
+        },
+        {
+          "role": "user",
+          "content": "先帮我看看订单详情页的加载慢的问题，从接口开始查。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，先看订单详情接口的请求瀑布。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "TS 里禁止 any，实在要用就 unknown 再收窄，我们 CI 开了 no-explicit-any。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，不确定的类型用 unknown，再用类型守卫收窄。"
+        },
+        {
+          "role": "user",
+          "content": "接口返回值用 zod 校验。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，用 zod schema 推导类型。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "e2e 用 Playwright，只覆盖下单和退款两条主流程，其他页面别写 e2e，维护不起。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，e2e 只写这两条，其余页面靠组件测试。"
+        },
+        {
+          "role": "user",
+          "content": "组件测试用 vitest 加 testing-library。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "前端错误上报用 Sentry，release 名用 git sha 的前 8 位，别用版本号。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，构建时把 git sha 前 8 位注入为 release，sourcemap 一并上传。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "分支名用 feat/xxx、fix/xxx，别用我名字拼音当前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，分支都按 type/短描述 来命名。"
+        }
+      ]
+    ],
+    "group": "dense-window",
+    "mechanism": "dense-window",
+    "trap": "一个窗口里 9 条互不相关的运营 / 产品约定，被问的是靠后的一条。",
+    "b_hypothesis": "开头 3 个用户回合里一次交代 9 条产品与运营约定（人名、日期、频道、限制），auto-extract 每次最多存 5 条，被问的“导出最多 3 万行”排第 8；这类零散约定也容易被合并成一条概述而丢掉数字。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 4,
+        "quote": "运营导出报表一次最多 3 万行",
+        "role": "target"
+      }
+    ],
+    "answer_keys": [
+      "3 万行|三万行|30000"
+    ],
+    "dense_facts": [
+      "设计稿都在 Figma 的 Admin-2026 文件里",
+      "产品是小林，设计是阿杰",
+      "每周三下午 3 点站会",
+      "需求单都建在 Linear 的 SHOP 项目",
+      "测试环境的账号都以 qa_ 开头",
+      "618 前三周冻结新需求",
+      "价格展示一律保留两位小数并带千分位",
+      "运营导出报表一次最多 3 万行",
+      "导出的文件名统一用 report_<业务>_<日期>.xlsx"
+    ]
+  },
+  {
+    "question_id": "v2_dw_03",
+    "question_type": "single-session-user",
+    "question": "数据质量检查里，空值率超过多少要阻断下游任务？",
+    "answer": "空值率超过 2% 就阻断下游。",
+    "question_date": "2026/09/19 (Sat) 00:47",
+    "haystack_session_ids": [
+      "v2_dw_03-s1",
+      "v2_dw_03-s2",
+      "v2_dw_03-s3",
+      "v2_dw_03-s4",
+      "v2_dw_03-s5",
+      "v2_dw_03-s6",
+      "v2_dw_03-s7",
+      "v2_dw_03-s8",
+      "v2_dw_03-s9"
+    ],
+    "haystack_dates": [
+      "2026/09/08 (Tue) 19:30",
+      "2026/09/09 (Wed) 20:07",
+      "2026/09/10 (Thu) 20:21",
+      "2026/09/10 (Thu) 21:12",
+      "2026/09/11 (Fri) 21:40",
+      "2026/09/12 (Sat) 21:45",
+      "2026/09/13 (Sun) 22:27",
+      "2026/09/13 (Sun) 22:46",
+      "2026/09/15 (Tue) 23:42"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Python 代码用 ruff 格式化，行宽 100，别用 black。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后按 ruff format、行宽 100 来写。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "先说下背景：我在数据平台组，主要负责日志和订单两条管道，风控那条是别的同事的。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我会以日志和订单两条管道为主来理解你的问题。"
+        },
+        {
+          "role": "user",
+          "content": "对，风控的我只在联调时碰一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "本地环境用 uv 管理，别推荐 conda。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，依赖安装和虚拟环境都用 uv。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "调度的 cron 一律用 UTC 写，别用本地时间，我们每次夏令时附近都出事。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，所有 DAG 的 schedule 都用 UTC，注释里再写一下对应的北京时间。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "给你交代一下数据组的约定。分区字段统一叫 dt，格式 yyyy-MM-dd；表注释和字段注释必须写中文；指标口径文档放在 Confluence 的 DATA 空间。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，分区字段、注释语言、口径文档位置记下了。"
+        },
+        {
+          "role": "user",
+          "content": "接着。订单库的 DBA 是老何；每周一上午 10 点开数据评审；新表上线要在 Datahub 里登记 owner。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，DBA、评审会、Datahub 登记也记下了。"
+        },
+        {
+          "role": "user",
+          "content": "最后三条。空值率超过 2% 就阻断下游；回刷历史数据要先在 #data-backfill 报备；P0 告警 15 分钟内必须响应。"
+        },
+        {
+          "role": "assistant",
+          "content": "都记下了。今天要做什么？"
+        },
+        {
+          "role": "user",
+          "content": "帮我看一下 dp_orders_daily 昨天为什么晚了 40 分钟。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我先看各 task 的耗时分布。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "SQL 关键字写小写，逗号放行尾，别用逗号前置风格。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，select / from / where 全小写，逗号在行尾。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 DAG 为啥一直卡在 queued？"
+        },
+        {
+          "role": "assistant",
+          "content": "大概率是 pool 的 slot 被占满，看 Admin 里的 Pools，或者 scheduler 的 parallelism 太低。"
+        },
+        {
+          "role": "user",
+          "content": "是 pool 满了，我手动清了几个僵尸任务，好了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，下次可以给这个 pool 设个超时。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "review 代码时先说有没有 blocker，再列别的问题。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，先给出有无 blocker 的结论，再逐条列。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "告警统一走飞书机器人，不发邮件。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，on_failure_callback 都接飞书机器人 webhook。"
+        }
+      ]
+    ],
+    "group": "dense-window",
+    "mechanism": "dense-window",
+    "trap": "一个窗口里 9 条数据组约定，被问的是靠后的一条。",
+    "b_hypothesis": "开头 3 个用户回合里交代 9 条数据组的约定（分区、注释、口径文档、DBA、评审会、登记、阻断阈值、回刷报备、告警分级），B 每次最多存 5 条，被问的“空值率 2% 阻断”排第 7；也可能被合并成“数据质量有检查”这类概述而丢掉数字。",
+    "evidence": [
+      {
+        "session": 4,
+        "turn": 4,
+        "quote": "空值率超过 2% 就阻断下游",
+        "role": "target"
+      }
+    ],
+    "answer_keys": [
+      "2%"
+    ],
+    "dense_facts": [
+      "分区字段统一叫 dt，格式 yyyy-MM-dd",
+      "表注释和字段注释必须写中文",
+      "指标口径文档放在 Confluence 的 DATA 空间",
+      "订单库的 DBA 是老何",
+      "每周一上午 10 点开数据评审",
+      "新表上线要在 Datahub 里登记 owner",
+      "空值率超过 2% 就阻断下游",
+      "回刷历史数据要先在 #data-backfill 报备",
+      "P0 告警 15 分钟内必须响应"
+    ]
+  },
+  {
+    "question_id": "v2_ld_01",
+    "question_type": "single-session-user",
+    "question": "prod 紧急回滚到某个 tag，具体该执行什么命令、带哪些参数？",
+    "answer": "在跳板机上执行 /opt/billing/bin/rollback.sh --env prod --to-tag <tag> --keep-db；一定要带 --keep-db，否则会把数据库迁移也回滚。",
+    "question_date": "2026/09/14 (Mon) 02:11",
+    "haystack_session_ids": [
+      "v2_ld_01-s1",
+      "v2_ld_01-s2",
+      "v2_ld_01-s3",
+      "v2_ld_01-s4",
+      "v2_ld_01-s5",
+      "v2_ld_01-s6",
+      "v2_ld_01-s7",
+      "v2_ld_01-s8"
+    ],
+    "haystack_dates": [
+      "2026/09/05 (Sat) 21:50",
+      "2026/09/06 (Sun) 22:27",
+      "2026/09/06 (Sun) 22:41",
+      "2026/09/08 (Tue) 23:32",
+      "2026/09/09 (Wed) 00:00",
+      "2026/09/10 (Thu) 00:05",
+      "2026/09/11 (Fri) 00:47",
+      "2026/09/11 (Fri) 01:06"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "commit message 以后统一用 conventional commits，scope 写模块名，比如 feat(invoice): add proration，描述用英文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后按 type(scope): subject 的格式写，subject 用英文小写开头。"
+        },
+        {
+          "role": "user",
+          "content": "另外 subject 里别带 ticket 号，放 footer。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，footer 用 Refs: BILL-123 的形式。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "数据库里的时间一律存 UTC，展示层才转 Asia/Shanghai，别在 SQL 里做时区转换。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，timestamptz 存 UTC，转换放在 API 响应序列化那一层。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个测试挂了，是 mock 的 pg 和真库行为不一样。以后测试里不要 mock 数据库，用 testcontainers 起真的 Postgres。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我把这个用例改成用 testcontainers 的 Postgres，启动一次整个 suite 复用。"
+        },
+        {
+          "role": "user",
+          "content": "对，复用，别每个用例都起一个，太慢。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，用 beforeAll 起、afterAll 关，每个用例前 truncate。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这次发布流程我理一下。先在 staging 验证，然后灰度，最后全量，这些你都清楚。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，staging、灰度、全量三步，每步要不要加验证项？"
+        },
+        {
+          "role": "user",
+          "content": "验证项我另外定。说回滚：紧急回滚的话，在跳板机上执行 /opt/billing/bin/rollback.sh --env prod --to-tag <tag> --keep-db，千万别漏 --keep-db，不然会把数据库迁移也回滚掉，那就是事故了。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，--keep-db 是必须的。回滚之后要不要自动发通知？"
+        },
+        {
+          "role": "user",
+          "content": "通知我手动发，你不用管。接下来说说灰度比例的监控面板，我想加一个按租户拆分的视图。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，按 tenant_id 拆分的话，需要确认指标是否已经带了这个标签。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个正则 /^INV-(\\d{6})-([A-Z]{2})$/ 为什么匹配不了 INV-000123-cn？"
+        },
+        {
+          "role": "assistant",
+          "content": "因为第二段是大写字母 [A-Z]，小写的 cn 不匹配，加 i 标志或改成 [A-Za-z]。"
+        },
+        {
+          "role": "user",
+          "content": "哦，加 i 就行，谢了。"
+        },
+        {
+          "role": "assistant",
+          "content": "不客气。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "日志统一用 pino，不要 console.log，每条日志必须带 traceId 字段。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我会用 logger.child({ traceId }) 的方式，不再写 console.log。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "code review 的时候别夸我，只列问题和严重程度。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，review 只输出问题清单，按 blocker / major / minor 标注。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 PR 有 900 行 diff，以后超过 400 行我会直接要求拆，你写的时候就控制一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，之后一个 PR 控制在 400 行以内，大改动按层拆成几个。"
+        },
+        {
+          "role": "user",
+          "content": "拆的时候保证每个 PR 单独能过 CI。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，每个 PR 都保持可独立合并。"
+        }
+      ]
+    ],
+    "group": "lossy-detail",
+    "mechanism": "lossy-detail",
+    "trap": "精确的命令、路径、参数只说一次，嵌在较长的讨论里；B 的提示词说不存文件路径。",
+    "b_hypothesis": "B 的提示词明确说不要保存 file paths 和 generic debugging recipes；这条回滚命令埋在一段较长的发布讨论中间，最可能被概括成“回滚用 rollback 脚本，注意别回滚数据库”，丢掉脚本路径和 --env / --keep-db 参数；Dream 重读 session 才能找回。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 2,
+        "quote": "/opt/billing/bin/rollback.sh --env prod --to-tag <tag> --keep-db，千万别漏 --keep-db",
+        "role": "target"
+      }
+    ],
+    "answer_keys": [
+      "/opt/billing/bin/rollback.sh",
+      "--env prod",
+      "--keep-db"
+    ]
+  },
+  {
+    "question_id": "v2_ld_02",
+    "question_type": "single-session-user",
+    "question": "商品退货要寄到哪个仓？联系谁、分机多少、什么时段收货？",
+    "answer": "寄到苏州昆山退货仓，联系人周敏，分机 8023，收货时段 9:30 到 11:30。",
+    "question_date": "2026/09/14 (Mon) 23:31",
+    "haystack_session_ids": [
+      "v2_ld_02-s1",
+      "v2_ld_02-s2",
+      "v2_ld_02-s3",
+      "v2_ld_02-s4",
+      "v2_ld_02-s5",
+      "v2_ld_02-s6",
+      "v2_ld_02-s7",
+      "v2_ld_02-s8"
+    ],
+    "haystack_dates": [
+      "2026/09/06 (Sun) 19:10",
+      "2026/09/07 (Mon) 19:47",
+      "2026/09/07 (Mon) 20:01",
+      "2026/09/09 (Wed) 20:52",
+      "2026/09/09 (Wed) 21:20",
+      "2026/09/10 (Thu) 21:25",
+      "2026/09/11 (Fri) 22:07",
+      "2026/09/11 (Fri) 22:26"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "包管理器就用 pnpm，别给我写 npm install，也别生成 package-lock.json。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后命令都用 pnpm，lockfile 只保留 pnpm-lock.yaml。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "组件库只用 Ant Design 5，别自己引别的 UI 库，样式也别再装 tailwind。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，只用 antd 5 的组件和 token，需要定制就走 ConfigProvider 的 theme。"
+        },
+        {
+          "role": "user",
+          "content": "对，主题色走 token，不要写死色值。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "文案一律走 i18n，key 用 snake.case，zh-CN 是源语言，别在组件里写死中文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，key 形如 order.list.empty_hint，中文放 zh-CN.json，英文由翻译同学补。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "退货流程我讲一下，你帮我想想后台要加哪些状态。用户申请退货后客服审核，审核通过生成退货单，用户寄回，仓库收货验货，最后退款。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，状态可以是 待审核、已通过、已寄回、已收货、已退款，驳回走单独的 已驳回。"
+        },
+        {
+          "role": "user",
+          "content": "嗯，对了，退货寄回的地址要展示给用户：寄到苏州昆山退货仓，联系人周敏，分机 8023，收货时段 9:30 到 11:30，这几个信息要原样展示在退货单详情页。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，这些信息我做成退货单详情页的“寄回信息”区块，文案走 i18n。"
+        },
+        {
+          "role": "user",
+          "content": "区块的文案你来起 key，我不看。再说验货：验货不通过要能转人工，这个状态你也补上。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，加一个 验货异常 的状态，转人工后可回到 已收货 或 已驳回。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "TS 里禁止 any，实在要用就 unknown 再收窄，我们 CI 开了 no-explicit-any。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，不确定的类型用 unknown，再用类型守卫收窄。"
+        },
+        {
+          "role": "user",
+          "content": "接口返回值用 zod 校验。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，用 zod schema 推导类型。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个按钮在表格里为什么没垂直居中？"
+        },
+        {
+          "role": "assistant",
+          "content": "看 td 的 vertical-align 和按钮外层 flex 容器，把 align-items 设成 center 就行。"
+        },
+        {
+          "role": "user",
+          "content": "好了，是 line-height 的问题，谢了。"
+        },
+        {
+          "role": "assistant",
+          "content": "不客气。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "回答别用表格，用短列表，我在小屏上看。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后用短列表，不再出表格。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "前端错误上报用 Sentry，release 名用 git sha 的前 8 位，别用版本号。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，构建时把 git sha 前 8 位注入为 release，sourcemap 一并上传。"
+        }
+      ]
+    ],
+    "group": "lossy-detail",
+    "mechanism": "lossy-detail",
+    "trap": "精确的人名、分机、时段只说一次，嵌在较长的退货流程讨论里。",
+    "b_hypothesis": "这几个精确的名字、分机号和时段在一段关于退货流程的长讨论中只说一次；B 倾向于概括成“退货寄回昆山仓，联系周敏”，丢掉分机和收货时段这类细节（提示词要求跳过一次性琐事、每次最多 5 条）；Dream 重读 session 才能补回。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 2,
+        "quote": "寄到苏州昆山退货仓，联系人周敏，分机 8023，收货时段 9:30 到 11:30",
+        "role": "target"
+      }
+    ],
+    "answer_keys": [
+      "昆山",
+      "周敏",
+      "8023",
+      "9:30-11:30|9:30 到 11:30|9:30到11:30"
+    ]
+  },
+  {
+    "question_id": "v2_ld_03",
+    "question_type": "single-session-user",
+    "question": "原始埋点数据在 S3 的哪个桶、什么前缀、哪个区域？用什么 KMS key？",
+    "answer": "桶 corp-dp-raw-prod，前缀 events/v2/dt=，区域 ap-southeast-1，KMS key 别名 alias/dp-raw。",
+    "question_date": "2026/09/17 (Thu) 00:41",
+    "haystack_session_ids": [
+      "v2_ld_03-s1",
+      "v2_ld_03-s2",
+      "v2_ld_03-s3",
+      "v2_ld_03-s4",
+      "v2_ld_03-s5",
+      "v2_ld_03-s6",
+      "v2_ld_03-s7",
+      "v2_ld_03-s8"
+    ],
+    "haystack_dates": [
+      "2026/09/07 (Mon) 20:20",
+      "2026/09/09 (Wed) 20:57",
+      "2026/09/09 (Wed) 21:11",
+      "2026/09/11 (Fri) 22:02",
+      "2026/09/11 (Fri) 22:30",
+      "2026/09/12 (Sat) 22:35",
+      "2026/09/13 (Sun) 23:17",
+      "2026/09/13 (Sun) 23:36"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Python 代码用 ruff 格式化，行宽 100，别用 black。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后按 ruff format、行宽 100 来写。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "先说下背景：我在数据平台组，主要负责日志和订单两条管道，风控那条是别的同事的。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我会以日志和订单两条管道为主来理解你的问题。"
+        },
+        {
+          "role": "user",
+          "content": "对，风控的我只在联调时碰一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "不要主动重构我没让你改的代码，只改我指出的地方。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，只改你指出的部分，发现别的问题我会列出来但不动手。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我想聊聊原始层的组织。现在 events 是按天落盘的，你觉得要不要再按 app 维度分一层？"
+        },
+        {
+          "role": "assistant",
+          "content": "按天分区已经够用，再按 app 分会产生大量小文件，除非单个 app 的体量很大。"
+        },
+        {
+          "role": "user",
+          "content": "体量不大，那就不分。顺便把落地位置告诉你：原始数据在 S3 的 corp-dp-raw-prod 桶，前缀 events/v2/dt=，区域 ap-southeast-1，加密用 KMS key 别名 alias/dp-raw。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我理解了落地位置，这些在之后写 Spark / dbt 外部表的时候会用到。"
+        },
+        {
+          "role": "user",
+          "content": "嗯，说回压缩格式，我倾向 parquet 加 zstd。"
+        },
+        {
+          "role": "assistant",
+          "content": "parquet 加 zstd 在压缩比和读取速度上是比较均衡的选择。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "SQL 关键字写小写，逗号放行尾，别用逗号前置风格。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，select / from / where 全小写，逗号在行尾。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 DAG 为啥一直卡在 queued？"
+        },
+        {
+          "role": "assistant",
+          "content": "大概率是 pool 的 slot 被占满，看 Admin 里的 Pools，或者 scheduler 的 parallelism 太低。"
+        },
+        {
+          "role": "user",
+          "content": "是 pool 满了，我手动清了几个僵尸任务，好了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，下次可以给这个 pool 设个超时。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "涉及用户手机号、身份证的字段一律哈希后再落仓，也不要给我看明文样例，造数据时用假的。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，落仓前用 sha256 加盐哈希，示例数据我都用随机生成的假值。"
+        },
+        {
+          "role": "user",
+          "content": "盐放在 Vault 里，别写进 DAG。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，盐从 Vault 取。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "本地环境用 uv 管理，别推荐 conda。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，依赖安装和虚拟环境都用 uv。"
+        }
+      ]
+    ],
+    "group": "lossy-detail",
+    "mechanism": "lossy-detail",
+    "trap": "精确的桶名、前缀、区域、KMS 别名只说一次，嵌在较长的讨论里。",
+    "b_hypothesis": "桶名、前缀、区域、KMS 别名四个精确字符串在一段较长的讨论里说一次；auto-extract 提示词要求不存 file paths，且更倾向概括成“原始数据在 S3 的 raw 桶里”，具体名字丢失；Dream 重读 session 可以补回。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 2,
+        "quote": "原始数据在 S3 的 corp-dp-raw-prod 桶，前缀 events/v2/dt=，区域 ap-southeast-1，加密用 KMS key 别名 alias/dp-raw",
+        "role": "target"
+      }
+    ],
+    "answer_keys": [
+      "corp-dp-raw-prod",
+      "events/v2/dt=",
+      "ap-southeast-1",
+      "alias/dp-raw"
+    ]
+  },
+  {
+    "question_id": "v2_ss_01",
+    "question_type": "single-session-user",
+    "question": "我们调用支付渠道的重试策略是怎么配的？最大次数、退避、超时分别是多少？",
+    "answer": "maxAttempts 5，backoffMs 250，timeoutMs 8000。",
+    "question_date": "2026/09/15 (Tue) 23:41",
+    "haystack_session_ids": [
+      "v2_ss_01-s1",
+      "v2_ss_01-s2",
+      "v2_ss_01-s3",
+      "v2_ss_01-s4",
+      "v2_ss_01-s5",
+      "v2_ss_01-s6",
+      "v2_ss_01-s7",
+      "v2_ss_01-s8"
+    ],
+    "haystack_dates": [
+      "2026/09/07 (Mon) 19:20",
+      "2026/09/07 (Mon) 19:57",
+      "2026/09/08 (Tue) 20:11",
+      "2026/09/09 (Wed) 21:02",
+      "2026/09/09 (Wed) 21:30",
+      "2026/09/10 (Thu) 21:35",
+      "2026/09/10 (Thu) 22:17",
+      "2026/09/12 (Sat) 22:36"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "commit message 以后统一用 conventional commits，scope 写模块名，比如 feat(invoice): add proration，描述用英文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后按 type(scope): subject 的格式写，subject 用英文小写开头。"
+        },
+        {
+          "role": "user",
+          "content": "另外 subject 里别带 ticket 号，放 footer。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，footer 用 Refs: BILL-123 的形式。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我本机是 Windows 加 WSL2，写脚本要兼容 bash，别用只有 macOS 才有的命令。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，脚本用 POSIX sh 兼容的写法，避免 pbcopy、open 之类。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "回答先给结论再给理由，别写一大段铺垫。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，之后先说结论。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我看了一下支付渠道客户端的重试配置，在 config/default.json 里，maxAttempts 设的 5，backoffMs 250，timeoutMs 8000，我觉得 5 次有点多。"
+        },
+        {
+          "role": "assistant",
+          "content": "5 次重试加指数退避的话，最坏情况下会拖到十几秒，对用户下单是偏长的。需要我给个调整建议吗？"
+        },
+        {
+          "role": "user",
+          "content": "先不改，我再想想，你把退避的计算方式说一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "退避是 backoffMs 乘以 2 的 attempt 次方，加 0 到 100ms 的随机抖动。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "日志统一用 pino，不要 console.log，每条日志必须带 traceId 字段。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我会用 logger.child({ traceId }) 的方式，不再写 console.log。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个正则 /^INV-(\\d{6})-([A-Z]{2})$/ 为什么匹配不了 INV-000123-cn？"
+        },
+        {
+          "role": "assistant",
+          "content": "因为第二段是大写字母 [A-Z]，小写的 cn 不匹配，加 i 标志或改成 [A-Za-z]。"
+        },
+        {
+          "role": "user",
+          "content": "哦，加 i 就行，谢了。"
+        },
+        {
+          "role": "assistant",
+          "content": "不客气。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "新增依赖之前先问我，我们有 license 白名单：MIT、Apache-2.0、BSD。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，要加依赖我会先列出名称、license 和用途请你确认。"
+        },
+        {
+          "role": "user",
+          "content": "嗯，GPL 系的一律不行。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "数据库里的时间一律存 UTC，展示层才转 Asia/Shanghai，别在 SQL 里做时区转换。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，timestamptz 存 UTC，转换放在 API 响应序列化那一层。"
+        }
+      ]
+    ],
+    "group": "selection-standard",
+    "mechanism": "selection-standard",
+    "trap": "仓库配置值被 auto-extract 的“可从仓库恢复就不存”规则跳过。",
+    "b_hypothesis": "这是 config/default.json 里的取值，“仓库里能查到”：auto-extract 提示词规定只保存“未来 session 无法从仓库、历史或说明文件恢复的知识”，B 倾向于跳过；回答时没有文件工具，B 答不出。这一题测的是 B 与 Dream 的选择标准差异，不是整理能力。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 0,
+        "quote": "maxAttempts 设的 5，backoffMs 250，timeoutMs 8000",
+        "role": "target"
+      }
+    ],
+    "answer_keys": [
+      "maxAttempts 设的 5|maxAttempts5|最多重试5次|重试5次",
+      "backoffMs 250|backoffMs250",
+      "timeoutMs 8000|timeoutMs8000"
+    ]
+  },
+  {
+    "question_id": "v2_ss_02",
+    "question_type": "single-session-user",
+    "question": "本地开发时，/api 的请求被代理到哪里？前端 dev server 用哪个端口？",
+    "answer": "/api 代理到 http://10.20.3.15:8080，dev server 端口 5173。",
+    "question_date": "2026/09/17 (Thu) 00:51",
+    "haystack_session_ids": [
+      "v2_ss_02-s1",
+      "v2_ss_02-s2",
+      "v2_ss_02-s3",
+      "v2_ss_02-s4",
+      "v2_ss_02-s5",
+      "v2_ss_02-s6",
+      "v2_ss_02-s7",
+      "v2_ss_02-s8"
+    ],
+    "haystack_dates": [
+      "2026/09/08 (Tue) 20:30",
+      "2026/09/08 (Tue) 21:07",
+      "2026/09/09 (Wed) 21:21",
+      "2026/09/10 (Thu) 22:12",
+      "2026/09/10 (Thu) 22:40",
+      "2026/09/11 (Fri) 22:45",
+      "2026/09/11 (Fri) 23:27",
+      "2026/09/13 (Sun) 23:46"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "包管理器就用 pnpm，别给我写 npm install，也别生成 package-lock.json。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后命令都用 pnpm，lockfile 只保留 pnpm-lock.yaml。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "组件库只用 Ant Design 5，别自己引别的 UI 库，样式也别再装 tailwind。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，只用 antd 5 的组件和 token，需要定制就走 ConfigProvider 的 theme。"
+        },
+        {
+          "role": "user",
+          "content": "对，主题色走 token，不要写死色值。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "文案一律走 i18n，key 用 snake.case，zh-CN 是源语言，别在组件里写死中文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，key 形如 order.list.empty_hint，中文放 zh-CN.json，英文由翻译同学补。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我本地跑起来了，vite.config.ts 里 server.proxy 把 /api 代理到 http://10.20.3.15:8080，dev server 用 5173 端口，但是接口一直 504。"
+        },
+        {
+          "role": "assistant",
+          "content": "504 一般是代理目标不通。可以先 curl http://10.20.3.15:8080/api/health 看看后端是否可达。"
+        },
+        {
+          "role": "user",
+          "content": "后端同事说他机器重启了，现在好了。接着我要改订单详情页的布局。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，从订单详情页的信息区块开始？"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "TS 里禁止 any，实在要用就 unknown 再收窄，我们 CI 开了 no-explicit-any。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，不确定的类型用 unknown，再用类型守卫收窄。"
+        },
+        {
+          "role": "user",
+          "content": "接口返回值用 zod 校验。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，用 zod schema 推导类型。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "e2e 用 Playwright，只覆盖下单和退款两条主流程，其他页面别写 e2e，维护不起。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，e2e 只写这两条，其余页面靠组件测试。"
+        },
+        {
+          "role": "user",
+          "content": "组件测试用 vitest 加 testing-library。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "回答别用表格，用短列表，我在小屏上看。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后用短列表，不再出表格。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "分支名用 feat/xxx、fix/xxx，别用我名字拼音当前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，分支都按 type/短描述 来命名。"
+        }
+      ]
+    ],
+    "group": "selection-standard",
+    "mechanism": "selection-standard",
+    "trap": "仓库配置值被 auto-extract 的“可从仓库恢复就不存”规则跳过。",
+    "b_hypothesis": "这是 vite.config.ts 里的 server.proxy 配置，仓库里就有：auto-extract 提示词规定只保存“仓库里恢复不了的知识”，B 倾向于跳过；回答时没有文件工具，B 答不出。这一题测的是 B 与 Dream 的选择标准差异，不是整理能力。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 0,
+        "quote": "server.proxy 把 /api 代理到 http://10.20.3.15:8080，dev server 用 5173 端口",
+        "role": "target"
+      }
+    ],
+    "answer_keys": [
+      "10.20.3.15:8080",
+      "5173"
+    ]
+  },
+  {
+    "question_id": "v2_om_01",
+    "question_type": "multi-session",
+    "question": "风控管道的数据存放在哪个 S3 区域？",
+    "answer": "风控管道的数据在 eu-west-1（合规要求）；订单管道才是 ap-southeast-1。",
+    "question_date": "2026/09/20 (Sun) 04:07",
+    "haystack_session_ids": [
+      "v2_om_01-s1",
+      "v2_om_01-s2",
+      "v2_om_01-s3",
+      "v2_om_01-s4",
+      "v2_om_01-s5",
+      "v2_om_01-s6",
+      "v2_om_01-s7",
+      "v2_om_01-s8",
+      "v2_om_01-s9",
+      "v2_om_01-s10",
+      "v2_om_01-s11",
+      "v2_om_01-s12"
+    ],
+    "haystack_dates": [
+      "2026/09/07 (Mon) 21:20",
+      "2026/09/08 (Tue) 21:57",
+      "2026/09/09 (Wed) 22:11",
+      "2026/09/10 (Thu) 23:02",
+      "2026/09/10 (Thu) 23:30",
+      "2026/09/11 (Fri) 23:35",
+      "2026/09/12 (Sat) 00:17",
+      "2026/09/13 (Sun) 00:36",
+      "2026/09/14 (Mon) 01:32",
+      "2026/09/15 (Tue) 02:05",
+      "2026/09/15 (Tue) 02:15",
+      "2026/09/17 (Thu) 03:02"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Python 代码用 ruff 格式化，行宽 100，别用 black。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后按 ruff format、行宽 100 来写。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "先说下背景：我在数据平台组，主要负责日志和订单两条管道，风控那条是别的同事的。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我会以日志和订单两条管道为主来理解你的问题。"
+        },
+        {
+          "role": "user",
+          "content": "对，风控的我只在联调时碰一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "dbt 模型命名：staging 层用 stg_ 前缀，事实表 fct_，维度表 dim_，别自己发明前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，stg_、fct_、dim_ 三种前缀，其余模型先问你。"
+        },
+        {
+          "role": "user",
+          "content": "中间层 int_ 也是允许的，但要先和我说。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，int_ 先问你。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "订单管道的数据都落在 S3 的 ap-southeast-1 区域，离我们的集群近，延迟低。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，订单管道的桶和 Glue 元数据都放 ap-southeast-1。"
+        },
+        {
+          "role": "user",
+          "content": "对。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "SQL 关键字写小写，逗号放行尾，别用逗号前置风格。"
+        },
+        {
+          "role": "assistant",
+          "content": "收到，select / from / where 全小写，逗号在行尾。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "调度的 cron 一律用 UTC 写，别用本地时间，我们每次夏令时附近都出事。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，所有 DAG 的 schedule 都用 UTC，注释里再写一下对应的北京时间。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "告警统一走飞书机器人，不发邮件。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，on_failure_callback 都接飞书机器人 webhook。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "风控管道的数据要放 eu-west-1，这是合规要求，数据不能出欧盟，别按订单管道的习惯放到新加坡。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，风控管道的桶和元数据放 eu-west-1，跨区域复制也要关掉。"
+        },
+        {
+          "role": "user",
+          "content": "对，复制必须关。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，已关闭跨区域复制。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "涉及用户手机号、身份证的字段一律哈希后再落仓，也不要给我看明文样例，造数据时用假的。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，落仓前用 sha256 加盐哈希，示例数据我都用随机生成的假值。"
+        },
+        {
+          "role": "user",
+          "content": "盐放在 Vault 里，别写进 DAG。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，盐从 Vault 取。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "本地环境用 uv 管理，别推荐 conda。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，依赖安装和虚拟环境都用 uv。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "不要主动重构我没让你改的代码，只改我指出的地方。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，只改你指出的部分，发现别的问题我会列出来但不动手。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 DAG 为啥一直卡在 queued？"
+        },
+        {
+          "role": "assistant",
+          "content": "大概率是 pool 的 slot 被占满，看 Admin 里的 Pools，或者 scheduler 的 parallelism 太低。"
+        },
+        {
+          "role": "user",
+          "content": "是 pool 满了，我手动清了几个僵尸任务，好了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，下次可以给这个 pool 设个超时。"
+        }
+      ]
+    ],
+    "group": "over-merge",
+    "mechanism": "over-merge",
+    "trap": "订单管道 ap-southeast-1 与风控管道 eu-west-1 说法相近但不是同一件事，不能被合并。",
+    "b_hypothesis": "本题是 Dream 风险对照：两条管道的区域说法相近、分散在两个 session，B 通常分别记下；Dream 的“合并重复”可能把两条笔记并成一条“S3 区域是 ap-southeast-1”，丢掉风控的例外。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 0,
+        "quote": "订单管道的数据都落在 S3 的 ap-southeast-1 区域",
+        "role": "sibling"
+      },
+      {
+        "session": 7,
+        "turn": 0,
+        "quote": "风控管道的数据要放 eu-west-1",
+        "role": "target"
+      }
+    ],
+    "answer_keys": [
+      "eu-west-1"
+    ]
+  },
+  {
+    "question_id": "v2_oo_01",
+    "question_type": "single-session-user",
+    "question": "上次展会那天凌晨，我们手动在 prod 上改了 EMQX 的什么参数，改成了多少？",
+    "answer": "把 max_connections 临时调到 200000（事后改回了 100000）。",
+    "question_date": "2026/09/20 (Sun) 01:01",
+    "haystack_session_ids": [
+      "v2_oo_01-s1",
+      "v2_oo_01-s2",
+      "v2_oo_01-s3",
+      "v2_oo_01-s4",
+      "v2_oo_01-s5",
+      "v2_oo_01-s6",
+      "v2_oo_01-s7",
+      "v2_oo_01-s8"
+    ],
+    "haystack_dates": [
+      "2026/09/09 (Wed) 20:40",
+      "2026/09/11 (Fri) 21:17",
+      "2026/09/13 (Sun) 21:31",
+      "2026/09/13 (Sun) 22:22",
+      "2026/09/14 (Mon) 22:50",
+      "2026/09/14 (Mon) 22:55",
+      "2026/09/15 (Tue) 23:37",
+      "2026/09/16 (Wed) 23:56"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Go 里的错误要 wrap，用 fmt.Errorf(\"...: %w\", err)，别吞错误，也别只打日志不返回。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，错误一律带上下文 wrap 往上抛，只在边界处记录日志。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "回答用中文，术语保留英文，别把 Pod、Deployment 翻译成中文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后术语保持英文原样。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "MQTT topic 命名统一：device/{region}/{deviceId}/up 和 /down，别再发明新格式。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，上行 up、下行 down，region 用小写短码。"
+        },
+        {
+          "role": "user",
+          "content": "新增类型放在后缀，不要改前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "昨天展会凌晨我在 prod 上手动调了一次 EMQX：把 max_connections 临时调到 200000，因为展会现场几万台设备同时上线，原来 100000 不够。用完之后我已经改回 100000 了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，这是一次临时调整，需要我把它补进变更记录吗？"
+        },
+        {
+          "role": "user",
+          "content": "变更记录我自己补。现在说另一件事，展会期间网关的 CPU 峰值我想看一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我从监控里拉展会那段时间的 CPU 曲线。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "golangci-lint 必须通过，不要用 nolint 绕过，真要绕得先说理由。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，不加 nolint，遇到误报先来问你。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 Pod 一直 CrashLoopBackOff，怎么看原因？"
+        },
+        {
+          "role": "assistant",
+          "content": "kubectl describe pod 看 Events，再 kubectl logs --previous 看上一次的退出日志。"
+        },
+        {
+          "role": "user",
+          "content": "看到了，是配置里少了个环境变量，补上了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我们主干开发，feature 开关用 flagr，不开长期分支。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，新功能先合到 main 并用 flagr 开关默认关闭。"
+        },
+        {
+          "role": "user",
+          "content": "开关命名用 feature.模块.功能。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "PR 描述里要写清楚影响面和回滚方式，别只写做了什么。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，PR 模板里加上影响面和回滚两项。"
+        }
+      ]
+    ],
+    "group": "one-off-kept",
+    "mechanism": "one-off-kept",
+    "trap": "一次性事件（展会凌晨临时改参数）的细节正是被问的内容。",
+    "b_hypothesis": "本题是 Dream 风险对照：这是一次性事件，B 的提示词会跳过“一次性任务闲聊”，但本题用户说得很具体且带原因，B 可能保留；Dream 的目的文字是“丢弃一次性或可弃内容”，重读后可能把这条笔记当作一次性内容删掉或压缩到只剩“临时扩容过”。",
+    "evidence": [
+      {
+        "session": 3,
+        "turn": 0,
+        "quote": "把 max_connections 临时调到 200000，因为展会现场几万台设备同时上线，原来 100000 不够。用完之后我已经改回 100000 了",
+        "role": "target"
+      }
+    ],
+    "answer_keys": [
+      "max_connections",
+      "200000",
+      "100000"
+    ]
+  },
+  {
+    "question_id": "v2_ab_01_abs",
+    "question_type": "single-session-user",
+    "question": "为什么把设备心跳间隔从 30 秒改成 45 秒？",
+    "answer": "用户只说了把心跳间隔从 30 秒改成 45 秒，从未说明原因；相邻的 session 里提到客户投诉续航短，但没有说两者有关。应当回答信息不足。",
+    "question_date": "2026/09/23 (Wed) 03:30",
+    "haystack_session_ids": [
+      "v2_ab_01_abs-s1",
+      "v2_ab_01_abs-s2",
+      "v2_ab_01_abs-s3",
+      "v2_ab_01_abs-s4",
+      "v2_ab_01_abs-s5",
+      "v2_ab_01_abs-s6",
+      "v2_ab_01_abs-s7",
+      "v2_ab_01_abs-s8",
+      "v2_ab_01_abs-s9",
+      "v2_ab_01_abs-s10"
+    ],
+    "haystack_dates": [
+      "2026/09/09 (Wed) 21:40",
+      "2026/09/10 (Thu) 22:17",
+      "2026/09/11 (Fri) 22:31",
+      "2026/09/12 (Sat) 23:22",
+      "2026/09/12 (Sat) 23:50",
+      "2026/09/14 (Mon) 23:55",
+      "2026/09/17 (Thu) 00:37",
+      "2026/09/19 (Sat) 00:56",
+      "2026/09/19 (Sat) 01:52",
+      "2026/09/20 (Sun) 02:25"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Go 里的错误要 wrap，用 fmt.Errorf(\"...: %w\", err)，别吞错误，也别只打日志不返回。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，错误一律带上下文 wrap 往上抛，只在边界处记录日志。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "回答用中文，术语保留英文，别把 Pod、Deployment 翻译成中文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后术语保持英文原样。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "最近好几个客户投诉设备续航太短，先记一下，我下周去问厂商。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我记下续航投诉这件事，你们下周跟进厂商。"
+        },
+        {
+          "role": "user",
+          "content": "嗯。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "MQTT topic 命名统一：device/{region}/{deviceId}/up 和 /down，别再发明新格式。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，上行 up、下行 down，region 用小写短码。"
+        },
+        {
+          "role": "user",
+          "content": "新增类型放在后缀，不要改前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 Pod 一直 CrashLoopBackOff，怎么看原因？"
+        },
+        {
+          "role": "assistant",
+          "content": "kubectl describe pod 看 Events，再 kubectl logs --previous 看上一次的退出日志。"
+        },
+        {
+          "role": "user",
+          "content": "看到了，是配置里少了个环境变量，补上了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "golangci-lint 必须通过，不要用 nolint 绕过，真要绕得先说理由。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，不加 nolint，遇到误报先来问你。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "心跳间隔从 30 秒改成 45 秒，你按这个改，配置和测试都跟着改一下。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我把心跳间隔常量改成 45 秒，并更新相应的测试。"
+        },
+        {
+          "role": "user",
+          "content": "改完告诉我，别动别的。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，只改心跳间隔相关的配置和测试。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我们主干开发，feature 开关用 flagr，不开长期分支。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，新功能先合到 main 并用 flagr 开关默认关闭。"
+        },
+        {
+          "role": "user",
+          "content": "开关命名用 feature.模块.功能。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "PR 描述里要写清楚影响面和回滚方式，别只写做了什么。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，PR 模板里加上影响面和回滚两项。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "性能相关的改动必须附 benchmark 结果，go test -bench 的输出贴 PR 里。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，性能改动我会附 -bench 的前后对比，带 -benchmem。"
+        }
+      ]
+    ],
+    "group": "abstention",
+    "mechanism": "abstention",
+    "trap": "心跳间隔改动没有说明原因；相邻 session 的“续航投诉”是诱人的牵强解释。",
+    "b_hypothesis": "相邻 session 里出现“客户投诉续航短”，B 或回答模型容易据此脑补“为了省电”；本题测的是不脑补，B 笔记里若写下了未陈述的原因会被判错。",
+    "evidence": [
+      {
+        "session": 6,
+        "turn": 0,
+        "quote": "心跳间隔从 30 秒改成 45 秒，你按这个改",
+        "role": "stated"
+      },
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "最近好几个客户投诉设备续航太短",
+        "role": "adjacent"
+      }
+    ],
+    "absent_keys": [
+      "省电",
+      "功耗",
+      "降低耗电",
+      "电池寿命"
+    ]
+  },
+  {
+    "question_id": "v2_ab_02_abs",
+    "question_type": "single-session-user",
+    "question": "EMQX 升级到 5.6 这件事是谁在负责？",
+    "answer": "用户只说过要把 EMQX 升到 5.6，并没有说谁负责；老周只在别处出现，是帮忙开 K8s 权限的人，没有说他负责升级。应当回答信息不足。",
+    "question_date": "2026/09/27 (Sun) 01:50",
+    "haystack_session_ids": [
+      "v2_ab_02_abs-s1",
+      "v2_ab_02_abs-s2",
+      "v2_ab_02_abs-s3",
+      "v2_ab_02_abs-s4",
+      "v2_ab_02_abs-s5",
+      "v2_ab_02_abs-s6",
+      "v2_ab_02_abs-s7",
+      "v2_ab_02_abs-s8",
+      "v2_ab_02_abs-s9",
+      "v2_ab_02_abs-s10",
+      "v2_ab_02_abs-s11"
+    ],
+    "haystack_dates": [
+      "2026/09/10 (Thu) 19:50",
+      "2026/09/11 (Fri) 20:27",
+      "2026/09/12 (Sat) 20:41",
+      "2026/09/13 (Sun) 21:32",
+      "2026/09/13 (Sun) 22:00",
+      "2026/09/15 (Tue) 22:05",
+      "2026/09/17 (Thu) 22:47",
+      "2026/09/19 (Sat) 23:06",
+      "2026/09/22 (Tue) 00:02",
+      "2026/09/24 (Thu) 00:35",
+      "2026/09/24 (Thu) 00:45"
+    ],
+    "haystack_sessions": [
+      [
+        {
+          "role": "user",
+          "content": "Go 里的错误要 wrap，用 fmt.Errorf(\"...: %w\", err)，别吞错误，也别只打日志不返回。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，错误一律带上下文 wrap 往上抛，只在边界处记录日志。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "回答用中文，术语保留英文，别把 Pod、Deployment 翻译成中文。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，之后术语保持英文原样。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "EMQX 要升到 5.6 了，先在测试环境升，看看 ACL 的行为有没有变化。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，测试环境先升级，并对照 5.6 的 ACL 变更说明做回归。"
+        },
+        {
+          "role": "user",
+          "content": "回归用例你来列。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，我列一份 ACL 回归用例。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "MQTT topic 命名统一：device/{region}/{deviceId}/up 和 /down，别再发明新格式。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，上行 up、下行 down，region 用小写短码。"
+        },
+        {
+          "role": "user",
+          "content": "新增类型放在后缀，不要改前缀。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "golangci-lint 必须通过，不要用 nolint 绕过，真要绕得先说理由。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，不加 nolint，遇到误报先来问你。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "这个 Pod 一直 CrashLoopBackOff，怎么看原因？"
+        },
+        {
+          "role": "assistant",
+          "content": "kubectl describe pod 看 Events，再 kubectl logs --previous 看上一次的退出日志。"
+        },
+        {
+          "role": "user",
+          "content": "看到了，是配置里少了个环境变量，补上了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "K8s 测试集群的权限老周帮我开好了，我现在能直接 kubectl 了。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，那我可以直接给你写 kubectl 的排查命令。"
+        },
+        {
+          "role": "user",
+          "content": "嗯。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我们主干开发，feature 开关用 flagr，不开长期分支。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，新功能先合到 main 并用 flagr 开关默认关闭。"
+        },
+        {
+          "role": "user",
+          "content": "开关命名用 feature.模块.功能。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "任何密钥只放在 Vault 里，不要出现在代码、配置样例或我们的对话里。"
+        },
+        {
+          "role": "assistant",
+          "content": "明白，我只写 Vault 的路径引用，不写任何密钥内容。"
+        },
+        {
+          "role": "user",
+          "content": "连测试用的假密钥也别写成真实格式。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "PR 描述里要写清楚影响面和回滚方式，别只写做了什么。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，PR 模板里加上影响面和回滚两项。"
+        }
+      ],
+      [
+        {
+          "role": "user",
+          "content": "我用 macOS，本地用 k3d 起集群，别给我 minikube 的方案。"
+        },
+        {
+          "role": "assistant",
+          "content": "好的，本地集群方案都按 k3d 给。"
+        }
+      ]
+    ],
+    "group": "abstention",
+    "mechanism": "abstention",
+    "trap": "EMQX 升级没有说负责人；老周在另一个 session 里出现，是诱人的牵强对象。",
+    "b_hypothesis": "相邻 session 里老周（帮忙开 K8s 权限）的出现，容易让 B 或回答模型把“负责人”脑补成老周；本题测的是不脑补。",
+    "evidence": [
+      {
+        "session": 2,
+        "turn": 0,
+        "quote": "EMQX 要升到 5.6 了，先在测试环境升",
+        "role": "stated"
+      },
+      {
+        "session": 6,
+        "turn": 0,
+        "quote": "K8s 测试集群的权限老周帮我开好了",
+        "role": "adjacent"
+      }
+    ],
+    "absent_keys": [
+      "负责升级",
+      "升级负责人",
+      "牵头升级",
+      "升级由"
+    ]
+  }
+]

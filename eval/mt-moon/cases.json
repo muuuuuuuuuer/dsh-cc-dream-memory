@@ -1,0 +1,734 @@
+{
+  "version": 1,
+  "id": "mt-moon",
+  "note": "Memory already holds a wrong note; the source session shows what really happened. Dream must fix it from the transcript. Behavior checks, not an A/B benefit comparison. `sessions[].events` are host events (seq = index): role user/assistant, `text` is a string or an array of lines, `injected` marks plugin-injected context. `reviewed` sessions were settled by an earlier Dream run. `suspect` is the signal that lists a note (corrected | dismissed). `fix` is what a competent model submits; only the deterministic test plays it, the real-model runner never shows it to a model. `expect` is scored the same way by both layers.",
+  "cases": [
+    {
+      "id": "wrong-fact",
+      "title": "Deploy region in the note is wrong; the user named another one",
+      "sessions": [
+        {
+          "id": "s1",
+          "events": [
+            {
+              "role": "user",
+              "text": "帮我把 docs 站点发到线上，先确认一下 deploy 的目标 region。"
+            },
+            {
+              "role": "user",
+              "injected": "plugin:cc-memory-recall",
+              "text": "Relevant memory: Deploy target region: us-east-1."
+            },
+            {
+              "role": "assistant",
+              "text": "记忆里写的是 us-east-1，我按这个准备部署，对吗？"
+            },
+            {
+              "role": "user",
+              "text": "不对，我们部署的 region 是 eu-central-1。us-east-1 是早期的测试环境，已经下线了。"
+            },
+            {
+              "role": "assistant",
+              "text": "明白，改成 eu-central-1 部署。"
+            }
+          ]
+        },
+        {
+          "id": "s2",
+          "events": [
+            {
+              "role": "user",
+              "text": "Please rename the helper parseCfg to parseConfig across the repo."
+            },
+            {
+              "role": "assistant",
+              "text": "Done, 6 call sites updated."
+            }
+          ]
+        }
+      ],
+      "notes": [
+        {
+          "file": "project_deploy_target.md",
+          "name": "Deploy target",
+          "type": "project",
+          "description": "Where the docs site is deployed",
+          "body": "Deploy target region: us-east-1.",
+          "sourceSession": "s1"
+        }
+      ],
+      "fix": {
+        "file": "project_deploy_target.md",
+        "old_text": "Deploy target region: us-east-1.",
+        "body": "Deploy target region: eu-central-1 (us-east-1 was an early test environment and is gone).",
+        "citations": [
+          {
+            "session": "s1",
+            "seq": 3,
+            "quote": "我们部署的 region 是 eu-central-1",
+            "role": "user"
+          }
+        ]
+      },
+      "expect": {
+        "notes": {
+          "project_deploy_target.md": {
+            "contains": [
+              "eu-central-1"
+            ],
+            "notContains": [
+              "Deploy target region: us-east-1."
+            ],
+            "historyContains": [
+              "us-east-1"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "env-exception",
+      "title": "`make release` is production only; staging still uses the old script",
+      "sessions": [
+        {
+          "id": "s1",
+          "reviewed": true,
+          "events": [
+            {
+              "role": "user",
+              "text": "发版流程再跟你确认一下：生产环境用 make release，staging 还是走 ./scripts/release-old.sh，别搞混了。"
+            },
+            {
+              "role": "assistant",
+              "text": "收到：生产 make release，staging 仍然用旧脚本。"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        {
+          "file": "project_release.md",
+          "name": "Release command",
+          "type": "project",
+          "description": "How a release is cut",
+          "body": "发版统一用 `make release`。",
+          "sourceSession": "s1"
+        }
+      ],
+      "suspect": {
+        "kind": "corrected",
+        "file": "project_release.md"
+      },
+      "fix": {
+        "file": "project_release.md",
+        "old_text": "发版统一用 `make release`。",
+        "body": "生产环境发版用 `make release`；staging 仍然用 `./scripts/release-old.sh`。",
+        "citations": [
+          {
+            "session": "s1",
+            "seq": 0,
+            "quote": "staging 还是走 ./scripts/release-old.sh",
+            "role": "user"
+          }
+        ]
+      },
+      "expect": {
+        "notes": {
+          "project_release.md": {
+            "contains": [
+              "make release",
+              "./scripts/release-old.sh"
+            ],
+            "notContains": [
+              "发版统一用"
+            ],
+            "historyContains": [
+              "发版统一用"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "one-off-as-default",
+      "title": "\"这次先用 npm，平时还是 pnpm\" was saved as \"use npm\"",
+      "sessions": [
+        {
+          "id": "s1",
+          "events": [
+            {
+              "role": "user",
+              "text": "装一下依赖吧，这次先用 npm，平时还是 pnpm，别动 lockfile。"
+            },
+            {
+              "role": "assistant",
+              "text": "好，这次用 npm install --no-package-lock，不改 pnpm-lock.yaml。"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        {
+          "file": "feedback_package_manager.md",
+          "name": "Package manager",
+          "type": "feedback",
+          "description": "Which package manager to use",
+          "body": "项目统一使用 npm 安装依赖。",
+          "sourceSession": "s1"
+        }
+      ],
+      "fix": {
+        "file": "feedback_package_manager.md",
+        "old_text": "项目统一使用 npm 安装依赖。",
+        "body": "默认使用 pnpm 安装依赖；用户有一次临时指定了 npm，那只是一次性的选择。",
+        "citations": [
+          {
+            "session": "s1",
+            "seq": 0,
+            "quote": "这次先用 npm，平时还是 pnpm",
+            "role": "user"
+          }
+        ]
+      },
+      "expect": {
+        "notes": {
+          "feedback_package_manager.md": {
+            "contains": [
+              "pnpm"
+            ],
+            "notContains": [
+              "统一使用 npm"
+            ],
+            "historyContains": [
+              "统一使用 npm"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "pasted-as-decision",
+      "title": "\"Dropped Postgres\" appears only in a pasted report; the user has not decided",
+      "sessions": [
+        {
+          "id": "s1",
+          "reviewed": true,
+          "events": [
+            {
+              "role": "user",
+              "text": [
+                "我同事发了份存储方案评估，贴给你看看：",
+                "# 存储方案评估 2026-11",
+                "## 背景",
+                "- 当前 Postgres 15 单实例，月均 800 万行写入，备份靠每日 pg_dump，恢复演练上季度做过一次，耗时约 40 分钟。",
+                "- 读多写少，p95 查询延迟 12ms，没有跨服务的事务需求，也没有多租户隔离的要求。",
+                "- 目前由后端同学兼职维护数据库，没有专职 DBA，连接池参数和 autovacuum 都还是默认值。",
+                "## 方案对比",
+                "- Postgres：运维成本高，需要专人盯连接数和 vacuum，大版本升级窗口长，上次升级停机 2 小时。",
+                "- SQLite + litestream：单文件、备份简单，写入并发有限，但当前峰值写入每秒不到 50 条，远低于上限。",
+                "- 托管 Postgres：成本约为现在的 2.5 倍，运维压力最小，但需要重新评估网络延迟和合规要求。",
+                "- 托管方案的 SLA 为 99.95%，目前自建实例过去半年出现过两次超过 10 分钟的不可用，原因都是磁盘写满。",
+                "- 如果继续自建，建议至少补上监控告警、每周一次的恢复演练，以及连接数上限的压测，预计需要两人周。",
+                "- 数据量方面，主库目前约 38GB，其中日志类表占 70%，保留策略是 180 天，迁移前可以先归档再清理，减小迁移窗口。",
+                "- 团队里熟悉 SQLite 运维的人不多，需要先做一次内部分享，并在预发环境跑满两周的真实流量再决定是否切换。",
+                "## 风险",
+                "- 迁移期间需要双写两周，回滚路径是切回 Postgres 读库，期间两边的数据一致性需要每日对账。",
+                "- SQLite 在多进程写入下需要严格的 WAL 配置，部署脚本里也要处理好文件锁和卷挂载。",
+                "- 报表查询目前依赖 Postgres 的窗口函数和 JSONB 索引，迁移后需要逐条改写并重新压测。",
+                "## 结论",
+                "- 结论：团队决定放弃 Postgres，全部迁移到 SQLite，下个季度完成。",
+                "- 负责人：待定；预算：无额外预算；评审会定在本月底，尚未排期。"
+              ]
+            },
+            {
+              "role": "assistant",
+              "text": "这份报告建议迁移到 SQLite，主要理由是运维成本和当前写入量很低。需要我评估迁移步骤吗？"
+            },
+            {
+              "role": "user",
+              "text": "报告是同事写的，结论我还不认同，Postgres 这块我还没决定，先别动。"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        {
+          "file": "project_database.md",
+          "name": "Database decision",
+          "type": "project",
+          "description": "Which database the project uses",
+          "body": "用户已决定放弃 Postgres，改用 SQLite。",
+          "sourceSession": "s1"
+        }
+      ],
+      "suspect": {
+        "kind": "dismissed",
+        "file": "project_database.md"
+      },
+      "fix": {
+        "file": "project_database.md",
+        "old_text": "用户已决定放弃 Postgres，改用 SQLite。",
+        "body": "Postgres 是否放弃尚未决定：同事的评估报告建议迁移到 SQLite，但用户还没拍板，暂时不要动 Postgres。",
+        "citations": [
+          {
+            "session": "s1",
+            "seq": 2,
+            "quote": "Postgres 这块我还没决定",
+            "role": "user"
+          },
+          {
+            "session": "s1",
+            "seq": 0,
+            "quote": "团队决定放弃 Postgres，全部迁移到 SQLite",
+            "role": "user-pasted"
+          }
+        ]
+      },
+      "expect": {
+        "notes": {
+          "project_database.md": {
+            "allowDeleted": true,
+            "contains": [
+              "Postgres"
+            ],
+            "notContains": [
+              "已决定放弃"
+            ],
+            "containsAny": [
+              "尚未决定",
+              "还没决定",
+              "没有决定",
+              "未决定",
+              "还没拍板",
+              "未拍板",
+              "not decided",
+              "undecided"
+            ],
+            "historyContains": [
+              "已决定放弃"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "control-correct-note",
+      "title": "Control: the note is right and the session agrees; nothing may change",
+      "sessions": [
+        {
+          "id": "s1",
+          "events": [
+            {
+              "role": "user",
+              "text": "我们 Node 用 22，CI 里也是 22。"
+            },
+            {
+              "role": "assistant",
+              "text": "好的，保持 Node 22，CI 矩阵也不动。"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        {
+          "file": "project_runtime.md",
+          "name": "Node version",
+          "type": "project",
+          "description": "Node version used locally and in CI",
+          "body": "Node 版本用 22，CI 也用 22。",
+          "sourceSession": "s1"
+        }
+      ],
+      "fix": null,
+      "expect": {
+        "noNewNotes": true,
+        "notes": {
+          "project_runtime.md": {
+            "unchanged": true
+          }
+        }
+      }
+    },
+    {
+      "id": "stale-by-later-session",
+      "title": "The release date moved in a later session; the reason was never given",
+      "sessions": [
+        {
+          "id": "s1",
+          "reviewed": true,
+          "events": [
+            {
+              "role": "user",
+              "text": "docs v2 的发布时间定了吗？"
+            },
+            {
+              "role": "assistant",
+              "text": "目前计划下周五 (11-28) 发布 docs 站点 v2。"
+            },
+            {
+              "role": "user",
+              "text": "对，下周五 (11-28)，先这样。"
+            }
+          ]
+        },
+        {
+          "id": "s2",
+          "events": [
+            {
+              "role": "user",
+              "text": "更新一下：发布改到 12-05 了。"
+            },
+            {
+              "role": "assistant",
+              "text": "好的，已记下改到 12-05。"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        {
+          "file": "project_docs_release.md",
+          "name": "Docs v2 release date",
+          "type": "project",
+          "description": "When docs v2 ships",
+          "body": "发布日期：下周五 (11-28)。",
+          "sourceSession": "s1"
+        }
+      ],
+      "fix": {
+        "file": "project_docs_release.md",
+        "old_text": "发布日期：下周五 (11-28)。",
+        "body": "发布日期：12-05（原定 11-28，已改期）。",
+        "citations": [
+          {
+            "session": "s2",
+            "seq": 0,
+            "quote": "发布改到 12-05 了",
+            "role": "user"
+          }
+        ]
+      },
+      "expect": {
+        "notes": {
+          "project_docs_release.md": {
+            "contains": [
+              "12-05"
+            ],
+            "notContains": [
+              "下周五 (11-28)",
+              "因为",
+              "由于",
+              "because",
+              "due to"
+            ],
+            "historyContains": [
+              "11-28"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "assistant-claim-as-fact",
+      "title": "The assistant said the login timeout was fixed; the user says it still times out",
+      "sessions": [
+        {
+          "id": "s1",
+          "events": [
+            {
+              "role": "user",
+              "text": "登录老是超时，帮我看看。"
+            },
+            {
+              "role": "assistant",
+              "text": "我把 token TTL 从 15 分钟改成了 2 小时，登录超时问题已经修复。"
+            },
+            {
+              "role": "user",
+              "text": "还是会超时，刚才又掉线了。"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        {
+          "file": "project_login_timeout.md",
+          "name": "Login timeout",
+          "type": "project",
+          "description": "Status of the login timeout bug",
+          "body": "登录超时问题已修复（改了 token TTL）。",
+          "sourceSession": "s1"
+        }
+      ],
+      "fix": {
+        "file": "project_login_timeout.md",
+        "old_text": "登录超时问题已修复（改了 token TTL）。",
+        "body": "登录超时问题尚未解决：改了 token TTL 后用户反馈仍会超时，原因待查。",
+        "citations": [
+          {
+            "session": "s1",
+            "seq": 2,
+            "quote": "还是会超时",
+            "role": "user"
+          },
+          {
+            "session": "s1",
+            "seq": 1,
+            "quote": "token TTL 从 15 分钟改成了 2 小时",
+            "role": "assistant"
+          }
+        ]
+      },
+      "expect": {
+        "notes": {
+          "project_login_timeout.md": {
+            "notContains": [
+              "登录超时问题已修复"
+            ],
+            "containsAny": [
+              "尚未",
+              "未解决",
+              "没有解决",
+              "仍会超时",
+              "仍然超时",
+              "还会超时",
+              "still"
+            ],
+            "historyContains": [
+              "已修复"
+            ],
+            "_why": "Reporting that the assistant claimed a fix is fine; asserting the issue is fixed is not."
+          }
+        }
+      }
+    },
+    {
+      "id": "scope-overgeneralized",
+      "title": "\"2 空格缩进\" holds only for the frontend package; the Python service uses 4",
+      "sessions": [
+        {
+          "id": "s1",
+          "events": [
+            {
+              "role": "user",
+              "text": "缩进这块说清楚：前端 web/ 目录用 2 空格，Python 服务那边用 4 空格，别混。"
+            },
+            {
+              "role": "assistant",
+              "text": "明白：web/ 2 空格，Python 4 空格。"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        {
+          "file": "feedback_indentation.md",
+          "name": "Indentation",
+          "type": "feedback",
+          "description": "Indentation convention",
+          "body": "项目统一用 2 空格缩进。",
+          "sourceSession": "s1"
+        }
+      ],
+      "fix": {
+        "file": "feedback_indentation.md",
+        "old_text": "项目统一用 2 空格缩进。",
+        "body": "前端 `web/` 用 2 空格缩进；Python 服务用 4 空格缩进。",
+        "citations": [
+          {
+            "session": "s1",
+            "seq": 0,
+            "quote": "前端 web/ 目录用 2 空格，Python 服务那边用 4 空格",
+            "role": "user"
+          }
+        ]
+      },
+      "expect": {
+        "notes": {
+          "feedback_indentation.md": {
+            "contains": [
+              "web/",
+              "2 空格",
+              "4 空格"
+            ],
+            "notContains": [
+              "项目统一用 2 空格"
+            ],
+            "historyContains": [
+              "项目统一用 2 空格"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "negation-lost",
+      "title": "The note says the user wants tabs; the user said \"不要用 tabs，用空格\"",
+      "sessions": [
+        {
+          "id": "s1",
+          "events": [
+            {
+              "role": "user",
+              "text": "代码风格先说清楚：不要用 tabs，用空格。"
+            },
+            {
+              "role": "assistant",
+              "text": "好，缩进一律用空格。"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        {
+          "file": "feedback_tabs.md",
+          "name": "Tabs",
+          "type": "feedback",
+          "description": "Tabs or spaces",
+          "body": "用户希望缩进使用 tabs。",
+          "sourceSession": "s1"
+        }
+      ],
+      "fix": {
+        "file": "feedback_tabs.md",
+        "old_text": "用户希望缩进使用 tabs。",
+        "body": "用户要求缩进用空格，不要用 tabs。",
+        "citations": [
+          {
+            "session": "s1",
+            "seq": 0,
+            "quote": "不要用 tabs，用空格",
+            "role": "user"
+          }
+        ]
+      },
+      "expect": {
+        "notes": {
+          "feedback_tabs.md": {
+            "contains": [
+              "空格"
+            ],
+            "notContains": [
+              "希望缩进使用 tabs"
+            ],
+            "containsAny": [
+              "不要用 tab",
+              "不用 tab",
+              "不使用 tab",
+              "禁止",
+              "not tab",
+              "no tab",
+              "avoid tab"
+            ],
+            "historyContains": [
+              "希望缩进使用 tabs"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "contradicting-notes",
+      "title": "Two notes disagree about the test command; the user ruled `pnpm test`",
+      "sessions": [
+        {
+          "id": "s1",
+          "events": [
+            {
+              "role": "user",
+              "text": "测试统一用 pnpm test，别再写 npm test 了，两处写法不一致的话以这个为准。"
+            },
+            {
+              "role": "assistant",
+              "text": "收到，以 pnpm test 为准。"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        {
+          "file": "project_test_command.md",
+          "name": "Test command",
+          "type": "project",
+          "description": "How to run the tests",
+          "body": "测试命令：`npm test`。",
+          "sourceSession": "s1"
+        },
+        {
+          "file": "project_ci_setup.md",
+          "name": "CI setup",
+          "type": "project",
+          "description": "What CI runs",
+          "body": "CI 和本地都跑 `pnpm test`。",
+          "sourceSession": "s1"
+        }
+      ],
+      "fix": {
+        "file": "project_test_command.md",
+        "old_text": "测试命令：`npm test`。",
+        "body": "测试命令：`pnpm test`。",
+        "citations": [
+          {
+            "session": "s1",
+            "seq": 0,
+            "quote": "测试统一用 pnpm test，别再写 npm test 了",
+            "role": "user"
+          }
+        ]
+      },
+      "expect": {
+        "notes": {
+          "project_test_command.md": {
+            "allowDeleted": true
+          },
+          "project_ci_setup.md": {
+            "allowDeleted": true
+          }
+        },
+        "acrossFiles": {
+          "keep": "pnpm test",
+          "dropPattern": "命令：`npm test`|跑 `npm test`",
+          "_why": "\"不要写 npm test\" restates the rule; only a note that still gives npm test as the command fails."
+        }
+      }
+    },
+    {
+      "id": "hard-negative-control",
+      "title": "Control: us-east-1 is mentioned, but about another service; the deploy note is right",
+      "sessions": [
+        {
+          "id": "s1",
+          "events": [
+            {
+              "role": "user",
+              "text": "docs 站点的 region 没变，还是 eu-central-1。顺便，隔壁 billing 服务还在 us-east-1，别搞混了。"
+            },
+            {
+              "role": "assistant",
+              "text": "好的，docs 是 eu-central-1，billing 是另一个服务。"
+            }
+          ]
+        }
+      ],
+      "notes": [
+        {
+          "file": "project_deploy_target.md",
+          "name": "Deploy target",
+          "type": "project",
+          "description": "Where the docs site is deployed",
+          "body": "Deploy target region: eu-central-1.",
+          "sourceSession": "s1"
+        }
+      ],
+      "fix": null,
+      "expect": {
+        "notes": {
+          "project_deploy_target.md": {
+            "unchanged": true
+          }
+        }
+      },
+      "_why": "A new note about billing is allowed: a cross-service reference could be reasonable. The failure this guards against is the deploy note being touched."
+    }
+  ]
+}
