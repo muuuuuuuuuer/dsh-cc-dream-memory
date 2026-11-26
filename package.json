@@ -88,8 +88,10 @@
     "dsh": ">=0.2.2-rc.1"
   },
   "scripts": {
+    "build": "node scripts/build-client.mjs",
+    "check:client": "node scripts/build-client.mjs --check",
     "test": "node --test \"test/*.test.mjs\"",
-    "verify": "node scripts/verify.mjs",
+    "verify": "npm run check:client && node scripts/verify.mjs",
     "prepublishOnly": "npm run verify"
   },
   "repository": {
@@ -99,5 +101,8 @@
   "homepage": "https://github.com/muuuuuuuuuer/dsh-cc-dream-memory#readme",
   "bugs": {
     "url": "https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/issues"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
   }
 }

@@ -160,19 +160,21 @@ test('v10 export: HTTP POST /export writes a Claude-compatible memory dir plus r
   assert.equal(bad.statusCode === 200 ? bad.json().ok : false, false, 'a missing import path is refused');
 });
 
-test('v10 import/export: /memory import and /memory export commands', async (t) => {
+test('v10 import/export: status service imports and exports, and retired CLI verbs are rejected', async (t) => {
   const env = await commandEnv(t);
+  const service = env.mods.status.createStatusService(env.runtime);
   const sourceDir = await makeClaudeDir(env);
-  // The slash-command tokenizer treats backslashes as escapes, so Windows
-  // absolute paths are passed with forward slashes (as a user would).
-  const asCommandPath = (value) => value.replaceAll('\\', '/');
-  const imported = await env.invokeMemory(`import ${asCommandPath(sourceDir)}`);
-  assert.equal(imported.kind, 'success', imported.text);
-  assert.match(imported.text, /import/i);
+  const imported = await service.importMemory(env.pctx, { sourceDir });
+  assert.equal(imported.ok, true);
+  assert.ok(imported.imported.length >= 1);
 
-  const targetDir = path.join(env.tmp, 'command-export');
-  const exported = await env.invokeMemory(`export ${asCommandPath(targetDir)}`);
-  assert.equal(exported.kind, 'success', exported.text);
-  assert.match(exported.text, /export/i);
+  const targetDir = path.join(env.tmp, 'service-export');
+  const exported = await service.exportMemory(env.pctx, { targetDir });
+  assert.equal(exported.ok, true);
+  assert.ok(exported.exported >= 1);
   assert.equal(await exists(path.join(targetDir, 'memory', 'MEMORY.md')), true);
+
+  const asCommandPath = (value) => value.replaceAll('\\', '/');
+  assert.match((await env.invokeMemory(`import ${asCommandPath(sourceDir)}`)).text, /unknown \/memory subcommand/);
+  assert.match((await env.invokeMemory(`export ${asCommandPath(targetDir)}`)).text, /unknown \/memory subcommand/);
 });

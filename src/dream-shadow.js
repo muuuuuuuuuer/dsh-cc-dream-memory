@@ -13,7 +13,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { MemoryStore } from './store.js';
+import { MemoryStore, isWikiFile, mapNoteFiles } from './store.js';
+import { affectsWikiLinks, wikiBatchProblems } from './wiki.js';
 
 /** Hash of one file's text, used to notice a note edited during a run. */
 function hashText(value) {
@@ -71,12 +72,19 @@ export async function prepareShadow({ store, paths, config }) {
   await clearShadow(paths);
   const shadowPaths = shadowPathsOf(paths);
   await fs.mkdir(shadowPaths.memoryDir, { recursive: true });
-  const base = {};
-  for (const entry of await store.listEntries('project')) {
-    const live = await store.readEntry(entry.file, 'project');
-    await fs.writeFile(path.join(shadowPaths.memoryDir, entry.file), live.raw, 'utf8');
-    base[entry.file] = hashText(live.raw);
-  }
+  const snapshots = await mapNoteFiles(await store.listEntries('project'), async ({ file }) => {
+    try {
+      const live = await store.readEntry(file, 'project');
+      await fs.writeFile(path.join(shadowPaths.memoryDir, file), live.raw, 'utf8');
+      return { file, hash: hashText(live.raw) };
+    } catch (error) {
+      // Wait for the other copy workers before a caller can clean up the shadow.
+      return { error };
+    }
+  });
+  const failed = snapshots.find(({ error }) => error);
+  if (failed) throw failed.error;
+  const base = Object.fromEntries(snapshots.map(({ file, hash }) => [file, hash]));
   const indexText = await store.indexText('project');
   if (typeof indexText === 'string' && indexText !== '') {
     await fs.writeFile(shadowPaths.indexFile, indexText, 'utf8');
@@ -100,7 +108,7 @@ export async function captureShadowDraft(shadowStore, files) {
   return { pages, index: await shadowStore.indexText('project') };
 }
 
-export async function restoreShadowDraft(shadowStore, draft) {
+export async function restoreShadowDraft(shadowStore, draft, { exactIndex = false } = {}) {
   for (const { file, raw } of draft.pages) {
     if (raw === null) {
       await shadowStore.trashEntry(file, { scope: 'project', reason: 'restore Dream checkpoint' }).catch((error) => {
@@ -111,48 +119,9 @@ export async function restoreShadowDraft(shadowStore, draft) {
       await shadowStore._atomicWrite(target, raw);
     }
   }
-  const files = new Set(draft.pages.map(({ file }) => file));
-  await shadowStore.writeIndex(mergeIndexText(await shadowStore.indexText('project'), draft.index, files), 'project');
-}
-
-/**
- * Write merged pages into the shadow copy. Deleted notes go to the shadow's
- * trash directory, so a discarded run leaves the live notes untouched even
- * when it deleted something.
- * @param {{shadowStore: import('./store.js').MemoryStore, operations: Array<Record<string, unknown>>}} input
- */
-export async function applyShadowOperations({ shadowStore, operations }) {
-  const counts = { write: 0, delete: 0, index: 0 };
-  const touched = new Set();
-  for (const op of Array.isArray(operations) ? operations : []) {
-    if (!op || typeof op !== 'object') continue;
-    const scope = 'project';
-    if (op.op === 'index') {
-      await shadowStore.writeIndex(String(op.content ?? ''), scope);
-      counts.index += 1;
-      continue;
-    }
-    if (op.op === 'delete') {
-      if (typeof op.file !== 'string' || op.file === '') continue;
-      await shadowStore.trashEntry(op.file, { scope, reason: 'dream consolidation' });
-      counts.delete += 1;
-      touched.add(op.file);
-      continue;
-    }
-    if (typeof op.file !== 'string' || op.file === '') continue;
-    await shadowStore.writeRawEntry(op.file, {
-      scope,
-      type: op.type,
-      name: op.name,
-      description: op.description,
-      body: typeof op.body === 'string' ? op.body : '',
-      source: { via: 'dream' },
-    });
-    counts.write += 1;
-    touched.add(op.file);
-  }
-  await shadowStore.refreshIndex('project').catch(() => {});
-  return { counts, touched };
+  const index = exactIndex ? draft.index : mergeIndexText(await shadowStore.indexText('project'), draft.index,
+    new Set(draft.pages.map(({ file }) => file)));
+  await shadowStore.writeIndex(index, 'project');
 }
 
 /**
@@ -167,21 +136,19 @@ export async function applyShadowOperations({ shadowStore, operations }) {
  * @returns {Promise<{added: string[], changed: string[], removed: string[], files: Array<{file: string, action: 'added'|'changed'|'removed'}>}>}
  */
 export async function diffShadow({ store, shadowStore, base }) {
-  const live = new Map((await store.listEntries('project')).map((entry) => [entry.file, entry]));
   const copy = new Map((await shadowStore.listEntries('project')).map((entry) => [entry.file, entry]));
   const added = [];
   const changed = [];
   const removed = [];
   if (base && typeof base === 'object') {
     const has = (file) => Object.prototype.hasOwnProperty.call(base, file);
-    for (const file of copy.keys()) {
-      if (!has(file)) {
-        added.push(file);
-        continue;
-      }
+    const existing = [];
+    for (const file of copy.keys()) (has(file) ? existing : added).push(file);
+    const edited = await mapNoteFiles(existing, async (file) => {
       const there = await shadowStore.readEntry(file, 'project').then((item) => item.raw).catch(() => null);
-      if (hashText(there) !== base[file]) changed.push(file);
-    }
+      return hashText(there) !== base[file] ? file : undefined;
+    });
+    changed.push(...edited);
     for (const file of Object.keys(base)) {
       if (!copy.has(file)) removed.push(file);
     }
@@ -196,6 +163,7 @@ export async function diffShadow({ store, shadowStore, base }) {
       ],
     };
   }
+  const live = new Map((await store.listEntries('project')).map((entry) => [entry.file, entry]));
   for (const [file, entry] of copy) {
     const before = live.get(file);
     if (!before) {
@@ -229,7 +197,16 @@ export async function diffShadow({ store, shadowStore, base }) {
  * Notes edited while the run was building the copy.
  * @returns {Promise<Array<{file: string, reason: string}>>}
  */
-export async function shadowConflicts({ store, base }) {
+export async function shadowConflicts({ store, base, files }) {
+  if (files) {
+    return mapNoteFiles([...files], async (file) => {
+      const live = await store.readEntry(file, 'project').catch(() => null);
+      if (!Object.hasOwn(base ?? {}, file)) return live ? { file, reason: 'created while the dream ran' } : undefined;
+      if (!live) return { file, reason: 'deleted while the dream ran' };
+      if (hashText(live.raw) !== base[file]) return { file, reason: 'edited while the dream ran' };
+      return undefined;
+    });
+  }
   const conflicts = [];
   if (base && typeof base === 'object') {
     // A note created after the snapshot is not in `base`; switchShadow would
@@ -302,10 +279,19 @@ export async function switchShadow({ store, shadowStore, paths, base, stamp = ''
   return store.withWriteTransaction(async () => {
     // Only a passed file can be overwritten, so only its live edits conflict.
     const required = new Set([...passed, ...dependencies]);
-    const conflicts = (await shadowConflicts({ store, base })).filter((item) => required.has(item.file));
+    const conflicts = await shadowConflicts({ store, base, files: required });
     if (conflicts.length > 0) return { ok: false, error: 'conflict', conflicts };
     const live = new Map((await store.listEntries('project')).map((entry) => [entry.file, entry]));
     const copy = new Map((await shadowStore.listEntries('project')).map((entry) => [entry.file, entry]));
+    const liveFiles = new Set(live.keys());
+    const changes = [...passed].map((file) => ({ file, op: copy.has(file) ? 'write' : 'delete' }));
+    if (affectsWikiLinks(liveFiles, changes)) {
+      for (const change of changes) {
+        if (change.op === 'write' && isWikiFile(change.file)) change.body = (await shadowStore.readEntry(change.file, 'project')).body;
+      }
+      const problems = await wikiBatchProblems({ store, files: liveFiles, changes });
+      if (problems.length > 0) return { ok: false, error: 'wiki-links', message: problems.join('\n') };
+    }
     const backupDir = path.join(paths.dreamsDir, stamp || `switch-${Date.now()}`, 'memory');
     await fs.mkdir(backupDir, { recursive: true });
     await fs.cp(paths.memoryDir, backupDir, { recursive: true });

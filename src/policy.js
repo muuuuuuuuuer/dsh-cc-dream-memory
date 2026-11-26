@@ -4,16 +4,14 @@
  * The policy is deterministic and dependency-free:
  * - similarity = weighted name/description/body text similarity, where text is
  *   tokenized into CJK bigrams and latin words (Dice coefficient);
- * - duplicate is a hard block at `policyDuplicateThreshold`;
- * - possible-duplicate is **advisory** (v11): the write proceeds and the caller
- *   reports the near-duplicate candidates;
- * - conflict is **advisory** in this evaluator; the tools stop a write that
- *   adds a second, opposite active fact and report the rest;
- * - low-confidence is only an explicit `confidence:'low'`, reported back;
- * - attribution (`basis`, v21): only `user-explicit` authority with verified
- *   evidence marks a note current; `forwarded`/`inference` are written plainly.
+ * - duplicate is classified at `policyDuplicateThreshold`;
+ * - possible-duplicate and conflict are reported with their candidates.
  *
- * `evaluateWrite` never writes anything; callers (the tools) act on the action.
+ * Nothing here blocks a model write: whether two notes say the same thing or
+ * contradict each other is the model's call, so the tools only report these
+ * signals. `/remember` (a human typing) still stops on a duplicate or conflict.
+ *
+ * `evaluateWrite` never writes anything; callers act on the action.
  *
  * @module dsh-cc-dream-memory/policy
  */
@@ -168,7 +166,6 @@ function normalizeCandidate(candidate) {
     // `content`. Emitting only `content` made the 0.30 term vanish from every
     // comparison, so two pages sharing a name and a description scored 1.
     body,
-    confidence: value.confidence === 'low' ? 'low' : 'high',
   };
 }
 
@@ -201,6 +198,21 @@ export function tokenize(text) {
     }
   }
   return tokens;
+}
+
+/** Score literal keyword matches, giving a full phrase more weight. */
+export function keywordMatcher(query) {
+  const normalize = (value) => String(value ?? '').toLowerCase().replace(/[._/-]+/gu, ' ').replace(/\s+/gu, ' ').trim();
+  const phrase = normalize(query);
+  const terms = [...tokenize(phrase)];
+  const words = terms.filter((term) => !term.startsWith('u:'));
+  const wanted = words.length ? words : terms;
+  return (value) => {
+    const text = normalize(value);
+    const available = tokenize(text);
+    const matches = wanted.filter((term) => available.has(term)).length;
+    return matches + (matches > 0 && text.includes(phrase) ? wanted.length : 0);
+  };
 }
 
 /**
@@ -311,26 +323,6 @@ function entityOverlap(left, right) {
   return shared / Math.min(left.size, right.size);
 }
 
-// ---------------------------------------------------------------------------
-// v21: write attribution (`basis`)
-// ---------------------------------------------------------------------------
-
-/** Explicit authority for one model-originated memory write. */
-export const BASIS_VALUES = Object.freeze(['user-explicit', 'forwarded', 'inference']);
-
-/**
- * Normalize a model-supplied `basis` value.
- *
- * An unrecognized value normalizes to `''`, which the tools reject.
- * @param {unknown} value
- * @returns {'user-explicit'|'forwarded'|'inference'|''}
- */
-export function normalizeBasis(value) {
-  if (typeof value !== 'string') return '';
-  const basis = value.trim().toLowerCase();
-  return BASIS_VALUES.includes(basis) ? basis : '';
-}
-
 /**
  * Detect a same-topic, opposite-polarity conflict.
  * @param {object} candidate `{name, type, description, content|body}`
@@ -362,10 +354,8 @@ export function detectConflict(candidate, entries) {
  * Evaluate one candidate write against the existing memory (v11 advisory
  * policy).
  *
- * A `duplicate` and an opposite-polarity `conflict` stop the write: the caller
- * updates the owning page instead of adding a second active fact. Everything
- * else (`possible-duplicate`, low confidence) is advisory only — the caller
- * writes and reports it.
+ * `duplicate`, `conflict` and `possible-duplicate` are signals for the caller
+ * to report; the model tools write anyway and let the model merge.
  *
  * Return shapes:
  * - `{action:'allow'}`
@@ -376,9 +366,6 @@ export function detectConflict(candidate, entries) {
  * - `{action:'possible-duplicate', advisory:true,
  *    candidates:[{file,similarity,name,description}], conflicts:[],
  *    similarity}`
- *
- * A low-confidence candidate is written like any other; its reason travels in
- * `reasons` so the receipt can mention it.
  *
  * @param {{candidate:object, entries?:object[], config?:object}} input
  * @returns {object}
@@ -392,12 +379,7 @@ export function evaluateWrite(input = {}) {
     (entry) => entry && typeof entry === 'object' && typeof entry.file === 'string' && entry.file !== '',
   );
 
-  // v24, Claude Code parity: nothing queues a write. A low-confidence
-  // candidate is written and the reason is reported (advisory), exactly like a
-  // near-duplicate.
-  const reasons = candidate.confidence === 'low' ? ['confidence is low'] : [];
-
-  // Hard block: an almost identical memory already exists.
+  // An almost identical memory already exists.
   const scored = entries
     .map((entry) => ({ entry, similarity: entrySimilarity(candidate, entry) }))
     .sort((left, right) => right.similarity - left.similarity || left.entry.file.localeCompare(right.entry.file));
@@ -408,7 +390,6 @@ export function evaluateWrite(input = {}) {
       advisory: false,
       existingFile: best.entry.file,
       similarity: round3(best.similarity),
-      reasons,
     };
   }
 
@@ -439,9 +420,8 @@ export function evaluateWrite(input = {}) {
       advisory: true,
       conflicts,
       candidates,
-      reasons,
     };
   }
 
-  return { action: 'allow', advisory: reasons.length > 0, reasons };
+  return { action: 'allow', advisory: false };
 }

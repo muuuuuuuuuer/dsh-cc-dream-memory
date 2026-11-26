@@ -4,8 +4,8 @@
  * Engineering-note lines (APPLIES WHEN / VERIFY / OBSERVED / EXCEPTION) travel
  * with the current value instead of being overwritten or treated as superseded.
  *
- * Only `basis:'user-explicit'` composes the trace; an omitted basis keeps the
- * legacy verbatim update behavior so existing tests and callers do not regress.
+ * Only a held citation of words the user wrote composes the trace; an update
+ * without one (or with a legacy `basis`) writes the body verbatim.
  *
  * os.tmpdir(); no LLM.
  */
@@ -49,7 +49,7 @@ function update(env) {
   return env.definitions.get('memory_update');
 }
 
-/** v22: a user-explicit write needs the authorizing user message in the session. */
+/** A cited write needs the quoted message in the session. */
 function seedUserMessages(env, ...texts) {
   env.host.services.sessionQuery = {
     filterSessions: async () => [],
@@ -84,14 +84,15 @@ test('v21 correction: explicit user correction activates the new value and keeps
     content: seededBody(),
   });
   const before = today();
+  seedUserMessages(env, 'Always use npm ci for dependency commands.');
   await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute(
-    { file: seed.file, content: 'Always use npm ci for dependency commands.', basis: 'user-explicit' },
+    { file: seed.file, content: 'Always use npm ci for dependency commands.', citations: [{ quote: 'Always use npm ci for dependency commands.' }] },
     exec,
   );
   const after = today();
   assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(result.basis, 'user-explicit');
+  assert.deepEqual(result.citations, [{ seq: 1, role: 'user' }]);
   assert.equal(result.correction.superseded, 'Always use pnpm for dependency commands.');
   assert.ok([before, after].includes(result.correction.until), `until is today: ${result.correction.until}`);
   assert.match(result.correction.source, /tool:memory_update/);
@@ -135,15 +136,16 @@ test('v21 correction: a second explicit correction keeps both superseded values'
     description: 'how to install dependencies',
     content: seededBody(),
   });
+  seedUserMessages(env, 'Always use npm ci for dependency commands.', 'Always use bun for dependency commands.');
   await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const first = await update(env).execute(
-    { file: seed.file, content: 'Always use npm ci for dependency commands.', basis: 'user-explicit' },
+    { file: seed.file, content: 'Always use npm ci for dependency commands.', citations: [{ quote: 'Always use npm ci for dependency commands.' }] },
     exec,
   );
   assert.equal(first.ok, true, JSON.stringify(first));
   await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const second = await update(env).execute(
-    { file: seed.file, content: 'Always use bun for dependency commands.', basis: 'user-explicit' },
+    { file: seed.file, content: 'Always use bun for dependency commands.', citations: [{ quote: 'Always use bun for dependency commands.' }] },
     exec,
   );
   assert.equal(second.ok, true, JSON.stringify(second));
@@ -169,12 +171,13 @@ test('v21 correction: new engineering notes replace the old note with the same l
     description: 'how to install dependencies',
     content: seededBody(),
   });
+  seedUserMessages(env, 'Always use npm ci for dependency commands.');
   await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute(
     {
       file: seed.file,
       content: ['Always use npm ci for dependency commands.', '', 'VERIFY: run npm ci --ignore-scripts'].join('\n'),
-      basis: 'user-explicit',
+      citations: [{ quote: 'Always use npm ci for dependency commands.' }],
     },
     exec,
   );
@@ -196,7 +199,7 @@ test('v21 correction: an explicit correction writes the composed trace directly'
   });
   await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute(
-    { file: seed.file, content: '用户喜欢英文回复。', basis: 'user-explicit', evidence: '用户喜欢中文回复。' },
+    { file: seed.file, content: '用户喜欢英文回复。', citations: [{ quote: '用户喜欢中文回复。' }] },
     exec,
   );
   assert.equal(result.ok, true, JSON.stringify(result));
@@ -208,7 +211,7 @@ test('v21 correction: an explicit correction writes the composed trace directly'
   assert.match(body, /- Superseded: 用户喜欢中文回复。 \(until \d{4}-\d{2}-\d{2}\)/);
 });
 
-test('v21 correction: a legacy engineering-note update without basis writes the body verbatim', async (t) => {
+test('v21 correction: an update without a citation writes the body verbatim', async (t) => {
   const env = await toolsEnv(t);
   const seed = await env.pctx.store.saveEntry({
     name: 'plain note',
@@ -219,38 +222,45 @@ test('v21 correction: a legacy engineering-note update without basis writes the 
   await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute({ file: seed.file, content: 'New note body.' }, exec);
   assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(result.basis, 'inference', 'an omitted basis is the model inference');
+  assert.equal(result.verification, 'not-applicable');
   assert.equal(result.correction, undefined);
   const entry = await env.pctx.store.readEntry(seed.file);
   assert.equal(entry.body, 'New note body.', 'backward-compatible: no active/history markers are invented');
 });
 
-test('v21 correction: forwarded or inferred updates write directly without the correction trace', async (t) => {
+test('v21 correction: an assistant or pasted citation writes directly without the correction trace', async (t) => {
   const env = await toolsEnv(t);
+  const pasted = ['# Release notes', '- 粘贴来的原话：用户讨厌中文回复。', '- b', '- c', '- d', '- e', '- f', '- g', '- h', '- i', '- j', '- k'].join('\n');
+  const events = [
+    { type: 'assistant/message', seq: 1, data: { content: [{ type: 'text', text: '助手的看法：用户讨厌中文回复。' }] } },
+    { type: 'user/message', seq: 2, data: { source: { kind: 'user' }, content: [{ type: 'text', text: `${pasted}\n${'x'.repeat(900)}` }] } },
+  ];
+  env.host.services.sessionQuery = { filterSessions: async () => [], readSession: async (id) => ({ session: { id }, events }) };
   const seed = await env.pctx.store.saveEntry({
     name: 'language',
     type: 'user',
     description: 'reply language',
     content: 'STATUS: current\n用户喜欢中文回复。',
   });
-  for (const basis of ['forwarded', 'inference']) {
+  for (const [quote, role] of [['助手的看法：用户讨厌中文回复。', 'assistant'], ['粘贴来的原话：用户讨厌中文回复。', 'user-pasted']]) {
     await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
     const result = await update(env).execute(
-      { file: seed.file, content: '用户讨厌中文回复。', basis, force: true },
+      { file: seed.file, content: '用户讨厌中文回复。', citations: [{ quote }] },
       exec,
     );
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.written, true, JSON.stringify(result));
-    assert.equal(result.basis, basis);
-    assert.equal(result.correction, undefined, 'only explicit user corrections compose the trace');
+    assert.equal(result.citations[0].role, role);
+    assert.equal(result.verification, 'not-applicable', 'only the user\'s own words verify');
+    assert.equal(result.correction, undefined, 'only cited user words compose the trace');
     const { body } = await env.pctx.store.readEntry(seed.file);
     assert.equal(body, '用户讨厌中文回复。', 'the model-reported value replaces the body verbatim');
-    assert.doesNotMatch(body, /STATUS: current|Superseded:/, 'no markers are invented for a forwarded claim');
+    assert.doesNotMatch(body, /STATUS: current|Superseded:/);
     await env.pctx.store.updateEntry(seed.file, { content: 'STATUS: current\n用户喜欢中文回复。' });
   }
 });
 
-test('v21 correction: forwarded engineering-note update writes directly without correction markers', async (t) => {
+test('v21 correction: a legacy basis is ignored and writes directly without correction markers', async (t) => {
   const env = await toolsEnv(t);
   const seed = await env.pctx.store.saveEntry({
     name: 'deployment',
@@ -264,7 +274,7 @@ test('v21 correction: forwarded engineering-note update writes directly without 
     exec,
   );
   assert.equal(result.ok, true, JSON.stringify(result));
-  assert.equal(result.basis, 'forwarded');
+  assert.equal(result.basis, undefined);
   const { body } = await env.pctx.store.readEntry(seed.file);
   assert.equal(body, 'Deploy previews with make release-staging.');
   assert.doesNotMatch(body, /STATUS: current|Superseded:/, 'only explicit user corrections compose the trace');
@@ -284,9 +294,10 @@ test('v21 correction: earlier Dream-style inline Superseded lines are carried, n
       'VERIFY: call the real entry point',
     ].join('\n'),
   });
+  seedUserMessages(env, 'Register routes through the server entry point and verify them.');
   await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute(
-    { file: seed.file, content: 'Register routes through the server entry point and verify them.', basis: 'user-explicit' },
+    { file: seed.file, content: 'Register routes through the server entry point and verify them.', citations: [{ quote: 'Register routes through the server entry point and verify them.' }] },
     exec,
   );
   assert.equal(result.ok, true, JSON.stringify(result));
@@ -311,7 +322,7 @@ test('v21 correction: rename + explicit correction keeps the trace on the owning
   });
   await env.definitions.get('memory_read').execute({ file: seed.file }, exec);
   const result = await update(env).execute(
-    { file: seed.file, name: 'indentation rule', content: 'Use spaces for indentation.', basis: 'user-explicit', evidence: 'Use spaces for indentation.' },
+    { file: seed.file, name: 'indentation rule', content: 'Use spaces for indentation.', citations: [{ quote: 'Use spaces for indentation.' }] },
     exec,
   );
   assert.equal(result.ok, true, JSON.stringify(result));
@@ -325,7 +336,7 @@ test('v21 correction: rename + explicit correction keeps the trace on the owning
   assert.match(body, /- Superseded: Use tabs for indentation\. \(until \d{4}-\d{2}-\d{2}\)/);
 });
 
-test('v21 correction: an unknown basis is rejected and the file is unchanged', async (t) => {
+test('v21 correction: an unknown legacy basis is ignored, not an error', async (t) => {
   const env = await toolsEnv(t);
   const seed = await env.pctx.store.saveEntry({
     name: 'language',
@@ -338,7 +349,6 @@ test('v21 correction: an unknown basis is rejected and the file is unchanged', a
     { file: seed.file, content: '用户讨厌中文回复。', basis: 'guessed' },
     exec,
   );
-  assert.equal(result.ok, false, JSON.stringify(result));
-  assert.equal(result.error, 'INVALID_ARGUMENT');
-  assert.equal((await env.pctx.store.readEntry(seed.file)).body, '用户喜欢中文回复。');
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.equal((await env.pctx.store.readEntry(seed.file)).body, '用户讨厌中文回复。');
 });

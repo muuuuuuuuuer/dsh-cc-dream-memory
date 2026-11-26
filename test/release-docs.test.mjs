@@ -18,12 +18,10 @@ const commandsDoc = await read('docs/commands.md');
 const commandsSource = await read('src/commands.js');
 
 const REPO_BASE = 'https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/';
-const pkg = JSON.parse(await read('package.json'));
-
 for (const [name, doc] of [['README.md', readme], ['README.zh.md', readmeZh]]) {
   test(`${name} gives the install command and the not-affiliated note`, () => {
-    const source = `github:muuuuuuuuuer/dsh-cc-dream-memory#v${pkg.version}`;
-    assert.ok(doc.includes(`\ndsh plugin --profile web add ${source}\n`), `install the current version (${source})`);
+    const source = 'github:muuuuuuuuuer/dsh-cc-dream-memory#feat/memory-workflow-simplification';
+    assert.ok(doc.includes(`\ndsh plugin --profile web add ${source}\n`), 'install from the release branch');
     assert.ok(doc.includes(`npx @deepseek-ai/dsh plugin --profile web add ${source}`), 'desktop users have no dsh on PATH');
     assert.match(doc, /Anthropic/);
     assert.match(doc, /DeepSeek/);
@@ -89,14 +87,14 @@ test('the Chinese README says the same', () => {
 
 test('every documented /memory command exists in the code', () => {
   const subcommands = new Set([...commandsDoc.matchAll(/\/memory ([a-z-]+)/g)].map((m) => m[1]));
-  assert.ok(subcommands.size >= 10, 'the reference should cover the command set');
+  assert.ok(subcommands.size >= 5, 'the reference should cover the command set');
   for (const sub of subcommands) assert.ok(commandsSource.includes(sub), sub);
 });
 
 test('a finished run points at switching, not at a second run', () => {
   assert.doesNotMatch(commandsSource, /apply with \/memory dream run/);
   assert.match(commandsSource, /memory switched to the dream result/);
-  assert.match(commandsSource, /undo with \/memory dream undo/);
+  assert.match(commandsSource, /undo with \/memory undo/);
 });
 
 test('screenshots.json lists files that exist', async () => {

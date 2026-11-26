@@ -116,16 +116,17 @@ test('a pending record whose copy is gone stops blocking runs', async (t) => {
   assert.equal(env.state.snapshot().shadowPending?.runId, 'run-1');
 });
 
-test('a delegated session cannot restore files over the live memory', async (t) => {
+test('a delegated session cannot write memory through /memory', async (t) => {
   const env = await commandEnv(t, { subagentMemory: 'off' });
   const child = { id: 'child', session: { header: { parentSession: 'parent' } } };
-  const result = await env.invokeMemory('restore trash batch-1', child);
+  const result = await env.invokeMemory('undo', child);
   assert.equal(result.kind, 'error');
   assert.match(result.text, /subagent-readonly/u);
 });
 
 test('restore keeps the page it replaces in the history', async (t) => {
   const env = await commandEnv(t);
+  const service = env.mods.status.createStatusService(env.runtime);
   const store = env.store;
   const first = await store.saveEntry({
     name: 'beta',
@@ -144,8 +145,8 @@ test('restore keeps the page it replaces in the history', async (t) => {
   });
   assert.equal(second.file, first.file);
 
-  const restored = await env.invokeMemory(`restore trash ${batch}`);
-  assert.equal(restored.kind, 'success', restored.text);
+  const restored = await service.restore(env.pctx, { kind: 'trash', id: batch });
+  assert.ok(restored.restored.includes(first.file));
   const live = await store.readEntry(first.file, 'project');
   assert.match(live.body, /first version/u, 'the trashed copy is back');
 

@@ -88,7 +88,16 @@ function assertExpectedHash(raw, expectedHash, file) {
   }
 }
 
-export const MEMORY_TYPES = Object.freeze(['user', 'feedback', 'project', 'reference']);
+/** Types the main session, auto-extract and the panel may write. */
+export const NOTE_TYPES = Object.freeze(['user', 'feedback', 'project', 'reference']);
+/** Wiki pages are written by Dream only: flat `wiki_<slug>.md` files with `type: wiki`. */
+export const WIKI_TYPE = 'wiki';
+export const WIKI_PREFIX = 'wiki_';
+export const MEMORY_TYPES = Object.freeze([...NOTE_TYPES, WIKI_TYPE]);
+/** True for a wiki page file name. */
+export function isWikiFile(file) {
+  return typeof file === 'string' && file.startsWith(WIKI_PREFIX);
+}
 const DEFAULT_TYPE = 'user';
 const FALLBACK_TYPE = 'project';
 const MAX_DESCRIPTION = 160;
@@ -111,6 +120,13 @@ function memoryError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+/** The refusal every non-Dream write path gives for a wiki page. */
+export const WIKI_READONLY_MESSAGE =
+  'wiki pages are written by Dream only. Read them with memory_read; to correct one, save a note with the correct fact and cite where it came from: Dream folds it into the page.';
+function wikiReadonlyError() {
+  return memoryError('WIKI_READONLY', WIKI_READONLY_MESSAGE);
 }
 
 /** A missing path (ENOENT/ENOTDIR) is not an error for reads. */
@@ -203,7 +219,7 @@ function isInside(parent, child) {
 
 /** Derive a type from the conventional `${type}_${slug}.md` file name. */
 function typeFromFile(file) {
-  const match = /^(user|feedback|project|reference)_/.exec(file);
+  const match = /^(user|feedback|project|reference|wiki)_/.exec(file);
   return match === null ? FALLBACK_TYPE : match[1];
 }
 
@@ -260,9 +276,10 @@ export function normalizeScope(scope) {
 }
 
 /** The type argument of a write, defaulted and validated. */
-export function normalizeType(value, fallback = DEFAULT_TYPE) {
+export function normalizeType(value, fallback = DEFAULT_TYPE, { allowWiki = false } = {}) {
   const type = cleanInline(value);
   if (type === '') return fallback;
+  if (type === WIKI_TYPE && !allowWiki) throw wikiReadonlyError();
   if (!MEMORY_TYPES.includes(type)) {
     throw memoryError('INVALID_TYPE', `memory type must be one of ${MEMORY_TYPES.join(', ')}: ${type}`);
   }
@@ -323,6 +340,16 @@ function referencedFile(line) {
   return match[1].trim();
 }
 
+/** True for the index line of a wiki page. */
+function isWikiLine(line) {
+  return isWikiFile(referencedFile(line));
+}
+
+/** Wiki lines first, each group in its own order: the wiki section leads the index. */
+function wikiFirst(lines) {
+  return [...lines.filter(isWikiLine), ...lines.filter((line) => !isWikiLine(line))];
+}
+
 /** True when one link target is a plain memory topic file name. */
 function isIndexEntryReference(reference) {
   return typeof reference === 'string' && MEMORY_FILE_RE.test(reference);
@@ -367,10 +394,12 @@ function orderByUsage(lines, usage) {
     const reference = referencedFile(line);
     return isIndexEntryReference(reference) ? Number(usage[reference]) || 0 : -1;
   };
+  // The wiki section stays ahead of the notes however much each is used.
+  const rank = (line) => (isWikiLine(line) ? 1 : 0);
   const slots = lines.map((line, index) => (score(line) >= 0 ? index : -1)).filter((index) => index >= 0);
   const ranked = slots.map((index) => lines[index])
     .map((line, order) => ({ line, order, used: score(line) }))
-    .sort((a, b) => b.used - a.used || a.order - b.order);
+    .sort((a, b) => rank(b.line) - rank(a.line) || b.used - a.used || a.order - b.order);
   const result = [...lines];
   slots.forEach((index, position) => { result[index] = ranked[position].line; });
   return result;
@@ -439,6 +468,21 @@ function backupTimestamp(name) {
 }
 
 const writeTransaction = new AsyncLocalStorage();
+const NOTE_READ_CONCURRENCY = 4;
+
+/** Overlap note I/O with a fixed number of workers and keep input order. */
+export async function mapNoteFiles(items, read) {
+  const results = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(items.length, NOTE_READ_CONCURRENCY) }, async () => {
+    while (next < items.length) {
+      const index = next++;
+      results[index] = await read(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results.filter(Boolean);
+}
 
 function fileRevision(info) {
   return `${info.ino}:${info.mtimeMs}:${info.ctimeMs}:${info.size}`;
@@ -890,7 +934,12 @@ export class MemoryStore {
       }
       next.push(candidate);
     }
-    if (!replaced) next.push(line);
+    if (!replaced && isWikiFile(meta.file)) {
+      const last = next.findLastIndex(isWikiLine);
+      next.splice(last + 1, 0, line);
+    } else if (!replaced) {
+      next.push(line);
+    }
     const text = next.length > 0 ? `${next.join('\n')}\n` : '';
     return this._writeIndexLocked(scope, text);
   }
@@ -989,24 +1038,19 @@ export class MemoryStore {
       throw error;
     }
     const indexName = this._indexName();
-    const noteNames = new Set(names.sort().filter((name) => MEMORY_FILE_RE.test(name) && name !== indexName && !RESERVED_FILES.has(name)));
+    const noteNames = names.filter((name) => MEMORY_FILE_RE.test(name) && name !== indexName && !RESERVED_FILES.has(name)).sort();
+    const present = new Set(noteNames);
     // Each remaining entry is checked against its own file revision below.
     for (const name of this._metaCache.keys()) {
-      if (!noteNames.has(name)) this._metaCache.delete(name);
+      if (!present.has(name)) this._metaCache.delete(name);
     }
-    const entries = [];
-    for (const name of noteNames) {
-      let meta;
+    return mapNoteFiles(noteNames, async (name) => {
       try {
-        meta = await this._loadMeta(name, path.join(dir, name), currentOnly);
-      } catch (error) {
-        if (isMissing(error)) continue;
-        continue;
+        return await this._loadMeta(name, path.join(dir, name), currentOnly);
+      } catch {
+        return undefined;
       }
-      if (!meta) continue;
-      entries.push(meta);
-    }
-    return entries;
+    });
   }
 
   /** Build one `EntryMeta` from a parsed file. */
@@ -1337,6 +1381,7 @@ export class MemoryStore {
       assertExpectedHash(raw, changes.expectedHash, name);
       const parsed = parseFrontmatter(raw);
       const existing = this._frontmatterOf(parsed.data, name);
+      if (existing.type === WIKI_TYPE) throw wikiReadonlyError();
       const body = changes.content === undefined ? parsed.body : normalizeBody(changes.content);
       if (byteLength(body) > this.maxContentBytes) {
         throw memoryError(
@@ -1398,6 +1443,7 @@ export class MemoryStore {
       assertExpectedHash(raw, options.expectedHash, oldFile);
       const parsed = parseFrontmatter(raw);
       const existing = this._frontmatterOf(parsed.data, oldFile);
+      if (existing.type === WIKI_TYPE) throw wikiReadonlyError();
       const cleanName = normalizeName(newName);
       if (cleanName === '') throw memoryError('INVALID_NAME', 'new name must be a non-empty string');
       const hasBodyChange = options.content !== undefined || options.description !== undefined;
@@ -1537,10 +1583,10 @@ export class MemoryStore {
    * @param {string} file topic file name.
    * @param {{scope?:'project',type?:string,name?:string,description?:string,
    *   body?:string,content?:string}} [input]
-   * @param {{preview?:boolean}} [options] Return the proposed entry without updating the file, history or index.
+   * @param {{preview?:boolean,onMutate?:()=>void}} [options] Preview skips disk changes. The callback runs before the first mutation.
    * @returns {Promise<object>} SaveResult
    */
-  writeRawEntry(file, input = {}, { preview = false } = {}) {
+  writeRawEntry(file, input = {}, { preview = false, onMutate } = {}) {
     return this._run(async () => {
       const scope = normalizeScope(input.scope);
       const { name: fileName, target } = this._entryTarget(file, scope);
@@ -1556,7 +1602,10 @@ export class MemoryStore {
         fallbackName: stripExtension(fileName),
       });
       const name = normalizeName(input.name) || existing.name;
-      const type = normalizeType(input.type, existing.type);
+      // The file name decides: `wiki_*` is always a wiki page, and nothing else may be one.
+      let type = normalizeType(input.type, existing.type, { allowWiki: true });
+      if (isWikiFile(fileName)) type = WIKI_TYPE;
+      else if (type === WIKI_TYPE) throw memoryError('INVALID_TYPE', `a wiki page must be named ${WIKI_PREFIX}<slug>.md: ${fileName}`);
       const description =
         input.description === undefined ? existing.description : normalizeDescription(input.description);
       const body = normalizeBody(input.body !== undefined ? input.body : input.content);
@@ -1577,9 +1626,11 @@ export class MemoryStore {
         body,
         existing: existingData,
         source: input.source,
+        sources: input.sources,
         preserveCreatedAbsence: true,
       });
       if (preview) return { file: fileName, raw, body, frontmatter: { name, type, description } };
+      onMutate?.();
       // v12: raw dream/apply writes also keep the overwritten version.
       if (existingRaw !== undefined) await this._recordHistory(fileName, existingRaw);
       await this._atomicWrite(target, raw);
@@ -1621,7 +1672,7 @@ export class MemoryStore {
    * and remove its index line. The file stays recoverable, which is why the
    * This is the only delete.
    * @param {string} file topic file name.
-   * @param {{scope?:'project',reason?:string}} [options]
+   * @param {{scope?:'project',reason?:string,onMutate?:()=>void}} [options]
    * @returns {Promise<{trashed:true,file:string,trashPath:string,trashDir:string,reason:string}>}
    */
   trashEntry(file, options = {}) {
@@ -1636,6 +1687,7 @@ export class MemoryStore {
       const trashDir = path.join(this.trashRoot, trashStamp());
       await fs.mkdir(trashDir, { recursive: true });
       const trashPath = await this._uniqueTrashPath(trashDir, name);
+      options.onMutate?.();
       try {
         await fs.rename(target, trashPath);
       } catch {
@@ -1680,13 +1732,14 @@ export class MemoryStore {
    * in a hand-written index) are ignored instead of being reported as dangling.
    *
    * @param {'project'} [scope]
+   * @param {{entries?:object[]}} [options] Entries already loaded for the same scope.
    * @returns {Promise<{files:string[],missing:Array<{file:string,name:string,
    *   description:string,type:string}>,dangling:string[]}>}
    */
-  async auditIndex(scope = 'project') {
+  async auditIndex(scope = 'project', { entries } = {}) {
     const normalized = normalizeScope(scope);
-    const entries = await this.listEntries(normalized);
-    const files = entries.map((entry) => entry.file);
+    const listed = entries ?? await this.listEntries(normalized);
+    const files = listed.map((entry) => entry.file);
     const disk = new Set(files);
     const lines = splitLines(await this.indexText(normalized));
     const referenced = new Set();
@@ -1701,7 +1754,7 @@ export class MemoryStore {
       referenced.add(reference);
     }
     const missing = [];
-    for (const entry of entries) {
+    for (const entry of listed) {
       if (referenced.has(entry.file)) continue;
       missing.push({
         file: entry.file,
@@ -1775,6 +1828,8 @@ export class MemoryStore {
         }
         kept.push(line.length > INDEX_LINE_MAX_CHARS ? indexLine(meta) : line);
       }
+      // The wiki section leads, so the caps below drop notes before pages.
+      kept.splice(0, kept.length, ...wikiFirst(kept));
       // Hard line cap: extra entry lines are dropped from the head, not written
       // into the prompt. The topic files remain on disk and searchable.
       const isEntryLine = (line) => isIndexEntryReference(referencedFile(line));
@@ -1793,7 +1848,7 @@ export class MemoryStore {
         return byTime !== 0 ? byTime : left.file.localeCompare(right.file);
       });
       const appended = [];
-      for (const meta of missing) {
+      for (const meta of [...missing.filter((item) => isWikiFile(item.file)), ...missing.filter((item) => !isWikiFile(item.file))]) {
         if (entryLines >= maxLines) break;
         // `audit.missing` is computed before the prune above, so a page whose
         // line was just dropped would be appended back on the next refresh,
@@ -1809,6 +1864,7 @@ export class MemoryStore {
         appended.push(meta.file);
         entryLines += 1;
       }
+      kept.splice(0, kept.length, ...wikiFirst(kept));
       // Byte cap: the prompt reads `indexMaxBytes` too. A 200-line index whose
       // hooks are long enough can silently hide entries past the byte budget,
       // so prune over-budget entry lines here rather than only warning later.
@@ -1869,20 +1925,18 @@ export class MemoryStore {
     const recencyWindowMs = 30 * 24 * 60 * 60 * 1000;
     const dir = this._scopeDir(scope);
     const entries = await this.listEntries(scope);
-    const scored = [];
-    for (const meta of entries) {
-      if (typeFilter !== '' && meta.type !== typeFilter) continue;
+    const candidates = typeFilter === '' ? entries : entries.filter(({ type }) => type === typeFilter);
+    const hits = await mapNoteFiles(candidates, async (meta) => {
       let raw;
       try {
         raw = await this._readContent(path.join(dir, meta.file));
       } catch {
-        continue;
+        return undefined;
       }
-      if (raw === undefined) continue;
+      if (raw === undefined) return undefined;
       const parsed = parseFrontmatter(raw);
-      // Default retrieval is current-only: a retired or superseded page is
-      // history, and history is reachable through an explicit read.
-      if (currentOnly && !isCurrentPage(parsed.body)) continue;
+      // Current-only search excludes retired pages and superseded facts.
+      if (currentOnly && !isCurrentPage(parsed.body)) return undefined;
       const body = currentOnly ? currentBody(parsed.body) : parsed.body;
       const nameText = meta.name.toLowerCase();
       const descriptionText = meta.description.toLowerCase();
@@ -1893,7 +1947,7 @@ export class MemoryStore {
         if (descriptionText.includes(token)) score += 3;
         if (bodyText.includes(token)) score += 1;
       }
-      if (score === 0) continue;
+      if (score === 0) return undefined;
       if (phrase.length >= 2 && (nameText.includes(phrase) || descriptionText.includes(phrase) || bodyText.includes(phrase))) {
         score += 2;
       }
@@ -1903,26 +1957,21 @@ export class MemoryStore {
         score += 0.5;
         recency = 0.5;
       }
-      const rounded = Math.round(score * 100) / 100;
-      const snippets = this._snippets(body, tokens, phrase);
-      scored.push({
-        score: rounded,
-        hit: {
-          file: meta.file,
-          name: meta.name,
-          description: meta.description,
-          type: meta.type,
-          modified: meta.modified,
-          created: meta.created ?? '',
-          via: meta.via ?? '',
-          score: rounded,
-          recency,
-          snippets,
-        },
-      });
-    }
-    scored.sort((left, right) => right.score - left.score || left.hit.file.localeCompare(right.hit.file));
-    return scored.slice(offset, offset + limit).map((item) => item.hit);
+      return {
+        file: meta.file,
+        name: meta.name,
+        description: meta.description,
+        type: meta.type,
+        modified: meta.modified,
+        created: meta.created ?? '',
+        via: meta.via ?? '',
+        score: Math.round(score * 100) / 100,
+        recency,
+        snippets: this._snippets(body, tokens, phrase),
+      };
+    });
+    hits.sort((left, right) => right.score - left.score || left.file.localeCompare(right.file));
+    return hits.slice(offset, offset + limit);
   }
 
   /**

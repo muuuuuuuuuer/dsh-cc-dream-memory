@@ -1,5 +1,5 @@
 /**
- * Turns durable session events into automatic Dream and Inbox work.
+ * Turns durable session events into automatic extraction and Dream work.
  * The Dream launcher owns readiness and execution.
  */
 import { runAutoExtract } from './auto-extract.js';
@@ -57,7 +57,11 @@ export function registerScheduler(ctx, runtime) {
     // `dreamReadiness` trusts the pending record; one whose copy is gone must
     // not be able to block automatic runs for good.
     await projectContext.state?.dropStaleShadowPending?.();
-    if (disposed || !dreamReadiness(projectContext, { config: runtime.config }).eligible) return;
+    const readiness = dreamReadiness(projectContext, { config: runtime.config });
+    // The session threshold batches dialogue. Maintenance has its own targets
+    // and shares all the other gates, including the scan and run intervals.
+    if (disposed || readiness.reasons.some(({ code }) => code !== 'min-sessions')) return;
+    const dialogueReady = readiness.gates.minSessions.ok;
     // `dreamReadiness` throttles on `lastScanAt`, so the attempt has to stamp it;
     // otherwise a run that ends without a result is restarted on the next turn.
     await projectContext.state?.noteScan?.();
@@ -67,17 +71,21 @@ export function registerScheduler(ctx, runtime) {
       const [latest] = await listRunManifests(projectContext.paths, 1);
       if (latest?.checkpoint && latest.manifest.trigger === 'auto') return;
     }
-    const focus = await buildFocus(projectContext, runtime.config);
-    if (focus.files.length === 0) {
-      const ids = (projectContext.state?.snapshot()?.sessionsSince ?? []).map(({ id }) => id)
-        .filter((id) => projectContext.state.flagsOf(id).learn !== false);
-      const sessions = ids.length && canReviewDialogue ? await query.filterSessions([{ kind: 'id', values: ids }]) : [];
-      if (sessions.length === 0) {
-        await projectContext.state?.markSkipped?.('no-focus');
-        return;
-      }
+    const snapshot = projectContext.state.snapshot();
+    const deferred = new Set(snapshot.dreamDeferredSessions.map(({ id }) => id));
+    const ids = snapshot.sessionsSince.map(({ id }) => id)
+      .filter((id) => !deferred.has(id) && projectContext.state.flagsOf(id).learn !== false);
+    const [focus, sessions] = await Promise.all([
+      buildFocus(projectContext),
+      dialogueReady && ids.length && canReviewDialogue ? query.filterSessions([{ kind: 'id', values: ids }]) : [],
+    ]);
+    if (focus.files.length === 0 && sessions.length === 0) {
+      if (dialogueReady) await projectContext.state.markSkipped('no-focus');
+      return;
     }
-    const run = await runtime.startDream(projectContext, { trigger: 'auto', focus: focus.text, sessionId });
+    const run = await runtime.startDream(projectContext, {
+      trigger: 'auto', focus: focus.text, maintenance: focus.maintenance, noSessions: sessions.length === 0, sessionId,
+    });
     if (run.started && (await run.done)?.skipped) await projectContext.state.markSkipped();
   }
 
@@ -99,7 +107,6 @@ export function registerScheduler(ctx, runtime) {
     if (turn.turns % every !== 0) return;
     extracting.add(sessionId);
     const state = projectContext.state;
-    state.markExtractStart('auto').catch((error) => warn('state.markExtractStart', error));
     const work = runAutoExtract({
       ctx: runtime.ctx,
       runtime,
@@ -111,15 +118,13 @@ export function registerScheduler(ctx, runtime) {
       .then(async (result) => {
         await state.markExtractResult({
           ok: result?.ok === true,
-          count: Number(result?.written ?? result?.count) || 0,
           reason: result?.ok === true ? String(result?.mode ?? 'ok') : String(result?.reason ?? 'failed'),
-          trigger: 'auto',
         });
       })
       .catch(async (error) => {
         warn('auto extract', error);
         try {
-          await state.markExtractResult({ ok: false, reason: 'error', error, trigger: 'auto' });
+          await state.markExtractResult({ reason: 'error' });
         } catch (inner) {
           warn('state.markExtractResult', inner);
         }

@@ -34,11 +34,9 @@ import {
   secretScanMode,
   secretWarnings,
 } from './secrets.js';
-import { MEMORY_TYPES, MemoryStore, entryVersion, normalizeScope } from './store.js';
+import { NOTE_TYPES, WIKI_READONLY_MESSAGE, WIKI_TYPE, isWikiFile, MemoryStore, entryVersion, mapNoteFiles, normalizeScope } from './store.js';
 import { memoryHash } from './write-review.js';
 import { currentBody, HISTORY_HEADING_RE, isCurrentPage, memoryBodyLines, stripVerification, SUPERSEDED_LINE_RE } from './memory-body.js';
-import { applyProposals } from './auto-extract.js';
-import { listProposals, readProposal, removeProposal } from './inbox.js';
 import { matchesRecord, readLedger, recordVerifiedEntry } from './verification-ledger.js';
 
 /**
@@ -75,12 +73,12 @@ export const CONFIG_FIELDS = Object.freeze([
   'autoExtractSkipExternal',
   'dreamAllowDelete',
   'dreamMaxTasks',
+  'wikiPageMaxChars',
+  'wikiTotalMaxChars',
   'dreamYieldToSubagents',
   'rulesMaxChars',
-  'dreamMaxTotalTokens',
   'policyDuplicateThreshold',
   'policySuggestThreshold',
-  'dreamCostMode',
   'projectId',
   'keepHistory',
   'historyMaxPerFile',
@@ -93,20 +91,12 @@ export const STATE_FIELDS = Object.freeze([
   'lastDreamSummary',
   'lastDreamSessions',
   'lastDreamOps',
-  'lastDreamMode',
   'shadowPending',
   'lastDreamDecision',
   'lastError',
   'consecutiveFailures',
-  'lastDreamDurationMs',
-  'lastDreamCostExceeded',
-  'lastDreamUsage',
   'lastExtractAt',
-  'lastExtractAttemptAt',
-  'lastExtractCount',
   'lastExtractReason',
-  'lastExtractError',
-  'lastExtractTrigger',
   'lastDreamSkipReason',
   'correctedFiles',
   'counters',
@@ -124,6 +114,7 @@ export const TOGGLE_FIELDS = Object.freeze([
 /** Error codes that are caller mistakes (HTTP maps them to 400). */
 export const BAD_REQUEST_CODES = Object.freeze([
   'invalid-kind',
+  'wiki-readonly',
   'invalid-id',
   'invalid-file',
   'invalid-files',
@@ -147,8 +138,8 @@ function evidenceForFile(evidence, file) {
   return (Array.isArray(evidence) ? evidence : [])
     .filter((item) => item?.file === file && (typeof item.sessionId === 'string' || typeof item.memoryFile === 'string'))
     .slice(0, 100)
-    .map(({ memoryFile, sessionId, seq, quote, source, verified, claims, eventType }) => ({
-      ...(typeof memoryFile === 'string' ? { memoryFile } : { sessionId, seq, eventType }),
+    .map(({ memoryFile, sessionId, seq, quote, source, verified, claims, eventType, role }) => ({
+      ...(typeof memoryFile === 'string' ? { memoryFile } : { sessionId, seq, eventType, role }),
       file, quote, source, verified: verified === true,
       claims: Array.isArray(claims) ? claims.filter((claim) => typeof claim === 'string') : [],
     }));
@@ -223,15 +214,13 @@ function buildMetricsView(summary) {
  * Record a save the user made deliberately: a `/remember` command, a panel
  * save, or an `/memory edit`. All three mean "the user looked at these exact
  * bytes and committed them", so they share one post-save step — count the write
- * and mark the bytes verified, which is what lets a later session show the
- * note's summary in its first-turn index. Model-inferred writes keep going
- * through the pending-write review instead. Both records are best-effort: a
- * note that is written but not recorded is still listed by name.
+ * and mark the bytes verified (the trust badge in the Memory panel). Both
+ * records are best-effort: a note that is written but not recorded is still
+ * saved.
  * @param {{store:object, paths?:object, scope?:string, file?:string,
  *   entry?:{name?:string, description?:string, bodyHash?:string}}} [options]
  * @returns {Promise<'recorded'|'pending'>} whether this exact version is in the
- *   ledger now; `pending` means the bytes are on disk but the index will only
- *   show the name until the next write
+ *   ledger now; `pending` means the bytes are on disk but not recorded
  */
 export async function recordUserConfirmedSave({ store, paths, scope = 'project', file, entry } = {}) {
   if (typeof file !== 'string' || file === '') return 'pending';
@@ -252,7 +241,7 @@ export async function recordUserConfirmedSave({ store, paths, scope = 'project',
     });
     return record ? 'recorded' : 'pending';
   } catch {
-    /* a note that is written but not recorded stays listed by name */
+    /* a note that is written but not recorded is still saved */
     return 'pending';
   }
 }
@@ -267,8 +256,7 @@ export async function recordUserConfirmedSave({ store, paths, scope = 'project',
 export async function annotateTrust(store, entries, { scope = 'project' } = {}) {
   const list = Array.isArray(entries) ? entries : [];
   const ledger = await readLedger(store, scope);
-  const out = [];
-  for (const entry of list) {
+  return mapNoteFiles(list, async (entry) => {
     let body = null;
     try {
       const read = await store.readEntry(entry.file, scope);
@@ -280,15 +268,14 @@ export async function annotateTrust(store, entries, { scope = 'project' } = {}) 
     const record = ledger.entries[entry.file];
     const trusted = body !== null
       && matchesRecord(record, { name: entry.name, description: entry.description, body });
-    out.push({
+    return {
       ...entry,
       status: marker ? marker[1].toLowerCase() : '',
       current: body === null ? true : isCurrentPage(body),
       verified: trusted ? { date: String(record.date ?? ''), source: String(record.source ?? '') } : null,
       verifiedOutdated: Boolean(record) && !trusted,
-    });
-  }
-  return out;
+    };
+  });
 }
 
 /**
@@ -479,14 +466,13 @@ export function createStatusService(runtime) {
 
   /**
    * Build the `/status` metrics view from one already-loaded entry list.
-   * @param {object} pctx
+   * @param {object} raw metrics snapshot
    * @param {object[]} entries current project entries
    */
-  async function metricsForEntries(pctx, entries) {
+  function metricsForEntries(raw, entries) {
     const files = (Array.isArray(entries) ? entries : [])
       .map((entry) => (entry && typeof entry.file === 'string' ? entry.file : ''))
       .filter((file) => file !== '');
-    const raw = await readMetrics(pctx?.paths);
     return buildMetricsView(
       metricsSummary(raw, { files, topLimit: 5, neverReadLimit: NEVER_READ_LIMIT }),
     );
@@ -499,8 +485,8 @@ export function createStatusService(runtime) {
    */
   async function metrics(pctx) {
     const store = requireStore(pctx);
-    const entries = await store.listEntries('project');
-    return metricsForEntries(pctx, entries);
+    const [entries, raw] = await Promise.all([store.listEntries('project'), readMetrics(pctx?.paths)]);
+    return metricsForEntries(raw, entries);
   }
 
   /**
@@ -577,7 +563,7 @@ export function createStatusService(runtime) {
       }
       const name = typeof input.name === 'string' ? input.name.trim() : '';
       if (name === '') throw coded('invalid-name', 'a memory name is required to create a file');
-      const type = MEMORY_TYPES.includes(input.type) ? input.type : 'user';
+      const type = NOTE_TYPES.includes(input.type) ? input.type : 'user';
       const result = await store.saveEntry({
         scope,
         name,
@@ -617,6 +603,7 @@ export function createStatusService(runtime) {
     if (existing === null) {
       throw coded('stale-write', `memory file not found: ${file}; reload the list before saving`);
     }
+    if (existing.frontmatter?.type === WIKI_TYPE) throw coded('wiki-readonly', WIKI_READONLY_MESSAGE);
     if (expectedHash === '') {
       throw coded('stale-write', `re-read ${file} before saving; an edit baseline is required`);
     }
@@ -627,7 +614,7 @@ export function createStatusService(runtime) {
     if (typeof name !== 'string' || name === '') {
       throw coded('not-found', `memory file not found: ${file}`);
     }
-    const type = MEMORY_TYPES.includes(input.type) ? input.type : existing?.frontmatter?.type ?? 'user';
+    const type = NOTE_TYPES.includes(input.type) ? input.type : existing?.frontmatter?.type ?? 'user';
     const description =
       typeof input.description === 'string'
         ? input.description
@@ -684,7 +671,8 @@ export function createStatusService(runtime) {
       typeof input.name === 'string' && input.name.trim() !== ''
         ? input.name.trim()
         : files.map((file) => file.replace(/\.md$/i, '')).join(' + ').slice(0, 200);
-    const type = MEMORY_TYPES.includes(input.type) ? input.type : 'user';
+    if (files.some(isWikiFile)) throw coded('wiki-readonly', WIKI_READONLY_MESSAGE);
+    const type = NOTE_TYPES.includes(input.type) ? input.type : 'user';
     const description =
       typeof input.description === 'string' && input.description !== ''
         ? input.description
@@ -913,110 +901,54 @@ export function createStatusService(runtime) {
     };
   }
 
-  /**
-   * One inbox proposal → the shape the panel renders. `items` is carried whole
-   * (the user needs the proposed text before accepting) and `count` saves the
-   * client from recomputing it.
-   */
-  function inboxSummary(record) {
-    const items = Array.isArray(record?.items) ? record.items : [];
-    return {
-      id: String(record?.id ?? ''),
-      createdAt: Number(record?.createdAt) || 0,
-      sessionId: String(record?.sessionId ?? ''),
-      cwd: String(record?.cwd ?? ''),
-      trigger: String(record?.trigger ?? ''),
-      model: String(record?.model ?? ''),
-      status: String(record?.status ?? 'pending'),
-      count: items.length,
-      // The dock polls /status every 60s; keep the payload bounded. The full
-      // note body stays on disk and is available through `/memory inbox show`.
-      items: items.slice(0, 20).map((item) => ({
-        name: String(item?.name ?? ''),
-        type: String(item?.type ?? ''),
-        description: String(item?.description ?? ''),
-        content: String(item?.content ?? '').slice(0, 400),
-      })),
-    };
-  }
-
-  /** Proposals the v20 extractor staged; an unreadable inbox is simply empty. */
-  async function inboxSnapshot(pctx) {
+  async function recentDreamRuns(pctx) {
     try {
-      const records = await listProposals(pctx?.paths);
-      return { count: records.length, items: records.map(inboxSummary) };
+      const manifests = await listRunManifests(pctx?.paths, 5);
+      const live = new Set(await rt.liveDreamRunIds());
+      return manifests.map((entry) => summarizeRun(entry.manifest, {
+        running: live.has(entry.runId), checkpoint: entry.checkpoint, outcome: dreamRunOutcome(pctx.state, entry.runId),
+      }));
     } catch {
-      return { count: 0, items: [] };
+      return [];
     }
   }
 
   /**
    * The canonical `/status` payload.
    * @param {object} pctx project context
-   * @param {{sessionId?:string}} [options]
+   * @param {{sessionId?:string,includeDreamCoverage?:boolean}} [options]
    */
   async function status(pctx, options = {}) {
     const config = configOf();
     const store = requireStore(pctx);
-    const index = await store.injectedIndex('project');
-    const entries = await store.listEntries('project');
-    let trashCount = 0;
-    try {
-      trashCount = await store.countTrash();
-    } catch {
-      trashCount = 0;
-    }
-    const changelogTail = await readTail(pctx?.paths?.changelogFile, DEFAULT_LOG_LINES);
     const rulesValue = rules(pctx);
-    const metricsValue = await metricsForEntries(pctx, entries);
-    const health = await buildHealth({ runtime: rt, projectContext: pctx, rules: rulesValue });
-    const snapshot =
-      pctx?.state?.snapshot() ?? {};
-
-    const stateView = pick(snapshot, STATE_FIELDS);
-    const readiness = await readinessFor(pctx, config);
-    const memoryHealth = await memoryHealthFor(pctx, config);
+    const [index, entries, trashCount, changelogTail, rawMetrics, user, dreamRuns, dreamTasks] = await Promise.all([
+      store.injectedIndex('project'),
+      store.listEntries('project'),
+      store.countTrash().catch(() => 0),
+      readTail(pctx?.paths?.changelogFile, DEFAULT_LOG_LINES),
+      readMetrics(pctx?.paths),
+      rt.userContext?.(pctx),
+      recentDreamRuns(pctx),
+      options.includeDreamCoverage === false ? undefined
+        : Promise.resolve().then(() => rt.dreamCoverage(pctx)).catch(() => ({ total: 0, counts: {}, sessions: [] })),
+    ]);
+    const [trustedEntries, health, userEntries, readiness, memoryHealth] = await Promise.all([
+      annotateTrust(store, entries).catch(() => entries),
+      buildHealth({ runtime: rt, projectContext: pctx, rules: rulesValue, entries }),
+      user ? user.store.listEntries('project') : [],
+      readinessFor(pctx, config),
+      memoryHealthFor(pctx, config),
+    ]);
+    const stateView = pick(pctx?.state?.snapshot() ?? {}, STATE_FIELDS);
     const healthValue = health && typeof health === 'object' ? { ...health } : health;
     if (healthValue && memoryHealth) healthValue.memoryHealth = memoryHealth;
-    // v10: 7-day daily trend rides along with the metrics view (the UI renders
-    // it; `GET /metrics?days=N` returns the same trend for other windows).
-    const metricsTrendValue = metricsTrend(await readMetrics(pctx?.paths), { days: DEFAULT_TREND_DAYS });
-    const metricsView = { ...metricsValue, trend: metricsTrendValue };
-    const inboxValue = await inboxSnapshot(pctx);
-    // The cross-project user layer and notes nobody has used for a long time.
-    const user = await rt.userContext?.(pctx);
-    const userEntries = user ? await user.store.listEntries('project') : [];
-    const archive = archiveCandidates(entries, await readMetrics(pctx?.paths), config.archiveHintDays);
+    const metricsView = {
+      ...metricsForEntries(rawMetrics, entries),
+      trend: metricsTrend(rawMetrics, { days: DEFAULT_TREND_DAYS }),
+    };
+    const archive = archiveCandidates(entries, rawMetrics, config.archiveHintDays);
     const sessionId = typeof options.sessionId === 'string' ? options.sessionId : '';
-
-    // Per-entry trust (ledger, STATUS).
-    let trustedEntries = entries;
-    try {
-      trustedEntries = await annotateTrust(store, entries, { scope: 'project' });
-    } catch {
-      /* trust facts are optional; the plain entries still describe the store */
-    }
-
-    // Phase 2: resumable Dream runs (newest five) so a stopped run is visible
-    // and can be continued from the panel or `/dream status`.
-    let dreamRuns = [];
-    try {
-      const manifests = await listRunManifests(pctx?.paths, 5);
-      const live = new Set(await rt.liveDreamRunIds());
-      dreamRuns = manifests.map((entry) => summarizeRun(entry.manifest, {
-        running: live.has(entry.runId), checkpoint: entry.checkpoint, outcome: dreamRunOutcome(pctx.state, entry.runId),
-      }));
-    } catch {
-      dreamRuns = [];
-    }
-
-    // Which conversations of this project Dream has reviewed, and which not yet.
-    let dreamTasks = { total: 0, counts: {}, sessions: [] };
-    try {
-      dreamTasks = await rt.dreamCoverage(pctx);
-    } catch {
-      /* the panel shows the list only when the host can list sessions */
-    }
 
     return {
       ok: true,
@@ -1057,10 +989,9 @@ export function createStatusService(runtime) {
       },
       archive: { days: Number(config.archiveHintDays) || 60, candidates: archive },
       ...(sessionId === '' ? {} : { session: { id: sessionId, ...rt.sessionFlags(pctx, sessionId) } }),
-      inbox: inboxValue,
       state: stateView,
       dreamRuns,
-      dreamTasks,
+      ...(dreamTasks === undefined ? {} : { dreamTasks }),
       changelogTail,
       trashCount,
       rules: rulesValue,
@@ -1084,14 +1015,13 @@ export function createStatusService(runtime) {
       config,
       index: pick(index, ['lines', 'overflow']),
       entryCount: entries.length,
-      needsReview: Boolean(pctx.state?.snapshot()?.pendingSwitch?.dir),
+      needsReview: Boolean(pctx.state?.snapshot()?.shadowPending?.dir),
     };
   }
 
   /**
    * The user marked a recalled note not relevant: recall never attaches it again
-   * in that session, and the dismissal is counted. One operation for the chat
-   * action (HTTP) and `/memory recall dismiss`.
+   * in that session, and the dismissal is counted.
    */
   async function dismissRecall(pctx, request = {}) {
     const sessionId = typeof request.sessionId === 'string' ? request.sessionId.trim() : '';
@@ -1366,55 +1296,6 @@ export function createStatusService(runtime) {
     return { restored, reconciled };
   }
 
-  /**
-   * List, accept, or discard automatic-extraction proposals. Accepting reuses
-   * the normal `memory_save` gates (duplicate/secret/budget/evidence) instead
-   * of writing files directly, so an accepted proposal is indistinguishable
-   * from a model-authored note.
-   * @param {object} pctx
-   * @param {{action?:'list'|'accept'|'discard',id?:string,agent?:object}} [request]
-   */
-  async function inbox(pctx, request = {}) {
-    const action = String(request?.action ?? 'list').toLowerCase();
-    const paths = pctx?.paths ?? {};
-    if (action === 'list') {
-      const snapshot = await inboxSnapshot(pctx);
-      return { ok: true, ...snapshot };
-    }
-    const id = safeComponent(request?.id, 'proposal id');
-    if (action === 'discard') {
-      const removed = await removeProposal(paths, id);
-      if (!removed) throw coded('not-found', `unknown inbox proposal: ${id}`);
-      invalidateAll('inbox');
-      return { ok: true, id, discarded: true };
-    }
-    if (action === 'accept') {
-      const record = await readProposal(paths, id);
-      const items = Array.isArray(record?.items) ? record.items : [];
-      const agent = request?.agent ?? pctx?.agent ?? { id: record.sessionId };
-      const results = await applyProposals({
-        runtime: rt,
-        items,
-        sessionId: record.sessionId,
-        agent,
-      });
-      const applied = results.filter((item) => item && item.ok === true).length;
-      const ok = items.length > 0 && applied === results.length;
-      if (ok) {
-        await removeProposal(paths, id);
-        invalidateAll('inbox');
-      }
-      return {
-        ok,
-        id,
-        applied,
-        failed: results.length - applied,
-        results,
-      };
-    }
-    throw coded('unknown-action', `unknown inbox action: ${action}`);
-  }
-
   return {
     status,
     chipStatus,
@@ -1424,7 +1305,6 @@ export function createStatusService(runtime) {
     rules,
     saveRules,
     toggle,
-    inbox,
     dream,
     deleteFile,
     backups,

@@ -601,6 +601,50 @@ test('client: discovers the API bridge via a credentialed same-origin request', 
   assert.equal(view.inject({ sessionId: 'session-bridge' }).memBackend.mode, 'api');
 });
 
+test('client: renders memories before requesting coverage and loads it on the Dream tab', async () => {
+  const coverage = Promise.withResolvers();
+  const client = await loadClient({
+    apiBridge: { base: '/api/cc-memory', token: 'panel-token' },
+    fetchImpl: async (url) => ({
+      ok: true,
+      json: async () => String(url).includes('view=dream-coverage') ? coverage.promise
+        : makeStatusPayload(),
+    }),
+  });
+  const { slotDefinitions } = await mountClient(client);
+  const view = findDefinition(slotDefinitions, 'conversation.view');
+  const ready = view.component(view.inject('panel-session'));
+  const memoryView = findNode(ready, (node) => node.type?.name === 'MemoryView');
+  const render = componentRenderer(client.react, memoryView.type, memoryView.props, ['memories']);
+  const effects = [];
+  client.react.useEffect = (effect) => effects.push(effect);
+  const commit = async () => {
+    for (const effect of effects.splice(0)) effect();
+    await new Promise((resolve) => setImmediate(resolve));
+  };
+
+  render.render();
+  await commit();
+  assert.equal(client.fetchCalls.at(-1)[0], '/api/cc-memory/status?sessionId=panel-session&view=panel');
+  const panel = render.render();
+  assert.ok(findNode(panel, (node) => node.type?.name === 'MemoriesTab'));
+  assert.ok(!client.fetchCalls.some(([url]) => String(url).includes('view=dream-coverage')));
+  findNode(panel, (node) => node.props?.role === 'tab' && node.props.key === 'tidy').props.onClick();
+
+  const dreamTab = findNode(render.render(), (node) => node.type?.name === 'DreamTab');
+  effects.length = 0; // Only mount the newly selected tab's effects.
+  const renderDream = componentRenderer(client.react, dreamTab.type, dreamTab.props);
+  const tasksCard = (tree) => findNode(tree, (node) => node.type?.name === 'DreamTasksCard');
+  assert.equal(tasksCard(renderDream.render()).props.tasks, null);
+  await commit();
+  assert.ok(client.fetchCalls.some(([url]) => url === '/api/cc-memory/status?sessionId=panel-session&view=dream-coverage'));
+  coverage.resolve({ ok: true, dreamTasks: { sessions: [{ id: 'test-session', title: 'Test conversation', status: 'done' }] } });
+  await commit();
+  const [item] = tasksCard(renderDream.render()).props.tasks.sessions;
+  assert.equal(item.title, 'Test conversation');
+  assert.equal(item.status, 'done');
+});
+
 test('client: retry discovers a fresh bridge token after the host returns 401', async () => {
   let discoveries = 0;
   const client = await loadClient({
@@ -1014,7 +1058,17 @@ test('client v4: filterEntries sorts by recency, filters by type and merges serv
 
 test('client v4: counts, op kinds, project label and attention count', async () => {
   const internals = v4Internals(await loadClient());
-  assert.deepEqual({ ...internals.countByType(v4Entries) }, { all: 3, user: 1, feedback: 1, project: 1, reference: 0 });
+  assert.deepEqual({ ...internals.countByType(v4Entries) }, { all: 3, user: 1, feedback: 1, project: 1, reference: 0, wiki: 0 });
+
+  // Wiki pages count under their own chip, lead the list and carry their size in the pending Dream.
+  const withWiki = [...v4Entries, { file: 'wiki_release.md', name: 'Release', description: 'how releases go', type: 'wiki', modified: '2026-11-01T00:00:00Z' }];
+  assert.equal(internals.countByType(withWiki).wiki, 1);
+  assert.equal(internals.filterEntries(withWiki, {})[0].file, 'wiki_release.md', 'wiki pages lead the list');
+  assert.deepEqual(Array.from(internals.filterEntries(withWiki, { type: 'wiki' }), (entry) => entry.file), ['wiki_release.md']);
+  const pending = internals.normalizePendingSwitch({ dir: 'd', wiki: { pages: [1, 2], chars: [100, '250'] }, files: [] });
+  assert.deepEqual([...pending.wiki.pages], [1, 2]);
+  assert.deepEqual([...pending.wiki.chars], [100, 250]);
+  assert.equal(internals.normalizePendingSwitch({ dir: 'd', files: [] }).wiki, null);
 
   assert.equal(internals.opKind({ op: 'write', before: '', after: 'x' }), 'create');
   assert.equal(internals.opKind({ op: 'write', before: 'a', after: 'b' }), 'update');
@@ -1058,7 +1112,7 @@ test('client v4: every literal t() key used by client.js exists in both dictiona
   const { dictionaries } = await mountClient(client);
   const [{ dicts }] = dictionaries;
   const source = await clientSource();
-  const keys = new Set([...source.matchAll(/\bt\('([A-Za-z0-9_.-]+)'\s*[,)]/g)].map((match) => match[1]));
+  const keys = new Set([...source.matchAll(/\bt\(["']([A-Za-z0-9_.-]+)["']\s*[,)]/g)].map((match) => match[1]));
   assert.ok(keys.size > 60, `expected many literal keys, found ${keys.size}`);
   // Keys built at runtime from a fixed set of values.
   for (const type of ['all', 'user', 'feedback', 'project', 'reference']) keys.add('type.' + type);

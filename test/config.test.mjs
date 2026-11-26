@@ -9,6 +9,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { loadModule } from './helpers.mjs';
 
+test('the public profile has nine settings and retired fields are ignored', async () => {
+  const { PUBLIC_CONFIG, resolveConfig } = await configModule();
+  assert.deepEqual(Object.keys(PUBLIC_CONFIG).sort(), [
+    'autoDreamEnabled', 'autoExtract', 'autoMemoryEnabled', 'enabled', 'memoryRoot',
+    'projectId', 'recallMode', 'subagentMemory', 'userMemory',
+  ]);
+  const config = resolveConfig({ dreamTimeoutMs: 1, dreamMaxTotalTokens: 1, dreamCostMode: 'block' });
+  for (const key of ['dreamTimeoutMs', 'dreamMaxTotalTokens', 'dreamCostMode']) assert.equal(key in config, false);
+});
+
 let configModulePromise;
 
 function configModule() {
@@ -32,11 +42,8 @@ const DOCUMENTED_DEFAULTS = {
   dreamAnalyzerProvider: '',
   dreamAnalyzerModel: '',
   dreamAllowDelete: true,
-  dreamTimeoutMs: 600_000,
   dreamMaxFileChars: 100_000,
   tools: true,
-  commands: true,
-  ui: true,
   subagentMemory: 'off',
   contextOrder: 850,
   maxContentBytes: 128 * 1024,
@@ -85,11 +92,8 @@ test('valid overrides are preserved verbatim', async () => {
     dreamAnalyzerProvider: 'local',
     dreamAnalyzerModel: 'small-model',
     dreamAllowDelete: true,
-    dreamTimeoutMs: 120_000,
     dreamMaxFileChars: 15_000,
     tools: false,
-    commands: false,
-    ui: false,
     subagentMemory: 'shared',
     contextOrder: 100,
     maxContentBytes: 2048,
@@ -108,8 +112,6 @@ test('invalid types fall back to defaults', async () => {
     autoMemoryEnabled: 'no',
     autoDreamEnabled: 'on',
     tools: 0,
-    commands: '',
-    ui: null,
     subagentMemory: 'sometimes',
     dreamAllowDelete: 'yes',
     indexMaxLines: 'many',
@@ -118,7 +120,6 @@ test('invalid types fall back to defaults', async () => {
     minSessions: Number.NaN,
     scanThrottleMs: undefined,
     lockTtlMs: Number.NaN,
-    dreamTimeoutMs: null,
     dreamMaxFileChars: 'lots',
     contextOrder: null,
     maxContentBytes: 'huge',
@@ -131,8 +132,6 @@ test('invalid types fall back to defaults', async () => {
   assert.equal(config.autoMemoryEnabled, true, 'autoMemoryEnabled (invalid string) falls back to default true');
   assert.equal(config.autoDreamEnabled, false);
   assert.equal(config.tools, true);
-  assert.equal(config.commands, true);
-  assert.equal(config.ui, true);
   assert.equal(config.subagentMemory, 'off', 'invalid subagentMemory falls back to off');
   assert.equal(config.dreamAllowDelete, true, 'v11 flips dreamAllowDelete on by default');
   assert.equal(config.indexMaxLines, 200);
@@ -141,7 +140,6 @@ test('invalid types fall back to defaults', async () => {
   assert.equal(config.minSessions, 5);
   assert.equal(config.scanThrottleMs, 600_000);
   assert.equal(config.lockTtlMs, 3_600_000);
-  assert.equal(config.dreamTimeoutMs, 600_000);
   assert.equal(config.dreamMaxFileChars, 100_000);
   assert.equal(config.contextOrder, 850);
   assert.equal(config.maxContentBytes, 128 * 1024);
@@ -160,7 +158,6 @@ test('numeric fields are clamped into sane ranges and truncated to integers', as
     minSessions: 0,
     scanThrottleMs: 10,
     lockTtlMs: 1000,
-    dreamTimeoutMs: 1,
     dreamMaxFileChars: 10,
     contextOrder: -1,
     maxContentBytes: 1,
@@ -172,7 +169,6 @@ test('numeric fields are clamped into sane ranges and truncated to integers', as
     minSessions: 1,
     scanThrottleMs: 1000,
     lockTtlMs: 60_000,
-    dreamTimeoutMs: 1000,
     dreamMaxFileChars: 1000,
     contextOrder: 0,
     maxContentBytes: 1024,

@@ -48,14 +48,17 @@ test('the bundle row id does not collide with the unrelated dsh-cc-memory plugin
 
 test('the client module id and locale namespace follow the package name', async () => {
   const client = await read('client.js');
-  assert.match(client, /id: 'dsh-cc-dream-memory'/);
-  assert.match(client, /const NS = 'dsh-cc-dream-memory'/);
+  const entry = await read('web/entry.js');
+  const i18n = await read('web/i18n.js');
+  assert.match(i18n, /const NS = 'dsh-cc-dream-memory'/);
+  assert.match(entry, /id:\s*NS\b/);
+  assert.match(client, /"dsh-cc-dream-memory"|'dsh-cc-dream-memory'/);
   assert.doesNotMatch(client, /dsh-cc-memory/);
 });
 
 test('the Claude name is not the feature name in the interface', () => {
-  assert.equal(en['inbox.planTitle'], 'A Dream result is ready');
-  assert.equal(zh['inbox.planTitle'], 'Dream 结果已就绪');
+  assert.equal(en['tidy.reviewReady'], 'A Dream result is ready');
+  assert.equal(zh['tidy.reviewReady'], 'Dream 结果已就绪');
   assert.doesNotMatch(JSON.stringify([en, zh]), /Claude/);
 });
 

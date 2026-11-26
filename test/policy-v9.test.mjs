@@ -334,23 +334,21 @@ test('v9 policy: evaluateWrite returns allow/duplicate/possible-duplicate/confli
   assert.equal(conflict.conflicts[0].file, 'user_language.md');
   assert.equal(typeof conflict.conflicts[0].reason, 'string');
 
-  // v24: low confidence is written like any other candidate; the reason only
-  // travels in the receipt.
+  // A legacy confidence field does not change the outcome.
   const lowConfidence = evaluateWrite({
     candidate: { name: 'tmp', description: 'd', body: 'short', type: 'user', confidence: 'low' },
     entries,
     config,
   });
   assert.equal(lowConfidence.action, 'allow');
-  assert.equal(lowConfidence.advisory, true);
-  assert.deepEqual(lowConfidence.reasons, ['confidence is low']);
+  assert.equal(lowConfidence.advisory, false);
 });
 
 // ---------------------------------------------------------------------------
 // Tools: memory_save policy outcomes
 // ---------------------------------------------------------------------------
 
-test('v9 tools: memory_save stops duplicates and conflicts, writes everything else', async (t) => {
+test('v9 tools: memory_save reports duplicates and conflicts and still writes them', async (t) => {
   const env = await toolsEnv(t, { userMemory: 'project' });
   seedUserMessages(env, '用户喜欢用中文回复所有问题。', '用户讨厌中文回复。', 'a clean durable note body');
   await env.pctx.store.saveEntry({
@@ -358,48 +356,45 @@ test('v9 tools: memory_save stops duplicates and conflicts, writes everything el
     type: 'user',
     description: '用户喜欢中文回复',
     content: '用户喜欢用中文回复所有问题。',
-    basis: 'user-explicit',
-    evidence: '用户喜欢用中文回复所有问题。',
   });
   const save = env.definitions.get('memory_save');
   assert.ok(save);
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
 
   const duplicate = await save.execute(
-    { name: '回复语言', type: 'user', description: '用户喜欢中文回复', content: '用户喜欢用中文回复所有问题。', basis: 'user-explicit', evidence: '用户喜欢用中文回复所有问题。' },
+    { name: '回复语言副本', type: 'user', description: '用户喜欢中文回复', content: '用户喜欢用中文回复所有问题。', citations: [{ quote: '用户喜欢用中文回复所有问题。' }] },
     exec,
   );
-  assert.equal(duplicate.ok, false, JSON.stringify(duplicate));
-  assert.equal(duplicate.error, 'DUPLICATE');
-  assert.equal(typeof duplicate.existingFile, 'string');
-  assert.equal(typeof duplicate.similarity, 'number');
+  assert.equal(duplicate.ok, true, JSON.stringify(duplicate));
+  assert.equal(duplicate.written, true);
+  assert.equal(duplicate.advisory, true);
+  assert.equal(duplicate.candidates[0].file, 'user_回复语言.md');
+  assert.equal(typeof duplicate.candidates[0].similarity, 'number');
   assert.equal(typeof duplicate.hint, 'string');
 
   const conflict = await save.execute(
-    { name: 'reply preference', type: 'user', description: 'Chinese replies', content: '用户讨厌中文回复。', basis: 'user-explicit', evidence: '用户讨厌中文回复。' },
+    { name: 'reply preference', type: 'user', description: 'Chinese replies', content: '用户讨厌中文回复。', citations: [{ quote: '用户讨厌中文回复。' }] },
     exec,
   );
-  assert.equal(conflict.ok, false, JSON.stringify(conflict));
-  assert.equal(conflict.error, 'CONFLICT');
-  assert.equal(conflict.written, undefined, 'a stopped write never reaches the store');
+  assert.equal(conflict.ok, true, JSON.stringify(conflict));
+  assert.equal(conflict.written, true);
   assert.ok(Array.isArray(conflict.conflicts) && conflict.conflicts.length >= 1, JSON.stringify(conflict));
   assert.equal(typeof conflict.conflicts[0].file, 'string');
   assert.equal(typeof conflict.conflicts[0].reason, 'string');
-  assert.equal(conflict.existingFile, 'user_回复语言.md');
-  assert.equal((await env.pctx.store.listEntries()).length, 1, 'no second active fact');
+  assert.equal(conflict.conflicts[0].file, 'user_回复语言.md');
+  assert.equal((await env.pctx.store.listEntries()).length, 3, 'the model decides whether to merge');
 
-  // v24: low confidence is written, and the reason travels in the receipt.
-  const lowConfidence = await save.execute(
+  // A legacy confidence argument is ignored.
+  const legacy = await save.execute(
     { name: 'low conf', type: 'user', description: 'd', content: 'short body', confidence: 'low' },
     exec,
   );
-  assert.equal(lowConfidence.ok, true, JSON.stringify(lowConfidence));
-  assert.equal(lowConfidence.written, true);
-  assert.equal(lowConfidence.advisory, true);
-  assert.deepEqual(lowConfidence.reasons, ['confidence is low']);
+  assert.equal(legacy.ok, true, JSON.stringify(legacy));
+  assert.equal(legacy.written, true);
+  assert.equal(legacy.reasons, undefined);
 });
 
-test('v9 tools: possible-duplicate is advisory and force still writes', async (t) => {
+test('v9 tools: possible-duplicate is advisory and a legacy force argument is ignored', async (t) => {
   const env = await toolsEnv(t, { policyDuplicateThreshold: 0.99, policySuggestThreshold: 0.01 });
   seedUserMessages(env, 'The project prefers tabs for indentation everywhere.', 'The project prefers tabs for indentation in all source files.');
   await env.pctx.store.saveEntry({
@@ -407,8 +402,6 @@ test('v9 tools: possible-duplicate is advisory and force still writes', async (t
     type: 'feedback',
     description: 'prefer tabs for indentation',
     content: 'The project prefers tabs for indentation everywhere.',
-    basis: 'user-explicit',
-    evidence: 'The project prefers tabs for indentation everywhere.',
   });
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
@@ -417,8 +410,7 @@ test('v9 tools: possible-duplicate is advisory and force still writes', async (t
     type: 'feedback',
     description: 'prefer tabs for indentation in code',
     content: 'The project prefers tabs for indentation in all source files.',
-    basis: 'user-explicit',
-    evidence: 'The project prefers tabs for indentation in all source files.',
+    citations: [{ quote: 'The project prefers tabs for indentation in all source files.' }],
   };
   const suspected = await save.execute(candidate, exec);
   assert.equal(suspected.ok, true, JSON.stringify(suspected));
@@ -430,9 +422,9 @@ test('v9 tools: possible-duplicate is advisory and force still writes', async (t
 
   const forced = await save.execute({ ...candidate, name: `${candidate.name} alternate`, force: true }, exec);
   assert.equal(forced.ok, true, JSON.stringify(forced));
-  assert.equal(typeof forced.file, 'string', 'force:true still writes the candidate');
+  assert.equal(typeof forced.file, 'string', 'a legacy force:true is ignored');
   const entries = await env.pctx.store.listEntries();
-  assert.equal(entries.length, 3, 'force allows a separate note with a distinct name');
+  assert.equal(entries.length, 3, 'a separate note with a distinct name');
   assert.notEqual(forced.file, suspected.file);
 });
 

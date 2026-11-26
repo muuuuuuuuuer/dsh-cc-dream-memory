@@ -23,23 +23,22 @@
  *
  * @module dsh-cc-dream-memory/tools
  */
-import { currentBody, memoryStatusOf } from './memory-body.js';
+import { currentBody, memoryStatusOf, statusHidingMessage, statusHidingPage } from './memory-body.js';
 import { recordRead, recordSearch, recordWrite } from './metrics.js';
-import { evaluateWrite, normalizeBasis, textSimilarity } from './policy.js';
-import { normalizeType } from './store.js';
+import { evaluateWrite, textSimilarity } from './policy.js';
+import { WIKI_READONLY_MESSAGE, WIKI_TYPE, normalizeType } from './store.js';
 import { brokenNote, checkSources, normalizeSources } from './sources.js';
 import { isDelegated } from './session-kind.js';
-import { verifyUserEvidence, bindUserClaim } from './user-evidence.js';
+import { checkSessionCitations } from './citation.js';
 import { recordVerifiedEntry, verifiedPage } from './verification-ledger.js';
-import { composeCorrection, ensureCurrentStatus, memoryHash, splitMemoryBody } from './write-review.js';
+import { composeCorrection, ensureCurrentStatus, memoryHash, replacePassage, splitMemoryBody } from './write-review.js';
 
 /**
- * Record that the host verified a page the user just stated.
+ * Record that a page cites words the user wrote.
  *
- * The ledger is what the next session's injection trusts; a page written
- * without it stays findable by name but never shows a summary until Dream or
- * another explicit write verifies it. A failed ledger write must not undo a
- * successful memory write, so it degrades to a warning.
+ * The ledger feeds the trust badge in the Memory panel and nothing else. A
+ * failed ledger write must not undo a successful memory write, so it degrades
+ * to a warning.
  * @param {{store:object, scope?:string, file:string,
  *   entry:{name?:string, description?:string, bodyHash?:string}}} input
  * @returns {Promise<'recorded'|'pending'>}
@@ -55,6 +54,7 @@ async function recordExplicitVerification({ store, scope, file, entry }) {
       name: entry.name ?? '',
       description: entry.description ?? '',
       bodyHash: entry.bodyHash,
+      source: 'user-citation',
     });
     return record ? 'recorded' : 'pending';
   } catch (error) {
@@ -64,8 +64,8 @@ async function recordExplicitVerification({ store, scope, file, entry }) {
 }
 
 /**
- * True when the ledger already vouched for this page as it is on disk. An edit
- * that leaves the body alone can keep that verification, never create it.
+ * True when the ledger already recorded this page as it is on disk. A cited
+ * summary edit that leaves the body alone can keep that record.
  */
 async function wasVerified(store, scope, existing) {
   try {
@@ -88,25 +88,23 @@ const OUTPUT_SCHEMA = Object.freeze({
 });
 
 /**
- * Write attribution. Every write has one basis; an omitted basis is
- * `inference` (the model's own judgment). Only `user-explicit` with the
- * authorizing user message in `evidence`, which the host verifies against the
- * session transcript (`user-evidence.js`), marks a note current and verified.
+ * Quotes from this conversation that a note rests on. The host checks that each
+ * quote exists in a non-injected event of the calling session and records who
+ * said it; a quote from the user's own words marks the note current and
+ * verified. A quote that does not hold is reported back, never a reason to
+ * refuse the write.
  */
-const BASIS_SCHEMA = Object.freeze({
-  type: 'string',
-  enum: ['user-explicit', 'forwarded', 'inference'],
-  description: 'Default inference; user-explicit needs evidence.',
-});
-
-/**
- * Verbatim user message that authorizes a `user-explicit` write (v22). The host
- * matches it against the session transcript; a quote it cannot find leaves the
- * note written but unverified.
- */
-const EVIDENCE_SCHEMA = Object.freeze({
-  type: 'string',
-  description: 'User message authorizing a user-explicit write; checked here.',
+const CITATIONS_SCHEMA = Object.freeze({
+  type: 'array',
+  items: {
+    type: 'object',
+    properties: {
+      quote: { type: 'string' },
+      seq: { type: 'integer' },
+    },
+    required: ['quote'],
+  },
+  description: 'Exact quotes from this conversation that back the note; checked here.',
 });
 
 /** Maximum number of existing entries compared by the write policy. */
@@ -119,8 +117,6 @@ const POLICY_BODY_LIMIT = 4000;
 
 /** Short caution appended to every memory tool description (v11: the full
  * wording lives in the injected rules; tool descriptions stay inside budget). */
-const CONFIDENCE_SCHEMA = { type: 'string', enum: ['high', 'low'], description: 'low is reported back.' };
-
 const MEMORY_CAUTION = ' Verify before relying: memory may be stale.';
 
 /** Whether memory writes are enabled (absent fields keep the feature on). */
@@ -172,38 +168,14 @@ function toolError(error) {
  * Falls back to the agent id when the execution carries no session id.
  * @param {object} exec tool execution context
  * @param {string} name tool name
- * @param {string} basis `user-explicit` | `forwarded` | `inference`
- * @returns {{sessionId:string, via:string, basis:string}}
+ * @returns {{sessionId:string, via:string}}
  */
-function sourceOf(exec, name, basis) {
+function sourceOf(exec, name) {
   const raw = typeof exec?.sessionId === 'string' && exec.sessionId !== '' ? exec.sessionId : exec?.agent?.id;
   return {
     sessionId: typeof raw === 'string' ? raw : '',
     via: `tool:${name}`,
-    basis,
   };
-}
-
-/**
- * Validate the attribution `basis` argument. Absent means `inference`; an
- * explicit unknown value is an error rather than silently falling back (a typo
- * must not gain write authority).
- * @param {object} input normalized tool arguments
- * @returns {{basis:string}|{error:object}}
- */
-function basisOf(input) {
-  if (input.basis === undefined || input.basis === null || input.basis === '') return { basis: 'inference' };
-  const basis = normalizeBasis(input.basis);
-  if (basis === '') {
-    return {
-      error: {
-        ok: false,
-        error: 'INVALID_ARGUMENT',
-        message: 'basis must be one of: user-explicit, forwarded, inference',
-      },
-    };
-  }
-  return { basis };
 }
 
 /** Notes older than this come with a reminder to check them. */
@@ -271,23 +243,15 @@ export async function loadPolicyEntries(store, scope, excludeFile = '', candidat
 }
 
 /** Candidate shape for one policy evaluation. */
-export function policyCandidate({ name, type, description, content, confidence }) {
+export function policyCandidate({ name, type, description, content }) {
   return {
     name: typeof name === 'string' ? name : '',
     type: typeof type === 'string' ? type : '',
     description: typeof description === 'string' ? description : '',
     content: typeof content === 'string' ? content : '',
-    confidence: confidence === 'low' ? 'low' : 'high',
   };
 }
 
-/**
- * v11 advisory fields for a write that proceeds anyway: near-duplicate
- * candidates and same-topic contradictory files are reported to the model so it
- * can update the existing file next time, but they never block the write.
- * @param {object|null} decision `evaluateWrite()` result
- * @returns {{conflicts?:object[], candidates?:object[], advisory?:boolean, hint?:string}}
- */
 /**
  * `memory_read` answers with `currentBody()`, so the text a caller edits has no
  * `## History` section. Writing that text back would delete the page's history,
@@ -304,12 +268,25 @@ function carriedHistory(existingBody, content) {
   return `${content.replace(/\s+$/u, '')}\n\n## History\n\n${history.join('\n')}`;
 }
 
+/**
+ * Signals for a write that proceeds anyway: a near-duplicate, or a same-topic
+ * page that says the opposite. The model decides whether to merge; nothing here
+ * blocks the write.
+ * @param {object|null} decision `evaluateWrite()` result
+ * @returns {{advisory?:boolean, conflicts?:object[], candidates?:object[], hint?:string}}
+ */
 function advisoryOf(decision) {
+  if (decision?.action === 'duplicate') {
+    return {
+      advisory: true,
+      candidates: [{ file: decision.existingFile, similarity: decision.similarity }],
+      hint: `Written, but ${decision.existingFile} already covers this. Merge the two with memory_update, and delete the extra copy if they are the same.`,
+    };
+  }
   if (!decision || typeof decision !== 'object' || decision.advisory !== true) return {};
   const conflicts = Array.isArray(decision.conflicts) ? decision.conflicts : [];
   const candidates = Array.isArray(decision.candidates) ? decision.candidates : [];
   const result = { advisory: true };
-  if (Array.isArray(decision.reasons) && decision.reasons.length > 0) result.reasons = decision.reasons;
   if (conflicts.length > 0) {
     result.conflicts = conflicts;
     result.hint = `Written, but it may contradict ${conflicts[0].file}. Review that memory and use memory_update to fix or extend it instead of keeping both.`;
@@ -321,39 +298,6 @@ function advisoryOf(decision) {
     }
   }
   return result;
-}
-
-/**
- * Stop reasons that are not a review queue (v24, Claude Code parity). A write
- * that would add a second active copy of a fact stops and names the page that
- * owns it; the model then edits that page. Everything else is written.
- * @param {object|null} decision `evaluateWrite()` result
- * @returns {object|null} tool result when the write must stop
- */
-function writeStopped(decision) {
-  if (decision && decision.action === 'duplicate') {
-    return {
-      ok: false,
-      error: 'DUPLICATE',
-      existingFile: decision.existingFile,
-      similarity: decision.similarity,
-      message: `${decision.existingFile} already covers this memory; update it instead of adding a copy`,
-      hint: 'use memory_update on that file, or pass force:true for an intentional duplicate',
-    };
-  }
-  if (decision && decision.action === 'conflict') {
-    const conflicts = Array.isArray(decision.conflicts) ? decision.conflicts : [];
-    const first = conflicts[0];
-    return {
-      ok: false,
-      error: 'CONFLICT',
-      existingFile: first.file,
-      conflicts,
-      message: `opposite fact already active in ${first.file}: ${first.reason}`,
-      hint: `update ${first.file} instead of adding a second active fact`,
-    };
-  }
-  return null;
 }
 
 /** Render a JSON tool value as one text content block. */
@@ -368,6 +312,22 @@ function renderValue(_args, value) {
     }
   }
   return [{ type: 'text', text: text ?? 'null' }];
+}
+
+/**
+ * Check a write's citations against the calling session. `userHeld` is true when
+ * at least one quote the user actually wrote holds: that is what marks a note
+ * current and verified.
+ */
+async function citedBy(runtime, exec, citations) {
+  const { evidence, problems } = await checkSessionCitations({ ctx: runtime.ctx, sessionId: sessionIdOf(exec), citations });
+  return {
+    userHeld: evidence.some((item) => item.role === 'user'),
+    fields: {
+      ...(evidence.length > 0 ? { citations: evidence.map(({ seq, role }) => ({ seq, role })) } : {}),
+      ...(problems.length > 0 ? { citationProblems: problems } : {}),
+    },
+  };
 }
 
 /** Resolve the calling agent's project context, or a structured error. */
@@ -486,7 +446,7 @@ export function registerTools(ctx, runtime) {
 
   /** @type {Array<() => void>} */
   const disposers = [];
-  /** Registered definitions, shared with auto-extract and Inbox accept. */
+  /** Registered definitions, shared with auto-extract. */
   const definitions = new Map();
   if (runtime && typeof runtime === 'object') runtime.memoryTools = definitions;
   const register = (definition) => {
@@ -504,7 +464,7 @@ export function registerTools(ctx, runtime) {
   register({
     name: 'memory_save',
     description:
-      'Save one durable memory; state its basis; skip secrets and repo facts.',
+      'Save one durable memory; cite the words it rests on; skip secrets and repo facts.',
     parameters: {
       type: 'object',
       properties: {
@@ -517,13 +477,9 @@ export function registerTools(ctx, runtime) {
         description: { type: 'string', description: 'One-line index summary.' },
         content: { type: 'string', description: 'Markdown details.' },
         sources: sourcesSchema('Repo-relative paths or path#symbol (max 10); anchors, not a code summary.'),
-        basis: BASIS_SCHEMA,
-        evidence: { type: 'string' },
-        confidence: CONFIDENCE_SCHEMA,
-        force: { type: 'boolean', description: 'Allow duplicate.' },
+        citations: CITATIONS_SCHEMA,
       },
       required: ['name', 'content'],
-      additionalProperties: false,
     },
     output: { schema: OUTPUT_SCHEMA, render: renderValue },
     async execute(args, exec) {
@@ -531,23 +487,6 @@ export function registerTools(ctx, runtime) {
       if (!autoMemoryOn(config)) return autoMemoryDisabled(config);
       const blocked = subagentReadonly(runtime, exec);
       if (blocked) return blocked;
-      const basisInfo = basisOf(input);
-      if (basisInfo.error) return basisInfo.error;
-      const basis = basisInfo.basis;
-      // A basis is a proposal, not proof: the host checks the quoted user
-      // message against this session's transcript before it grants authority.
-      const evidenceCheck = basis === 'user-explicit'
-        ? await verifyUserEvidence({ ctx: runtime.ctx, sessionId: sessionIdOf(exec), quote: input.evidence })
-        : { verified: false, reason: '' };
-      // A located quote proves who spoke, not what they agreed to: the sentences
-      // this write adds must also come from that message.
-      const binding = evidenceCheck.verified && typeof input.content === 'string'
-        ? bindUserClaim({ evidence: input.evidence, content: input.content })
-        : { ok: true, unbound: [] };
-      const verifiedEvidence = evidenceCheck.verified && binding.ok ? input.evidence : '';
-      const evidenceReason = evidenceCheck.reason !== ''
-        ? evidenceCheck.reason
-        : (binding.ok ? '' : `\`evidence\` does not contain the claim being written: ${binding.unbound.slice(0, 3).join(' | ')}`);
       if (typeof input.name !== 'string' || input.name.trim() === '') {
         return { ok: false, error: 'INVALID_NAME', message: 'name must be a non-empty string' };
       }
@@ -566,13 +505,12 @@ export function registerTools(ctx, runtime) {
       } catch (error) {
         return toolError(error);
       }
-      const source = sourceOf(exec, 'memory_save', basis);
+      const source = sourceOf(exec, 'memory_save');
       const candidate = policyCandidate({
         name: input.name,
         type,
         description: input.description,
         content: input.content,
-        confidence: input.confidence,
       });
       try {
         const sources = normalizeSources(input.sources);
@@ -584,31 +522,15 @@ export function registerTools(ctx, runtime) {
             label = 'user';
           }
         }
+        const cited = await citedBy(runtime, exec, input.citations);
         const entries = await loadPolicyEntries(projectContext.store, scope, '', candidate);
-        // Nothing queues (Claude Code parity): a duplicate or an opposite fact
-        // stops the write so the model edits the page that owns the fact;
-        // every other outcome is written and reported as an advisory.
-        const decision = input.force === true
-          ? { action: 'allow' }
-          : evaluateWrite({ candidate, entries, config });
-        const stopped = writeStopped(decision);
-        if (stopped) {
-          return {
-            ...stopped,
-            basis,
-            scope: label,
-            ...(evidenceReason === '' ? {} : { evidenceCheck: evidenceReason }),
-          };
-        }
-        const advisory = input.force === true ? {} : advisoryOf(decision);
-        // A verified user statement is the current value: mark it active so the
-        // next session can show its summary instead of only its name. The
-        // marker is added after the evidence binding, so it never counts as a
-        // model-invented claim.
-        const writeContent = verifiedEvidence !== '' ? ensureCurrentStatus(input.content) : input.content;
-        // What the index may claim is decided by the ledger, not here: a summary
-        // that does not belong to the verified bytes renders as a bare name in
-        // the first-turn index (src/inject.js).
+        // A near-duplicate or an opposite fact is reported, not refused: the
+        // model decides whether to merge.
+        const advisory = advisoryOf(evaluateWrite({ candidate, entries, config }));
+        // Words the user wrote make this the current value.
+        const writeContent = cited.userHeld ? ensureCurrentStatus(input.content) : input.content;
+        const hiding = statusHidingPage(undefined, writeContent);
+        if (hiding) return { ok: false, error: 'STATUS_HIDES_PAGE', message: statusHidingMessage(hiding, false) };
         const result = await projectContext.store.saveEntry({
           scope,
           name: input.name,
@@ -623,7 +545,7 @@ export function registerTools(ctx, runtime) {
         let verification = 'not-applicable';
         if (typeof result?.file === 'string' && result.file !== '') {
           await recordWrite(projectContext.paths, result.file);
-          if (verifiedEvidence !== '') {
+          if (cited.userHeld) {
             verification = await recordExplicitVerification({
               store: projectContext.store,
               scope,
@@ -638,9 +560,9 @@ export function registerTools(ctx, runtime) {
         return {
           ...(await withSourceWarnings(result, projectRoot, sources)),
           written: true,
-          basis,
           scope: label,
           verification,
+          ...cited.fields,
           ...advisory,
         };
       } catch (error) {
@@ -653,24 +575,21 @@ export function registerTools(ctx, runtime) {
   register({
     name: 'memory_update',
     description:
-      'Edit one memory or delete it (recoverable). Read the page first before replacing its body.',
+      'Edit one memory (whole body or one old_text passage) or delete it (recoverable). Read the page before replacing its body.',
     parameters: {
       type: 'object',
       properties: {
         file: { type: 'string', description: 'Memory file name.' },
         name: { type: 'string', description: 'New stable name; renames file/index.' },
-        content: { type: 'string', description: 'New body; omit to keep.' },
+        content: { type: 'string', description: 'New body, or the replacement for old_text; omit to keep.' },
+        old_text: { type: 'string', description: 'Exact passage to replace with content; kept in History.' },
         description: { type: 'string', description: 'New index summary; omit to keep it.' },
         sources: sourcesSchema('Replaces sources; same rules.'),
         expectedHash: { type: 'string', description: 'Hash from your memory_read result.' },
         delete: { type: 'boolean', description: 'Remove this memory.' },
-        basis: BASIS_SCHEMA,
-        evidence: { type: 'string' },
-        confidence: CONFIDENCE_SCHEMA,
-        force: { type: 'boolean', description: 'Allow duplicate.' },
+        citations: CITATIONS_SCHEMA,
       },
       required: ['file'],
-      additionalProperties: false,
     },
     output: { schema: OUTPUT_SCHEMA, render: renderValue },
     async execute(args, exec) {
@@ -678,12 +597,6 @@ export function registerTools(ctx, runtime) {
       if (!autoMemoryOn(config)) return autoMemoryDisabled(config);
       const blocked = subagentReadonly(runtime, exec);
       if (blocked) return blocked;
-      const basisInfo = basisOf(input);
-      if (basisInfo.error) return basisInfo.error;
-      const basis = basisInfo.basis;
-      const evidenceCheck = basis === 'user-explicit'
-        ? await verifyUserEvidence({ ctx: runtime.ctx, sessionId: sessionIdOf(exec), quote: input.evidence })
-        : { verified: false, reason: '' };
       if (typeof input.file !== 'string' || input.file.trim() === '') {
         return { ok: false, error: 'INVALID_NAME', message: 'file must be a memory file name' };
       }
@@ -693,11 +606,7 @@ export function registerTools(ctx, runtime) {
       const projectRoot = projectContext.paths?.projectRoot ?? '';
       let scope = 'project';
       let label = 'project';
-      try {
-      } catch (error) {
-        return toolError(error);
-      }
-      const source = sourceOf(exec, 'memory_update', basis);
+      const source = sourceOf(exec, 'memory_update');
       try {
         const sources = normalizeSources(input.sources);
         let existing = null;
@@ -708,6 +617,7 @@ export function registerTools(ctx, runtime) {
           existing = null;
         }
         if (!existing) return { ok: false, error: 'NOT_FOUND', message: `memory file not found: ${input.file}` };
+        if (existing.frontmatter?.type === WIKI_TYPE) return { ok: false, error: 'WIKI_READONLY', message: WIKI_READONLY_MESSAGE };
         const currentHash = memoryHash(existing.raw);
         const seenHash = readsFor(exec).get(readHashKey(exec, projectContext, existing.file));
         const wantedHash = typeof input.expectedHash === 'string' && input.expectedHash !== '' ? input.expectedHash : seenHash;
@@ -730,61 +640,52 @@ export function registerTools(ctx, runtime) {
           if (exec?.internal !== true) runtime.noteMemoryWrite?.(sessionIdOf(exec), Date.now());
           return { ok: true, deleted: true, file: input.file, scope: label };
         }
+        // One passage of the body: the replaced text stays in History.
+        let edited = null;
+        if (typeof input.old_text === 'string' && input.old_text !== '') {
+          if (typeof input.content !== 'string') {
+            return { ok: false, error: 'INVALID_ARGUMENT', message: 'old_text needs content: the text that replaces it' };
+          }
+          edited = replacePassage(existing.body, input.old_text, input.content);
+          if (edited.error) {
+            return {
+              ok: false,
+              error: edited.error === 'ambiguous' ? 'OLD_TEXT_AMBIGUOUS' : 'OLD_TEXT_NOT_FOUND',
+              message: edited.error === 'ambiguous'
+                ? 'old_text matches more than one passage; quote a longer, unique passage'
+                : 'old_text is not in the current body; copy it exactly from memory_read',
+            };
+          }
+          if (edited.unchanged) return { ok: true, written: false, unchanged: true, file: existing.file, scope: label };
+        }
+        const newBody = edited ? edited.body : input.content;
         const candidate = policyCandidate({
           name: typeof input.name === 'string' && input.name.trim() !== '' ? input.name : existing?.frontmatter?.name,
           type: existing?.frontmatter?.type,
           description:
             input.description === undefined ? existing?.frontmatter?.description : input.description,
-          content: input.content === undefined ? existing?.body : input.content,
-          confidence: input.confidence,
+          content: newBody === undefined ? existing?.body : newBody,
         });
-        const renameTo =
-          typeof input.name === 'string' && input.name.trim() !== '' && input.name !== existing?.frontmatter?.name
-            ? input.name
-            : '';
         const entries = await loadPolicyEntries(projectContext.store, scope, existing.file, candidate);
-        // A located quote proves who spoke, not what they agreed to: new
-        // sentences must come from that same message.
-        const binding = evidenceCheck.verified && typeof input.content === 'string'
-          ? bindUserClaim({ evidence: input.evidence, content: input.content, previous: existing.body })
-          : { ok: true, unbound: [] };
-        const verifiedEvidence = evidenceCheck.verified && binding.ok ? input.evidence : '';
-        const evidenceReason = evidenceCheck.reason !== ''
-          ? evidenceCheck.reason
-          : (binding.ok ? '' : `\`evidence\` does not contain the claim being written: ${binding.unbound.slice(0, 3).join(' | ')}`);
-        // v21: an explicit user correction keeps the previous current value as
-        // one `Superseded: ... (until ...)` history line in the owning topic.
+        const cited = await citedBy(runtime, exec, input.citations);
+        // v21: a whole-body replace on the user's own words keeps the previous
+        // current value as one `Superseded: ... (until ...)` history line.
         const correction =
-          basis === 'user-explicit' && typeof input.content === 'string'
+          cited.userHeld && !edited && typeof input.content === 'string'
             ? composeCorrection({ existingBody: existing.body, content: input.content, source })
             : null;
-        const composed = correction?.changed ? correction.content : carriedHistory(existing.body, input.content);
+        const composed = edited ? edited.body
+          : (correction?.changed ? correction.content : carriedHistory(existing.body, input.content));
         const writeContent =
-          verifiedEvidence !== '' && typeof composed === 'string'
+          cited.userHeld && typeof composed === 'string'
             ? ensureCurrentStatus(composed)
             : composed;
-        const decision = input.force === true
-          ? { action: 'allow' }
-          : evaluateWrite({ candidate, entries, config });
-        const stopped = writeStopped(decision);
-        if (stopped) {
-          return {
-            ...stopped,
-            basis,
-            scope: label,
-            ...(evidenceReason === '' ? {} : { evidenceCheck: evidenceReason }),
-            ...(correction?.changed
-              ? { correction: { superseded: correction.superseded, until: correction.until, source: correction.source } }
-              : {}),
-          };
-        }
-        const advisory = input.force === true ? {} : advisoryOf(decision);
-        // A confirmed new summary or name changes the page fingerprint without
-        // restating the body: keep the page verified only if it already was and
-        // the new summary is backed by the same quote.
-        const keepsVerification = verifiedEvidence !== '' && typeof input.content !== 'string'
-          && (typeof input.description !== 'string'
-            || bindUserClaim({ evidence: verifiedEvidence, content: input.description, previous: existing?.frontmatter?.description ?? '' }).ok)
+        const hiding = typeof writeContent !== 'string' ? '' : statusHidingPage(existing.body, writeContent);
+        if (hiding) return { ok: false, error: 'STATUS_HIDES_PAGE', message: statusHidingMessage(hiding, false) };
+        const advisory = advisoryOf(evaluateWrite({ candidate, entries, config }));
+        // A cited new summary or name changes the page fingerprint without
+        // restating the body: keep the page's record only if it already had one.
+        const keepsVerification = cited.userHeld && typeof input.content !== 'string'
           && (await wasVerified(projectContext.store, scope, existing));
         let result;
         let renameResult = null;
@@ -819,7 +720,7 @@ export function registerTools(ctx, runtime) {
         let verification = 'not-applicable';
         if (typeof result?.file === 'string' && result.file !== '') {
           await recordWrite(projectContext.paths, result.file);
-          if (verifiedEvidence !== '' && (typeof input.content === 'string' || keepsVerification)) {
+          if (cited.userHeld && (typeof input.content === 'string' || keepsVerification)) {
             verification = await recordExplicitVerification({
               store: projectContext.store,
               scope,
@@ -844,9 +745,9 @@ export function registerTools(ctx, runtime) {
           ...(await withSourceWarnings({ ...(renameResult ?? {}), ...result }, projectRoot, sources ?? existing.frontmatter?.sources)),
           ...advisory,
           written: true,
-          basis,
           scope: label,
           verification,
+          ...cited.fields,
           ...(correction?.changed
             ? {
                 correction: {

@@ -18,21 +18,40 @@
  * reports the last event it fully covers (`lastSeq`) and a later pass resumes
  * from there; skipped events still count as covered.
  *
+ * Dream's reading view (`{ work: true }`) also keeps the work: every tool call
+ * with its clipped arguments and every tool result with its head and its tail
+ * (the tail holds `[stderr]`, `[exit code: N]`, timeout and truncation markers),
+ * and every assistant message. A tool result with an exit code is an
+ * observation; an assistant saying "fixed" is a claim, and the view lets a
+ * reader compare the two. Auto-extract does not ask for it: its window is small.
+ *
  * Every line start inside a block is escaped, so transcript content cannot
  * forge a `[user]` line or a date marker. Tool calls come from the `tool/call`
  * event only (the assistant message repeats them); result ids come from
  * `data.message.toolCallId` / `data.message.source.callId`.
  */
 
+import { scanSecrets } from './secrets.js';
+
 const TOOL_ARGS_CLIP = 300;
 const TOOL_RESULT_CLIP = 600;
+/**
+ * Work view clips. One call + result stays near 1.2k characters: the arguments
+ * show what was run, the head of a result what it began with, and the tail the
+ * ending that decides the outcome (stderr, exit code, timeout, truncation notes).
+ */
+const WORK_ARGS_CLIP = 400;
+const WORK_RESULT_HEAD = 400;
+const WORK_RESULT_TAIL = 400;
+/** In the work view every assistant message is kept, so each one is clipped. */
+const WORK_ASSISTANT_CLIP = 1500;
 /** The assistant message a user replies to is context, not the subject: keep its gist. */
 const ASSISTANT_CONTEXT_CLIP = 2000;
 const PASTE_MIN_CHARS = 800;
 const PASTE_MIN_LINES = 12;
 const PASTE_MIN_STRUCTURED_LINES = 4;
 
-function contentToText(content) {
+export function contentToText(content) {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
   const parts = [];
@@ -48,12 +67,27 @@ function clip(value, maxChars) {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars)}…`;
 }
 
+/** Keep the start and the end of a long text; the end carries the outcome markers. */
+function clipEnds(value, head, tail) {
+  const text = String(value ?? '');
+  if (text.length <= head + tail) return text;
+  return `${text.slice(0, head)}
+… (${text.length - head - tail} characters omitted) …
+${text.slice(-tail)}`;
+}
+
 /** Escape line-start tags and date markers so content cannot pose as structure. */
 export function escapeToolText(text) {
   return String(text ?? '').replace(/^([^\S\r\n\u2028\u2029]*)(\[|---)/gm, '$1\\$2');
 }
 
-function toolCallIdOf(event) {
+/** This plugin's own tools: their arguments and output are memory text, not evidence. */
+export const isMemoryToolName = (name) => typeof name === 'string' && /^memory_/u.test(name);
+
+const MEMORY_OP = ' (memory operation, not citable)';
+const workName = (name) => (isMemoryToolName(name) ? name + MEMORY_OP : name);
+
+export function toolCallIdOf(event) {
   const data = event?.data ?? {};
   return (
     (typeof data.message?.toolCallId === 'string' && data.message.toolCallId)
@@ -69,8 +103,23 @@ function isErrorResult(event) {
   return data.message?.isError === true || data.isError === true || data.message?.error != null || data.error != null;
 }
 
+const EXIT_MARKER = /\[exit code: (-?\d+)\]/g;
+
+/** Whether a tool result reports a failure: an error, or a non-zero `[exit code: N]` marker. */
+function isFailedResult(event) {
+  if (isErrorResult(event)) return true;
+  const text = contentToText(event?.data?.message?.content ?? event?.data?.content);
+  return [...text.matchAll(EXIT_MARKER)].some((match) => Number(match[1]) !== 0);
+}
+
+/** How many tool results of a session failed (error, or non-zero exit code). */
+export function countFailedToolResults(events) {
+  return (Array.isArray(events) ? events : []).filter((event) => event?.type === 'tool/result'
+    && event.data && typeof event.data === 'object' && isFailedResult(event)).length;
+}
+
 /** A long, structured message is forwarded material rather than the user's own words. */
-function looksPasted(value) {
+export function looksPasted(value) {
   if (value.length < PASTE_MIN_CHARS) return false;
   const lines = value.split(/\r\n|\r|\n/);
   if (lines.length >= PASTE_MIN_LINES) return true;
@@ -92,9 +141,10 @@ function localDate(time) {
  * and the assistant message each one answers; tool blocks hold one failed call
  * with its error.
  * @param {Array<object>} events session event log.
+ * @param {{work?:boolean}} [options] `work` keeps every tool call, tool result and assistant message (Dream's view).
  * @returns {{blocks:object[], userMessages:string[], userChars:number, maxSeq:number, lastAt:number}}
  */
-export function buildSessionTranscript(events) {
+export function buildSessionTranscript(events, { work = false } = {}) {
   const blocks = [];
   const userMessages = [];
   const calls = new Map();
@@ -117,9 +167,9 @@ export function buildSessionTranscript(events) {
     const seq = Number(event.seq);
     if (Number.isFinite(seq)) maxSeq = Math.max(maxSeq, seq);
     if (event.type === 'user/message') {
-      const kind = event.data?.source?.kind;
+      const kind = event.data?.message?.source?.kind ?? event.data?.source?.kind;
       if (kind !== undefined && kind !== 'user') continue;
-      const value = contentToText(event.data?.content).trim();
+      const value = contentToText(event.data?.message?.content ?? event.data?.content).trim();
       if (value === '') continue;
       userChars += value.length;
       userMessages.push(value);
@@ -133,6 +183,11 @@ export function buildSessionTranscript(events) {
       const content = event.data?.message?.content ?? event.data?.content;
       const value = contentToText(content).trim();
       if (value === '') continue;
+      if (work) {
+        text(event, 'assistant', clip(value, WORK_ASSISTANT_CLIP));
+        lastAt = Math.max(lastAt, Number(event.time) || 0);
+        continue;
+      }
       // Kept only if a user message follows it.
       pendingAssistant = { event, value };
       lastAt = Math.max(lastAt, Number(event.time) || 0);
@@ -140,6 +195,11 @@ export function buildSessionTranscript(events) {
       const name = typeof event.data.name === 'string' ? event.data.name : 'tool';
       const id = toolCallIdOf(event);
       const rawArgs = typeof event.data.arguments === 'string' ? event.data.arguments : JSON.stringify(event.data.arguments ?? {});
+      if (work) {
+        if (id !== '') calls.set(id, { seq: Number(event.seq) || 0, name });
+        text(event, 'tool-call', `${workName(name)} ${clip(rawArgs, WORK_ARGS_CLIP)}`);
+        continue;
+      }
       // A call only appears in the transcript if it fails.
       if (id !== '') {
         calls.set(id, {
@@ -149,6 +209,16 @@ export function buildSessionTranscript(events) {
         });
       }
     } else if (event.type === 'tool/result' && event.data && typeof event.data === 'object') {
+      if (work) {
+        const error = event.data.error ?? event.data.message?.error;
+        const value = contentToText(event.data.message?.content ?? event.data.content).trim()
+          || [error?.name, error?.code].filter((part) => typeof part === 'string' && part !== '').join(' ');
+        if (value === '') continue;
+        const id = toolCallIdOf(event);
+        text(event, isErrorResult(event) ? 'tool-error' : 'tool-result',
+          `${workName((id !== '' && calls.get(id)?.name) || 'tool')}: ${clipEnds(value, WORK_RESULT_HEAD, WORK_RESULT_TAIL)}`);
+        continue;
+      }
       if (!isErrorResult(event)) continue;
       const value = contentToText(event.data.message?.content ?? event.data.content).trim();
       if (value === '') continue;
@@ -307,6 +377,58 @@ export function chunkTranscript(transcript, { chunkChars, toolCharsPerChunk, res
   close();
   chunks[chunks.length - 1].lastSeq = Math.max(chunks[chunks.length - 1].lastSeq, Number(transcript.maxSeq) || 0);
   return chunks;
+}
+
+const PAGE_BLOCKS = 40;
+const PAGE_CHARS = 24_000;
+/** One message longer than this is shown cut, with the omitted length stated. */
+const BLOCK_CHARS = 12_000;
+
+function shown(line) {
+  if (scanSecrets(line).matches.length > 0) return '[sensitive passage omitted]';
+  return line.length <= BLOCK_CHARS ? line : `${line.slice(0, BLOCK_CHARS)} […${line.length - BLOCK_CHARS} more characters not shown]`;
+}
+
+/**
+ * One page of a session transcript for a Dream worker: each block with the
+ * `seq` of the event it came from, from `fromSeq` on, in event order. Secrets
+ * are replaced; a text block keeps its `[user]` / `[user-pasted]` / `[assistant]`
+ * label.
+ * @param {ReturnType<typeof buildSessionTranscript>} transcript
+ * @param {{fromSeq?:number, limit?:number}} [options]
+ * @returns {{text:string, count:number, lastSeq:number, nextFromSeq:number|null}}
+ *   `nextFromSeq` is the cursor for the rest, or null when the page reaches the end.
+ */
+export function renderTranscriptPage(transcript, { fromSeq = 0, limit = PAGE_BLOCKS } = {}) {
+  const blocks = (Array.isArray(transcript?.blocks) ? transcript.blocks : [])
+    .filter((block) => block.seq >= fromSeq)
+    .sort((a, b) => a.seq - b.seq);
+  const cap = Number.isSafeInteger(limit) && limit > 0 ? Math.min(limit, 100) : PAGE_BLOCKS;
+  const lines = [];
+  let date = '';
+  let chars = 0;
+  let count = 0;
+  let lastSeq = fromSeq - 1;
+  for (const block of blocks) {
+    const body = block.kind === 'text'
+      ? [`[seq ${block.seq}] ${shown(block.text)}`]
+      : [
+        ...(block.call ? [`[seq ${block.callSeq ?? block.seq}] ${shown(block.call)}`] : []),
+        `[seq ${block.resultSeq ?? block.seq}] ${shown(block.result)}`,
+      ];
+    const day = localDate(block.time);
+    const marker = day !== '' && day !== date ? [`--- ${day} ---`] : [];
+    const size = [...marker, ...body].reduce((sum, line) => sum + line.length + 1, 0);
+    if (count > 0 && (count >= cap || chars + size > PAGE_CHARS)) {
+      return { text: lines.join('\n'), count, lastSeq, nextFromSeq: block.seq };
+    }
+    lines.push(...marker, ...body);
+    if (marker.length > 0) date = day;
+    chars += size;
+    count += 1;
+    lastSeq = block.seq;
+  }
+  return { text: lines.join('\n'), count, lastSeq, nextFromSeq: null };
 }
 
 /**

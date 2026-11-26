@@ -1,11 +1,12 @@
 /**
  * Host verification ledger.
  *
- * A `VERIFIED: <date>` line typed into a page proves nothing about who checked
- * it: any caller can write that line, and any caller can compute the hash the
- * page carries. The record that actually gates the first-turn index therefore
- * lives beside the memory files and is written only by the host, from the exact
- * version that was just written.
+ * A `VERIFIED: <date>` line typed into a page proves nothing: any caller can
+ * write that line. The record behind the trust badge in the Memory panel
+ * therefore lives beside the memory files and is written only by the host, from
+ * the exact version that was just written. It means the note cites words the
+ * user actually wrote (a held citation of a user message) or that the user
+ * saved it themselves. It does not mean the content was checked.
  *
  * Each record holds one fingerprint per part of the line a later session would
  * show — name, description and body — so a summary edited without touching the
@@ -47,7 +48,7 @@ export function bodyHashOf(body = '') {
 }
 
 /**
- * Fingerprints of the three parts a first-turn line shows.
+ * Fingerprints of the three parts of a note: name, summary and body.
  * @param {{name?:string, description?:string, body?:string}} [page]
  * @returns {{nameHash:string, descriptionHash:string, bodyHash:string}}
  */
@@ -206,16 +207,4 @@ export async function verifiedPage({ store, scope = 'project', entry, body = '' 
     description: entry.description,
     body,
   });
-}
-
-/**
- * How a receipt should describe the ledger: `verified` (this exact version is
- * recorded), `stale` (an older record exists) or `missing`.
- * @returns {Promise<'verified'|'stale'|'missing'>}
- */
-export async function verificationState({ store, scope = 'project', file, name = '', description = '', body = '' }) {
-  const ledger = await readLedger(store, scope);
-  const record = ledger.entries[file];
-  if (!record) return 'missing';
-  return matchesRecord(record, { name, description, body }) ? 'verified' : 'stale';
 }

@@ -24,11 +24,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+      - name: Install build tools
+        run: npm ci
       - name: Syntax check
         run: node --check index.js
       - name: Unit + regression tests
         run: node --test "test/*.test.mjs"
       - name: Verify bundle structure, syntax and tests
-        run: node scripts/verify.mjs
+        run: npm run verify
       - name: Packaging dry run
         run: npm pack --dry-run

@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { loadModule, makeTempDir } from './helpers.mjs';
+import { dreamReadiness } from '../src/readiness.js';
 
 let stateModulePromise;
 
@@ -49,6 +50,48 @@ test('load() on a corrupt state file falls back to defaults instead of throwing'
   await state.load();
   assert.deepEqual(state.snapshot().sessionsSince, []);
   assert.equal(state.snapshot().lastDreamAt, 0);
+});
+
+test('a busy state lock rejects a competing mutation instead of losing a successful write', async (t) => {
+  const { state, paths } = await newState(t);
+  const { ProjectState } = await stateModule();
+  const other = new ProjectState(paths);
+  let acquired;
+  let release;
+  const ready = new Promise((resolve) => { acquired = resolve; });
+  const hold = new Promise((resolve) => { release = resolve; });
+  const first = state._mutate(async (draft) => {
+    acquired();
+    await hold;
+    draft.correctedFiles.push('first.md');
+  });
+  await ready;
+  try {
+    await assert.rejects(other.noteCorrected('second.md'), { code: 'LOCK_BUSY' });
+  } finally {
+    release();
+    await first;
+  }
+  await other.noteCorrected('second.md');
+  await state.read();
+  assert.deepEqual(state.snapshot().correctedFiles, ['first.md', 'second.md']);
+});
+
+test('session opt-outs survive more than 200 settings and reload without counting learning-off sessions', async (t) => {
+  const { state, paths } = await newState(t);
+  const { ProjectState } = await stateModule();
+  await state.setSessionFlag('original', 'learn', false);
+  await state.setSessionFlag('original', 'use', false);
+  await state.ensureSession('original');
+  for (let index = 0; index < 200; index++) await state.setSessionFlag('session-' + index, 'learn', false);
+  const reopened = new ProjectState(paths);
+  await reopened.load();
+  assert.deepEqual(reopened.flagsOf('original'), { learn: false, use: false });
+  const config = { autoDreamEnabled: true, minSessions: 1 };
+  assert.equal(dreamReadiness({ state: reopened }, { config }).gates.minSessions.current, 0);
+  await reopened.setSessionFlag('original', 'learn', true);
+  assert.deepEqual(reopened.flagsOf('original'), { learn: true, use: false });
+  assert.equal(dreamReadiness({ state: reopened }, { config }).gates.minSessions.current, 1);
 });
 
 test('ensureSession de-duplicates session ids and persists them', async (t) => {
@@ -128,21 +171,14 @@ test('dream lifecycle markers update the snapshot', async (t) => {
 
 test('extract lifecycle markers update the snapshot', async (t) => {
   const { state } = await newState(t);
-  await state.markExtractStart('auto');
-  const started = state.snapshot();
-  assert.ok(started.lastExtractAttemptAt > 0);
-  assert.equal(started.lastExtractTrigger, 'auto');
-
-  await state.markExtractResult({ ok: true, count: 2, reason: 'inbox', trigger: 'auto' });
+  await state.markExtractResult({ ok: true, reason: 'direct' });
   const done = state.snapshot();
   assert.ok(done.lastExtractAt > 0);
-  assert.equal(done.lastExtractCount, 2);
-  assert.equal(done.lastExtractReason, 'inbox');
+  assert.equal(done.lastExtractReason, 'direct');
 
-  await state.markExtractResult({ ok: false, count: 0, reason: 'timeout', trigger: 'auto' });
+  await state.markExtractResult({ ok: false, reason: 'timeout' });
   const failed = state.snapshot();
   assert.equal(failed.lastExtractReason, 'timeout');
-  assert.equal(failed.lastExtractError, '');
 });
 
 test('snapshot() is a defensive copy', async (t) => {
@@ -161,7 +197,6 @@ test('a pending dream copy persists until the human settles it', async (t) => {
   assert.deepEqual(state.snapshot().shadowPending, pending);
   const onDisk = JSON.parse(await readFile(paths.stateFile, 'utf8'));
   assert.deepEqual(onDisk.shadowPending, pending);
-  assert.equal(onDisk.lastDreamMode, 'shadow');
   await state.clearShadowPending();
   assert.equal(state.snapshot().shadowPending, null);
 });

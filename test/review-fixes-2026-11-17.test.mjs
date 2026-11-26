@@ -25,7 +25,8 @@ async function pendingDream(t, runId) {
     name: 'Deploy', type: 'project', description: 'Old deploy hook', content: 'Keep blue deployment.',
   });
   script(env, [[
-    toolCall('memory_write', { file: page.file, description: groundedDescription, body: 'Keep blue deployment.' }),
+    toolCall('memory_write', { file: page.file, description: groundedDescription, body: 'Keep blue deployment.',
+      citations: [{ memory_file: page.file, quote: 'Keep blue deployment.' }] }),
     finish('tool-calls'),
   ]]);
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, memoryOnly: true, runId });
@@ -81,9 +82,11 @@ test('failed settlement also restores removed pages and removes newly created pa
   const beforeOld = (await pctx.store.readEntry(old.file)).raw;
   const beforePage = (await pctx.store.readEntry(page.file)).raw;
   script(env, [[
-    toolCall('memory_write', { file: page.file, description: groundedDescription, body: 'Keep blue deployment.' }),
-    toolCall('memory_write', { file: 'project_new.md', body: 'New durable fact.' }),
-    toolCall('memory_delete', { file: old.file }),
+    toolCall('memory_write', { file: page.file, description: groundedDescription, body: 'Keep blue deployment.',
+      citations: [{ memory_file: page.file, quote: 'Keep blue deployment.' }] }),
+    toolCall('memory_write', { file: 'project_new.md', body: 'New durable fact.',
+      citations: [{ memory_file: page.file, quote: 'Keep blue deployment.' }] }),
+    toolCall('memory_delete', { file: old.file, citations: [{ memory_file: old.file, quote: 'Old durable fact.' }] }),
     finish('tool-calls'),
   ]]);
   const runId = 'run-mixed-state-failure';

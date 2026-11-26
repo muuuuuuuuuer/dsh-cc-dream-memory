@@ -51,19 +51,17 @@ test('memories-only Dream can delete a page contradicted by another current page
   await assert.rejects(env.pctx.store.readEntry(stale.file));
 });
 
-test('a page quote does not count when the quoted page is removed or the quote is only in its History', async (t) => {
+test('a page quote counts only from its current text, not its History', async (t) => {
   const env = await toolsEnv(t);
   const a = await save(env, 'a', 'Release runs on box-03.\n\n## History\n\n- Superseded: box-02 is the release host');
   const b = await save(env, 'b', 'Release runs on box-02.');
   model(env, [[
     ['memory_delete', { file: b.file, citations: [{ memory_file: a.file, quote: 'box-02 is the release host' }] }],
-    ['memory_delete', { file: a.file, citations: [{ memory_file: b.file, quote: 'Release runs on box-02.' }] }],
   ]]);
-  const pending = await dream(env, { noSessions: true });
-  const proofs = env.pctx.state.snapshot().shadowPending.proofs;
-  assert.equal(proofs.find((item) => item.file === b.file).kind, 'missing', 'History is not current text');
-  assert.equal(proofs.find((item) => item.file === a.file).kind, 'missing', 'the quoted page is deleted too');
-  assert.equal((await env.runtime.switchDream({ pctx: env.pctx, runId: pending.runId })).error, 'evidence-required');
+  const run = await dream(env, { noSessions: true });
+  assert.notEqual(run.ready, true);
+  assert.equal(env.pctx.state.snapshot().shadowPending, null);
+  assert.equal((await env.pctx.store.readEntry(b.file)).body.trim(), 'Release runs on box-02.');
 });
 
 test('a Dream that ran and changed nothing is recorded as done with its usage', async (t) => {

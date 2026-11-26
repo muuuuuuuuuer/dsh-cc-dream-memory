@@ -34,6 +34,7 @@ function v3() {
       http: await loadModule('../src/http.js', { requireExports: ['createHttpHandler'] }),
       tools: await loadModule('../src/tools.js', { requireExports: ['registerTools'] }),
       commands: await loadModule('../src/commands.js', { requireExports: ['registerCommands'] }),
+      status: await loadModule('../src/status.js', { requireExports: ['createStatusService'] }),
     }))();
   }
   return modulesPromise;
@@ -441,8 +442,6 @@ test('http: GET /status returns the documented status shape', async (t) => {
     'lastDreamSummary',
     'lastDreamSessions',
     'lastDreamOps',
-    'lastDreamMode',
-    'shadowPending',
     'shadowPending',
     'lastError',
     'consecutiveFailures',
@@ -651,32 +650,38 @@ async function commandHarness(t) {
   });
   const memory = definitions.get('memory');
   assert.ok(memory, 'registerCommands must register /memory');
-  return { runtime, pctx, config, definitions, memory };
+  return { runtime, pctx, config, mods, definitions, memory };
 }
 
-test('commands: /memory plugin on|off writes the enabled override', async (t) => {
-  const { runtime, memory } = await commandHarness(t);
+test('service: toggle persists enabled override and retired /memory plugin rejects', async (t) => {
+  const { mods, runtime, memory } = await commandHarness(t);
+  const service = mods.status.createStatusService(runtime);
   const invocation = { rawInput: 'plugin off', agent: { id: 'agent-cmd' }, sessionId: 'session-cmd' };
 
-  const off = await memory.handler(invocation);
-  assert.equal(off.kind, 'success', `plugin off failed: ${off.text}`);
-  assert.equal(runtime.overrides().enabled, false, '/memory plugin off must persist enabled:false');
+  const retired = await memory.handler(invocation);
+  assert.equal(retired.kind, 'error');
+  assert.match(retired.text, /unknown \/memory subcommand/);
 
-  const on = await memory.handler({ ...invocation, rawInput: 'plugin on' });
-  assert.equal(on.kind, 'success', `plugin on failed: ${on.text}`);
-  assert.equal(runtime.overrides().enabled, true, '/memory plugin on must persist enabled:true');
+  await service.toggle(runtime, { enabled: false });
+  assert.equal(runtime.overrides().enabled, false, 'toggle must persist enabled:false');
+
+  await service.toggle(runtime, { enabled: true });
+  assert.equal(runtime.overrides().enabled, true, 'toggle must persist enabled:true');
 });
 
-test('commands: /memory rules reports the active source and paths', async (t) => {
-  const { runtime, memory } = await commandHarness(t);
-  // The command handler resolves its own project context through forAgent; save
-  // the rules into that same context so the command sees the project override.
+test('service: rules reports active source and paths while retired /memory rules rejects', async (t) => {
+  const { mods, runtime, memory } = await commandHarness(t);
+  const service = mods.status.createStatusService(runtime);
   const commandPctx = await runtime.forAgent({ id: 'agent-cmd' });
   assert.ok(commandPctx, 'forAgent must resolve the command project context');
   await runtime.saveRules(commandPctx, 'project', '- COMMAND RULE: project specific');
-  const result = await memory.handler({ rawInput: 'rules', agent: { id: 'agent-cmd' }, sessionId: 'session-cmd' });
-  assert.equal(result.kind, 'success', `/memory rules failed: ${result.text}`);
-  assert.match(result.text, /project/i, 'output must name the active source');
-  assert.match(result.text, /COMMAND RULE/, 'output must show the active rules text');
-  assert.match(result.text, /memory-rules\.md/, 'output must show the rule file paths');
+
+  const retired = await memory.handler({ rawInput: 'rules', agent: { id: 'agent-cmd' }, sessionId: 'session-cmd' });
+  assert.equal(retired.kind, 'error');
+  assert.match(retired.text, /unknown \/memory subcommand/);
+
+  const rules = await service.rules(commandPctx);
+  assert.equal(rules.source, 'project');
+  assert.match(rules.text, /COMMAND RULE/);
+  assert.match(rules.projectPath, /memory-rules\.md/);
 });

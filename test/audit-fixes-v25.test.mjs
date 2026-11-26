@@ -129,8 +129,6 @@ test('Dream records session reads as complete when the last seq is reached', asy
   let call = 0;
   env.host.services.llm.stream = () => {
     call += 1;
-    // The unsourced replacement is intentionally kept for human review when
-    // the worker gets its one chance to revise it.
     if (call === 1 || call === 3) {
       return streamOf([
         toolCall('c1', 'session_read', { session_id: 's1', seq: 7 }),
@@ -140,6 +138,7 @@ test('Dream records session reads as complete when the last seq is reached', asy
           type: 'project',
           description: 'Release process uses pnpm',
           body: 'Use pnpm.',
+          citations: [{ session_id: 's1', seq: 7, quote: 'Use pnpm.' }],
         }),
         toolCall('c2', 'work_done', { session_id: 's1', through_seq: 7, summary: 'Reviewed the new release command.' }),
         { type: 'finish', reason: { kind: 'tool-calls' } },
@@ -296,12 +295,13 @@ test('a Dream run does not complete a session it never finished', async (t) => {
   const env = await toolsEnv(t, { autoDreamEnabled: false });
   env.host.services.sessionQuery = {
     filterSessions: async () => [{ header: { id: 's1', cwd: env.workspaceDir, createdAt: now - 1000 } }],
-    listEvents: async () => [{ seq: 0 }, { seq: 1 }, { seq: 2 }],
+    listEvents: async () => [{ seq: 2, type: 'user/message' }],
     searchEvents: async () => ({ items: [] }),
-    readEvent: async () => ({ events: [] }),
+    readEvent: async () => ({ events: [{ seq: 2, type: 'user/message', data: { content: [{ type: 'text', text: 'Keep the new note.' }] } }] }),
   };
   env.host.services.llm.stream = () => streamOf([
-    toolCall('w1', 'memory_write', { file: 'project_note.md', name: 'Note', type: 'project', body: 'New note.' }),
+    toolCall('w1', 'memory_write', { file: 'project_note.md', name: 'Note', type: 'project', body: 'New note.',
+      citations: [{ session_id: 's1', seq: 2, quote: 'Keep the new note.' }] }),
     { type: 'finish', reason: { kind: 'tool-calls' } },
   ]);
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-partial-1' });

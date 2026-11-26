@@ -7,19 +7,10 @@
  * used to be, so automatic recall, the hot set and compaction must not treat
  * them as current content. The memory tools also use this projection.
  *
- * The same module owns the verification stamp (`VERIFIED AGAINST: <hash>`): only
- * the host writes it, and it covers one exact content version, so an edited page
- * stops being hot until it is verified again.
- *
  * @module dsh-cc-dream-memory/memory-body
  */
-import { createHash } from 'node:crypto';
-
-/** Label of the host-written stamp; a model-written stamp is overwritten. */
-export const VERIFIED_AGAINST_LABEL = 'VERIFIED AGAINST';
 /** `VERIFIED: 2026-11-11` (date) and `VERIFIED AGAINST: <hash>` (binding). */
 const STAMP_LINE_RE = /^\s*VERIFIED(?:\s+AGAINST)?:/iu;
-const STAMP_VALUE_RE = /^\s*VERIFIED AGAINST:\s*([0-9a-f]{16})\s*$/imu;
 
 /** @param {unknown} body */
 function normalizedLines(body) {
@@ -27,29 +18,13 @@ function normalizedLines(body) {
 }
 
 /**
- * The body without its verification stamps.
+ * Remove old verification stamps before reading or saving current content.
  * @param {unknown} body
  */
 export function stripVerification(body) {
   // Trailing blank lines are dropped so a stamped page and the same content read
   // back from disk fingerprint identically.
   return normalizedLines(body).filter((line) => !STAMP_LINE_RE.test(line)).join('\n').replace(/\s+$/u, '');
-}
-
-/**
- * Hash of the content a stamp covers.
- *
- * The stamp lines themselves are excluded, so re-stamping a verified page with a
- * newer date does not change the binding: only a change to the page's actual
- * content invalidates it.
- *
- * @param {unknown} body
- * @returns {string} 16 hex chars
- */
-export function verificationHash(body) {
-  const lines = normalizedLines(stripVerification(body));
-  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-  return createHash('sha256').update(lines.join('\n')).digest('hex').slice(0, 16);
 }
 
 /**
@@ -93,28 +68,6 @@ export function currentFactLines(body) {
 /** The text form used by evidence comparison. */
 export function currentFactsInContext(body) {
   return currentFactLines(body).map(({ text }) => text);
-}
-
-/**
- * Host-only: stamp a body as verified on `date`, replacing older stamps.
- * @param {unknown} body
- * @param {string} [date] YYYY-MM-DD
- */
-export function stampVerification(body, date = new Date().toISOString().slice(0, 10)) {
-  const content = stripVerification(body).replace(/\n+$/u, '');
-  const hash = verificationHash(content);
-  const stamps = `VERIFIED: ${date}\n${VERIFIED_AGAINST_LABEL}: ${hash}`;
-  return `${content === '' ? '' : `${content}\n`}${stamps}\n`;
-}
-
-/**
- * True when the page carries a stamp for exactly this content version, so an
- * edit (or a hand-typed date) cannot keep it hot.
- * @param {unknown} body
- */
-export function verifiedAgainstCurrent(body) {
-  const match = STAMP_VALUE_RE.exec(String(body ?? ''));
-  return match !== null && match[1].toLowerCase() === verificationHash(body);
 }
 
 /** Inline history bullet written by a correction. */
@@ -204,4 +157,30 @@ export function memoryStatusOf(body) {
  */
 export function isCurrentPage(body) {
   return !CURRENTNESS_EXCLUDED.includes(memoryStatusOf(body));
+}
+
+/**
+ * The status a write would give its page when that hides the page from the
+ * index and recall; '' otherwise. The first `STATUS:` line decides for the
+ * whole page, so a body that is the current decision but opens with
+ * `STATUS: superseded` vanishes. A page that was already hidden stays as it is.
+ * @param {unknown} before the page body before the write (undefined for a new page).
+ * @param {unknown} after the page body the write would leave.
+ * @returns {string}
+ */
+export function statusHidingPage(before, after) {
+  const status = memoryStatusOf(after);
+  if (!CURRENTNESS_EXCLUDED.includes(status)) return '';
+  return before !== undefined && !isCurrentPage(before) ? '' : status;
+}
+
+/**
+ * The explanation of a hiding status, for the model that wrote it.
+ * @param {string} status
+ * @param {boolean} [canRetire] whether the writer may ask to hide the page (`retire: true`).
+ */
+export function statusHidingMessage(status, canRetire = true) {
+  return `STATUS: ${status} would hide this whole page from the index and recall (the first STATUS line decides for the page). `
+    + 'To retire a page, delete it with moved_to or merges; to record an old value, put it under ## History.'
+    + (canRetire ? ' Set retire: true only if you mean to hide this page.' : '');
 }

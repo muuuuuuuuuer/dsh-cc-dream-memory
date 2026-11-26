@@ -55,20 +55,21 @@ test('background writing does not clear a foreground read baseline', async (t) =
 
 test('rejecting the destination protects every source in a merge chain', async (t) => {
   const env = await toolsEnv(t);
-  const a = await save(env, 'A', 'Fact A.');
-  const b = await save(env, 'B', 'Fact B.');
-  const c = await save(env, 'C', 'Fact C.');
+  const a = await save(env, 'A', 'Fact A holds.');
+  const b = await save(env, 'B', 'Fact B holds.');
+  const c = await save(env, 'C', 'Fact C holds.');
+  const from = (note, quote) => [{ memory_file: note.file, quote }];
   model(env, [[
-    ['memory_write', { file: b.file, body: 'Facts A and B.', merges: [a.file] }],
-    ['memory_delete', { file: a.file, moved_to: b.file }],
-    ['memory_write', { file: c.file, body: 'Facts A, B and C.', merges: [b.file] }],
-    ['memory_delete', { file: b.file, moved_to: c.file }],
+    ['memory_write', { file: b.file, body: 'Facts A and B.', merges: [a.file], citations: from(a, 'Fact A holds.') }],
+    ['memory_delete', { file: a.file, moved_to: b.file, citations: from(a, 'Fact A holds.') }],
+    ['memory_write', { file: c.file, body: 'Facts A, B and C.', merges: [b.file], citations: from(b, 'Fact B holds.') }],
+    ['memory_delete', { file: b.file, moved_to: c.file, citations: from(b, 'Fact B holds.') }],
   ]]);
   assert.equal((await dream(env)).ready, true);
   await env.runtime.switchDream({ pctx: env.pctx, reject: [c.file] });
-  assert.equal(await body(env, a.file), 'Fact A.');
-  assert.equal(await body(env, b.file), 'Fact B.');
-  assert.equal(await body(env, c.file), 'Fact C.');
+  assert.equal(await body(env, a.file), 'Fact A holds.');
+  assert.equal(await body(env, b.file), 'Fact B holds.');
+  assert.equal(await body(env, c.file), 'Fact C holds.');
 });
 
 test('undo can retry after an added page has already been removed', async (t) => {
@@ -145,11 +146,12 @@ test('Dream source pages omit injected text and exclude it from citation checks'
         content: [{ type: 'text', text: seq === 3 ? 'Check the release notes.' : quote }] } }] }),
   };
   model(env, [[['memory_write', { file: 'project_language.md', body: quote, type: 'project', citations: [{ session_id: 's1', seq: 2, quote }] }]]]);
-  assert.equal((await dream(env)).ready, true);
+  // The only citation points at host-injected context, so the change is refused.
+  assert.notEqual((await dream(env)).ready, true);
   const source = env.host.dreamSourcePages.join('\n');
   assert.match(source, /Check the release notes/u);
   assert.doesNotMatch(source, /French/u);
-  assert.equal(env.pctx.state.snapshot().shadowPending.evidence[0].verified, false);
+  assert.equal(env.pctx.state.snapshot().shadowPending, null);
 });
 test('switch holds the same lock as ordinary writes and rollback preserves other pages', async (t) => {
   const env = await toolsEnv(t);
@@ -288,13 +290,13 @@ test('merge preserves active sections after a source with history', async (t) =>
   assert.match(raw, /Historical fact C/);
 });
 
-test('Dream refuses to apply a fact change without a checked source', async (t) => {
+test('Dream refuses a fact change that has no citation', async (t) => {
   const env = await toolsEnv(t);
   const { file } = await save(env, 'Release', 'Thursday.');
   model(env, [[['memory_write', { file, body: 'Friday.' }]]]);
   const pending = await dream(env);
-  assert.equal(pending.ready, true);
-  assert.equal((await env.runtime.switchDream({ pctx: env.pctx, runId: pending.runId })).error, 'evidence-required');
+  assert.notEqual(pending.ready, true);
+  assert.equal(env.pctx.state.snapshot().shadowPending, null);
   assert.equal(await body(env, file), 'Thursday.');
 });
 
@@ -340,25 +342,24 @@ test('automatic extraction resumes within a long event and reaches the final sho
   assert.equal(env.pctx.state.snapshot().extractOffsets.s1, undefined);
 });
 
-test('a checked source for an older rewrite does not approve the final rewrite', async (t) => {
+test('a cited rewrite reaches review with its evidence bound to the page revision', async (t) => {
   const env = await toolsEnv(t);
   const { file } = await save(env, 'Release', 'Thursday release.');
   const [citations] = cite(env, 'We now release on Monday.');
-  model(env, [
-    [['memory_write', { file, body: 'We now release on Monday.', citations }]],
-    [['memory_write', { file, body: 'We now release on Friday.' }]],
-  ]);
+  model(env, [[['memory_write', { file, body: 'We now release on Monday.', citations }]]]);
   assert.equal((await dream(env)).ready, true);
   const pending = env.pctx.state.snapshot().shadowPending;
-  assert.deepEqual(pending.evidence, []);
-  assert.equal((await env.runtime.switchDream({ pctx: env.pctx })).error, 'evidence-required');
+  assert.equal(pending.evidence.length, 1);
+  assert.equal(pending.evidence[0].revision, pending.proofs[0].revision);
+  assert.equal(pending.evidence[0].role, 'user');
+  assert.equal((await env.runtime.switchDream({ pctx: env.pctx })).ok, true);
 });
 
 test('a deduplication can remove a source without a quote only while the destination preserves it', async (t) => {
   const env = await toolsEnv(t);
   const a = await save(env, 'Duplicate', 'Retain this fact.');
   const dest = await save(env, 'Canonical', 'Retain this fact.');
-  const duplicate = () => model(env, [[['memory_delete', { file: a.file, moved_to: dest.file }]]]);
+  const duplicate = () => model(env, [[['memory_delete', { file: a.file, moved_to: dest.file, citations: [{ memory_file: dest.file, quote: 'Retain this fact.' }] }]]]);
   duplicate();
   assert.equal((await dream(env)).ready, true);
   await env.pctx.store.updateEntry(dest.file, { content: 'The other note was corrected.' });

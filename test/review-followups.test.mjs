@@ -1,8 +1,7 @@
 /**
- * Follow-ups from the 2026-11-16 review: headings carry meaning in the
- * fact-preservation check, an unsourced change can be accepted after reading
- * its diff, recall sees relevant old pages past the manifest cap, rejections
- * record the exact change, and auto-extract refuses instead of truncating.
+ * Follow-ups from the 2026-11-16 review: a deferred change keeps the page,
+ * recall sees relevant old pages past the manifest cap, rejections record the
+ * exact change, and auto-extract refuses instead of truncating.
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -33,40 +32,10 @@ function model(env, steps) {
   return requests;
 }
 
-test('renaming the heading above unchanged lines is not a preserved edit', async (t) => {
-  const env = await toolsEnv(t);
-  const { file } = await save(env, 'drinks', '## 用户喜欢\n\n- 咖啡');
-  model(env, [[['memory_write', { file, body: '## 用户讨厌\n\n- 咖啡' }]]]);
-  await dream(env);
-  assert.equal(proofOf(env, file).kind, 'missing');
-});
-
-test('reformatting the same facts under the same heading stays preserved', async (t) => {
-  const env = await toolsEnv(t);
-  const { file } = await save(env, 'drinks', '## 用户喜欢\n\n- 咖啡\n- 茶');
-  model(env, [[['memory_write', { file, body: '##  用户喜欢\n\n* 咖啡\n\n* 茶' }]]]);
-  await dream(env);
-  assert.equal(proofOf(env, file).kind, 'preserved');
-});
-
-test('an unsourced rewrite applies only after the reviewer confirms it', async (t) => {
+test('deferring a change keeps the page and records no rejection', async (t) => {
   const env = await toolsEnv(t);
   const { file } = await save(env, 'language', '用户偏好使用中文进行沟通');
-  model(env, [[['memory_write', { file, body: '用户更喜欢用中文交流' }]]]);
-  const pending = await dream(env);
-  assert.equal(proofOf(env, file).kind, 'missing');
-  const refused = await env.runtime.switchDream({ pctx: env.pctx, runId: pending.runId });
-  assert.equal(refused.error, 'evidence-required');
-  const applied = await env.runtime.switchDream({ pctx: env.pctx, runId: pending.runId, confirm: [file] });
-  assert.equal(applied.ok, true, JSON.stringify(applied));
-  assert.deepEqual(applied.confirmedWithoutSource, [file]);
-  assert.match((await env.pctx.store.readEntry(file)).body, /用户更喜欢用中文交流/);
-});
-
-test('deferring an unsourced change keeps the page and records no rejection', async (t) => {
-  const env = await toolsEnv(t);
-  const { file } = await save(env, 'language', '用户偏好使用中文进行沟通');
-  model(env, [[['memory_write', { file, body: '用户更喜欢用中文交流' }]]]);
+  model(env, [[['memory_write', { file, body: '用户更喜欢用中文交流', citations: [{ memory_file: file, quote: '用户偏好使用中文进行沟通' }] }]]]);
   const pending = await dream(env);
   const result = await env.runtime.switchDream({ pctx: env.pctx, runId: pending.runId, defer: [file] });
   assert.equal(result.ok, true, JSON.stringify(result));
@@ -93,7 +62,8 @@ test('a relevant old page reaches the capped recall manifest ahead of newer ones
 test('a rejection records the exact change and is shown with the next proposal on that page', async (t) => {
   const env = await toolsEnv(t);
   const { file } = await save(env, 'preferences', '周四发布。\n用中文回答。');
-  model(env, [[['memory_write', { file, body: '周一发布。\n用中文回答。' }]]]);
+  const cite = [{ memory_file: file, quote: '周四发布。 用中文回答。' }];
+  model(env, [[['memory_write', { file, body: '周一发布。\n用中文回答。', citations: cite }]]]);
   const first = await dream(env);
   await env.runtime.switchDream({ pctx: env.pctx, runId: first.runId, reject: [file] });
   const [line] = env.pctx.state.snapshot().dreamRejected;
@@ -101,7 +71,7 @@ test('a rejection records the exact change and is shown with the next proposal o
   assert.match(line, /removed "周四发布。"/);
   assert.match(line, /added "周一发布。"/);
 
-  const requests = model(env, [[['memory_write', { file, body: '周四发布。\n用英文回答。' }]]]);
+  const requests = model(env, [[['memory_write', { file, body: '周四发布。\n用英文回答。', citations: cite }]]]);
   await dream(env);
   assert.ok(JSON.stringify(requests[0].messages).includes('周一发布'), 'the next run sees the exact rejected change');
   assert.deepEqual(env.pctx.state.snapshot().shadowPending.rejectedBefore[file], [line]);

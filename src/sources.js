@@ -50,7 +50,7 @@ export function normalizeSources(value) {
 }
 
 /** Check one source: ok | missing | symbol-missing | outside | unknown. */
-async function checkOne(root, source) {
+async function checkOne(root, source, withRevision) {
   const { path: file, symbol } = parseSource(source);
   const target = path.resolve(root, file);
   if (file === '' || path.isAbsolute(file) || !isInside(root, target)) return { source, status: 'outside' };
@@ -62,10 +62,11 @@ async function checkOne(root, source) {
   } catch {
     return { source, status: 'missing' };
   }
-  if (symbol === '' || !info.isFile()) return { source, status: 'ok' };
-  if (info.size > MAX_SYMBOL_FILE_BYTES) return { source, status: 'unknown' };
+  const details = withRevision ? { source, revision: `${info.ino}:${info.mtimeMs}:${info.ctimeMs}:${info.size}` } : { source };
+  if (symbol === '' || !info.isFile()) return { ...details, status: 'ok' };
+  if (info.size > MAX_SYMBOL_FILE_BYTES) return { ...details, status: 'unknown' };
   try {
-    return { source, status: (await fs.readFile(target, 'utf8')).includes(symbol) ? 'ok' : 'symbol-missing' };
+    return { ...details, status: (await fs.readFile(target, 'utf8')).includes(symbol) ? 'ok' : 'symbol-missing' };
   } catch {
     return { source, status: 'missing' };
   }
@@ -75,13 +76,14 @@ async function checkOne(root, source) {
  * Check every source of one note against the project root.
  * @param {string} root project root (absolute).
  * @param {string[]} sources
+ * @param {{withRevision?:boolean}} [options] Include a file revision for maintenance deduplication.
  * @returns {Promise<{items:Array<{source:string,status:string}>, broken:Array<{source:string,status:string}>}>}
  */
-export async function checkSources(root, sources) {
+export async function checkSources(root, sources, { withRevision = false } = {}) {
   const list = Array.isArray(sources) ? sources.slice(0, MAX_SOURCES) : [];
   if (list.length === 0 || typeof root !== 'string' || root === '') return { items: [], broken: [] };
   const base = path.resolve(root);
-  const items = await Promise.all(list.map((source) => checkOne(base, source)));
+  const items = await Promise.all(list.map((source) => checkOne(base, source, withRevision)));
   return { items, broken: items.filter((item) => item.status !== 'ok' && item.status !== 'unknown') };
 }
 

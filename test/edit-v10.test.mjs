@@ -237,14 +237,26 @@ test('v10 edit: HTTP file/merge/file-history endpoints and commands', async (t) 
   assert.equal((await callHttp(env, { path: '/file-history?file=x.md', token: 'bad-token' })).statusCode, 401);
 
   const commandEnvV = await commandEnv(t);
+  const cmdService = await statusService(commandEnvV);
   const seedA = await seed(commandEnvV, 'cmd merge a', { content: 'cmd A' });
   const seedB = await seed(commandEnvV, 'cmd merge b', { content: 'cmd B' });
 
-  const historyOut = await commandEnvV.invokeMemory(`history ${seedA.file}`);
-  assert.equal(historyOut.kind, 'success', historyOut.text);
-  assert.match(historyOut.text, /via|created|history|provenance/i);
+  const historyOut = await cmdService.fileHistory(commandEnvV.pctx, seedA.file);
+  assert.equal(historyOut.ok, true);
+  assert.equal(historyOut.file, seedA.file);
 
-  const mergeOut = await commandEnvV.invokeMemory(`merge ${seedA.file} ${seedB.file}`);
-  assert.equal(mergeOut.kind, 'success', mergeOut.text);
-  assert.match(mergeOut.text, /merged|http|cmd/i);
+  const mergeOut = await cmdService.mergeFiles(commandEnvV.pctx, {
+    files: [seedA.file, seedB.file],
+    name: 'cmd merged',
+    type: 'project',
+    description: 'merged via status service',
+  });
+  assert.equal(mergeOut.ok, true);
+  assert.ok(mergeOut.file);
+
+  for (const retired of [`history ${seedA.file}`, `merge ${seedA.file} ${seedB.file}`]) {
+    const res = await commandEnvV.invokeMemory(retired);
+    assert.equal(res.kind, 'error');
+    assert.match(res.text, /unknown \/memory subcommand/);
+  }
 });

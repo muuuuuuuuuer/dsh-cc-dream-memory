@@ -51,9 +51,8 @@ export const MEMORY_INSTRUCTIONS = [
   '- feedback: how the user wants you to work: a correction, an approach the user confirmed, or how answers should be written. Keep a simple preference to one sentence. Include **Why:** or **How to apply:** only for a stated reason or non-obvious application the user confirmed.',
   '- project: facts about this project that the repository does not record: goals, deadlines, decisions, constraints, and how it is released or run. Add **Why:** and **How to apply:** when they are not obvious.',
   '- reference: where external information lives (URLs, dashboards, docs) and what it is for.',
-  'Save only durable facts that cannot be read off the repository or from memory-rules.md: user preferences and corrections, decisions, and pointers to external information.',
   MEMORY_SELECTION,
-  'Do not save secrets, one-off tasks, code patterns, architecture notes, file paths, project structure, git history, debugging recipes, or anything a session can re-derive.',
+  'Do not save secrets, one-off tasks, or anything a session can re-derive.',
   'Do not save what memory-rules.md or this instruction block already states. Update an existing note instead of adding a near-duplicate; merge duplicates and delete notes that are no longer true.',
   'When the user corrects something a note says, update that note now with memory_update: change only the wrong passage and keep the conditions that still hold.',
   'Give `sources` (repo-relative paths, optionally `path#symbol`, at most 10) when a fact depends on specific files; they anchor the note, they are not a summary of the code. The host warns when a source is gone.',
@@ -94,6 +93,12 @@ export function buildInjectionText(input = {}) {
   lines.push(
     'Save with memory_save (new note) or memory_update (existing note); search with memory_search; read with memory_read. Skip anything the repository already records.',
   );
+  // Wiki pages lead the index; they are Dream's synthesis, not the main session's to write.
+  if (/\]\(wiki_[^)\s]*\.md\)/u.test(typeof index.text === 'string' ? index.text : '')) {
+    lines.push(
+      'Entries named wiki_* lead the index: wiki pages that Dream wrote from several notes and sessions, linked with [[file-name]]. Read one before a task on its topic; you cannot write or edit them, so save a correction as a note.',
+    );
+  }
   // The long behaviour manual that used to sit here cost context on every first
   // turn; Claude Code's auto-memory section is richer, but its per-turn selector
   // is what makes that affordable. This compact version is a deliberate

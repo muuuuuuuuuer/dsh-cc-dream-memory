@@ -83,7 +83,7 @@ function distinctSessionCount(snapshot) {
   const ids = new Set();
   for (const entry of sessions) {
     const id = typeof entry === 'string' ? entry : entry?.id;
-    if (typeof id === 'string' && id !== '' && !deferred.has(id)) ids.add(id);
+    if (typeof id === 'string' && id !== '' && !deferred.has(id) && snapshot.sessionFlags?.[id]?.learn !== false) ids.add(id);
   }
   return ids.size;
 }
@@ -197,7 +197,7 @@ export function dreamReadiness(pctx, options = {}) {
     if (!gates.minSessions.ok) {
       reasons.push({
         code: 'min-sessions',
-        message: `only ${sessionCount} of ${minSessions} sessions since the last dream`,
+        message: `only ${sessionCount} of ${minSessions} sessions needed for automatic dialogue review`,
       });
     }
     if (throttleRemaining > 0) {
