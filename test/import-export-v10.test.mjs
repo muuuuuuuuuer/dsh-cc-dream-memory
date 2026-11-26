@@ -160,21 +160,21 @@ test('v10 export: HTTP POST /export writes a Claude-compatible memory dir plus r
   assert.equal(bad.statusCode === 200 ? bad.json().ok : false, false, 'a missing import path is refused');
 });
 
-test('v10 import/export: status service imports and exports, and retired CLI verbs are rejected', async (t) => {
+test('v10 import/export: /memory import and /memory export commands', async (t) => {
   const env = await commandEnv(t);
-  const service = env.mods.status.createStatusService(env.runtime);
   const sourceDir = await makeClaudeDir(env);
-  const imported = await service.importMemory(env.pctx, { sourceDir });
-  assert.equal(imported.ok, true);
-  assert.ok(imported.imported.length >= 1);
+  // The raw path is passed as typed, so Windows backslashes survive the tokenizer.
+  const imported = await env.invokeMemory(`import ${sourceDir}`);
+  assert.equal(imported.kind, 'success', imported.text);
+  assert.match(imported.text, /imported [1-9]\d* file\(s\)/);
+  assert.ok((await env.pctx.store.listEntries()).some((entry) => entry.file.includes('plain_note')));
 
-  const targetDir = path.join(env.tmp, 'service-export');
-  const exported = await service.exportMemory(env.pctx, { targetDir });
-  assert.equal(exported.ok, true);
-  assert.ok(exported.exported >= 1);
+  const targetDir = path.join(env.tmp, 'command export');
+  const exported = await env.invokeMemory(`export "${targetDir}"`);
+  assert.equal(exported.kind, 'success', exported.text);
+  assert.match(exported.text, /exported [1-9]\d* file\(s\)/);
   assert.equal(await exists(path.join(targetDir, 'memory', 'MEMORY.md')), true);
 
-  const asCommandPath = (value) => value.replaceAll('\\', '/');
-  assert.match((await env.invokeMemory(`import ${asCommandPath(sourceDir)}`)).text, /unknown \/memory subcommand/);
-  assert.match((await env.invokeMemory(`export ${asCommandPath(targetDir)}`)).text, /unknown \/memory subcommand/);
+  assert.match((await env.invokeMemory('import')).text, /usage: \/memory import/);
+  assert.match((await env.invokeMemory('export')).text, /usage: \/memory export/);
 });

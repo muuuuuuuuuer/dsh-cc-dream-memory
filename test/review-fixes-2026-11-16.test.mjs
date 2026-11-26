@@ -84,7 +84,7 @@ test('status.writeFile saves the page it read and /memory edit is retired', asyn
   assert.match((await env.invokeMemory(`edit ${saved.file} --content=x`)).text, /unknown \/memory subcommand/);
 });
 
-test('status.exportMemory counts the files it wrote and /memory export is retired', async (t) => {
+test('status.exportMemory counts the files it wrote and /memory export reports the same count', async (t) => {
   const env = await commandEnv(t);
   const service = env.mods.status.createStatusService(env.runtime);
   await env.pctx.store.saveEntry({ name: 'deploy', type: 'project', description: 'how we deploy', content: 'Body.\n' });
@@ -92,7 +92,7 @@ test('status.exportMemory counts the files it wrote and /memory export is retire
   const result = await service.exportMemory(env.pctx, { targetDir: target });
   assert.equal(result.ok, true);
   assert.equal(result.exported, 1);
-  assert.match((await env.invokeMemory(`export ${target}`)).text, /unknown \/memory subcommand/);
+  assert.match((await env.invokeMemory(`export ${target}-cmd`)).text, /^exported 1 file\(s\)/);
 });
 
 test('an unknown dream subcommand answers instead of returning nothing', async (t) => {

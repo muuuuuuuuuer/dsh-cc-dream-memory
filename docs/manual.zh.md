@@ -218,7 +218,7 @@ API 端点：`GET /status`、`GET /file`、`GET /rules`、`GET /log`、`GET /sea
 
 ## P1 新增：恢复/编辑/检索/指标/互通/一致性（v10）
 
-- **恢复语义**：每次切换生成 `.dreams/<ts>/meta.json`（含被改/新建/删除的文件与切换后的哈希）；`/memory dream undo`（或 UI Dream 历史里的 Restore）只还原被那次切换改过的笔记、只把新建的文件移入 `.trash/`，其余保持你现在的修改；连续 undo 会逐个批次回退；`/memory dream history` 列出批次。
+- **恢复语义**：每次切换生成 `.dreams/<ts>/meta.json`（含被改/新建/删除的文件与切换后的哈希）；`/memory undo`（或 UI Dream 历史里的 Restore）只还原被那次切换改过的笔记、只把新建的文件移入 `.trash/`，其余保持你现在的修改；连续 undo 会逐个批次回退；Dream 标签的历史列出批次。
 - **编辑/合并/审计**：`POST /file`、`POST /merge`、`GET /file-history` + UI（Edit 表单、文件多选 Merge、History 折叠）替代“只能靠工具改”。
 - **检索**：`memory_search` + `/memory search` + UI 搜索框；相关度 = name(5)/description(3)/body(1) + phrase bonus + 30 天 recency，支持 type/scope 过滤与分页；语义检索（embedding）仍留作路线。
 - **指标价值**：daily 桶（60 天）、adoption 计数、dream quality（appliedOps/planOps、dropped、rollbacks、applyRate/dropRate）；`GET /metrics?days=7` 与效果卡 7 日趋势。

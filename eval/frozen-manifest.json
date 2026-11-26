@@ -1,7 +1,7 @@
 {
-  "frozenAt": "2026-11-20T19:40:23.752Z",
+  "frozenAt": "2026-11-26T15:41:05.011Z",
   "harnessContract": "v16",
-  "pluginVersion": "0.26.0",
+  "pluginVersion": "0.27.0",
   "target": {
     "profile": "cc-memory-eval",
     "model": "profile default (deepseek-flash)",

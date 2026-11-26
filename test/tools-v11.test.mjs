@@ -153,10 +153,10 @@ test('v11 tools: human surfaces document the current operations (/memory usage)'
   const env = await commandEnv(t);
   const output = await env.invokeMemory('bogus');
   assert.equal(output.kind, 'error', output.text);
-  for (const verb of ['search', 'dream', 'undo', 'session']) {
+  for (const verb of ['search', 'dream', 'undo', 'session', 'import', 'export']) {
     assert.match(output.text, new RegExp(`\\b${verb}\\b`), `the command surface still documents /memory ${verb}`);
   }
-  for (const retired of ['list', 'delete', 'refresh', 'metrics', 'merge', 'history', 'import', 'export', 'inbox', 'writes']) {
+  for (const retired of ['list', 'delete', 'refresh', 'metrics', 'merge', 'history', 'inbox', 'writes']) {
     assert.doesNotMatch(output.text, new RegExp(`\\b${retired}\\b`), `retired /memory ${retired} is gone from usage`);
   }
 });

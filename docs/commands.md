@@ -15,6 +15,13 @@ Run these in a DeepSeek Harness session. Run bare `/memory` to see the current s
 | `/memory session use on\|off` | `off`: this conversation loads no memory and recalls nothing |
 | `/memory session learn on\|off` | `off`: auto-extract skips this conversation and Dream leaves it out; `memory_save` still works |
 
+## Moving memories
+
+| Command | What it does |
+|---|---|
+| `/memory import <path>` | Import a Claude Code memory folder (`~/.claude/projects/<project>/memory`, or the project folder). Keeps `name`, `description` and `type`, skips files that already exist, and runs the secret scan. Quote a path that contains spaces |
+| `/memory export <path>` | Write this project's notes into that layout under `<path>/memory` |
+
 ## Dream
 
 | Command | What it does |

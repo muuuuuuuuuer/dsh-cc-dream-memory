@@ -1,6 +1,17 @@
 # Changelog — dsh-cc-dream-memory
 
-## Unreleased
+## 0.27.0 (2026-11-26)
+
+Highlights:
+
+- Dream's main job is now lessons that span sessions. It sees tool calls and results, can search the project's other sessions, and decides for itself what to read.
+- Dream can write wiki pages (`wiki_<topic>.md`) that sum up a topic across notes and sessions. Only Dream writes them; links and size are checked.
+- One citation check for every write: the main session, auto-extract and Dream all cite quotes, and the plugin checks that each quote exists and records who said it. The claim-matching check that deferred most Dream changes is gone.
+- Slash commands are trimmed to `/remember` and `/memory` with `status`, `search`, `undo`, `session`, `import`, `export` and `dream` (`run`, `status`, `estimate`, `resume`, `cancel`, `diff`, `switch`, `discard`). Browsing, editing, deleting, settings, backups and trash live in the Memory panel. The `/dream` alias, the Inbox and the other `/memory` verbs are removed; `/memory dream undo` is now `/memory undo`.
+- `/memory dream discard` defers the pending copy instead of rejecting its facts for good; its sessions stay eligible for a later run.
+- The Web client is built from `web/` with esbuild (`npm run build`); `npm run verify` and CI check that `client.js` matches its sources.
+
+Details:
 
 - A `dream_submit` with `done: true` no longer ends the run while one of its changes failed to apply (for example an edit without the note's `version`). The reply names the failed notes and the model can fix them in the same run; previously the corrected retry was refused as "already finished" and the run ended with `unfinished-writes`.
 - A passage edit (Dream's `edit` op, `memory_update` with `old_text`) whose replacement still contains the old passage only adds to it, and no longer writes a `- Superseded:` line for text that is still current. Found in a real Dream run that appended to a note and marked the kept line as superseded.
@@ -376,7 +387,7 @@ UI-FREEZE: 用户明确要求把功能从「整理 / Tidy」更名为 **Dream**�
 - 未获用户明确批准并运行 `node scripts/ui-freeze.mjs --update` 前，任何 UI 改动都会让测试失败；commit 需以 `UI-FREEZE:` 说明批准来源。
 - 新增 `npm run ui:verify` / `npm run ui:freeze` 与 [UI-FREEZE.md](UI-FREEZE.md)。
 
-## Unreleased
+## Client v4 UI (between 0.10.1 and 0.10.2)
 
 Memory 页重做（client v4 UI）：
 

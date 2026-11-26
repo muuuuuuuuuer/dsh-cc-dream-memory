@@ -15,11 +15,34 @@ const MEMORY_TYPES = Object.freeze(['user', 'feedback', 'project', 'reference'])
 /** Fast membership check for the supported frontmatter types. */
 const TYPE_SET = new Set(MEMORY_TYPES);
 
-const MEMORY_HINT = '[search <query> | dream [action] | undo | session [use|learn on|off]]';
+const MEMORY_HINT = '[search <query> | dream [action] | undo | session [use|learn on|off] | import <path> | export <path>]';
 const DREAM_HINT = 'run|status|estimate|resume|cancel|diff|switch|discard';
 /** Notes this similar to a /remember are listed for the user to compare. */
 const RELATED_SIMILARITY = 0.35;
 const REMEMBER_HINT = '[--type=user|feedback|project|reference] [--force] <text>';
+
+/**
+ * The raw argument after a verb, keeping the backslashes of Windows paths that
+ * the shell-style tokenizer would treat as escapes. A quoted argument runs to
+ * its closing quote; an unquoted one stops at the next flag.
+ * @param {unknown} rawInput full command text handed to the handler
+ * @param {string} verb command verb (`import`, `export`)
+ * @returns {string}
+ */
+function rawArgumentAfter(rawInput, verb) {
+  const raw = typeof rawInput === 'string' ? rawInput : '';
+  const match = new RegExp(`(?:^|\\s)${verb}\\s+`, 'u').exec(raw);
+  if (match === null) return '';
+  let rest = raw.slice(match.index + match[0].length).trim();
+  const quote = rest[0];
+  if (quote === '"' || quote === "'") {
+    const end = rest.indexOf(quote, 1);
+    return (end > 0 ? rest.slice(1, end) : rest.slice(1)).trim();
+  }
+  const flagIndex = rest.search(/\s+--/u);
+  if (flagIndex >= 0) rest = rest.slice(0, flagIndex);
+  return rest.trim();
+}
 
 function warn(scope, error) {
   // eslint-disable-next-line no-console
@@ -352,6 +375,44 @@ export function registerCommands(ctx, runtime) {
     return ok(lines.join('\n'));
   }
 
+  /** `/memory import <path>`: import a Claude Code memory directory. */
+  async function memoryImport(invocation) {
+    const blocked = subagentGuard(invocation);
+    if (blocked) return blocked;
+    const sourceDir = rawArgumentAfter(invocation?.rawInput, 'import');
+    if (sourceDir === '') return fail('usage: /memory import <path-to-claude-memory-dir>');
+    const pctx = await requireProject(invocation);
+    let result;
+    try {
+      result = await service.importMemory(pctx, { sourceDir });
+    } catch (error) {
+      return fail(`memory import: ${errorText(error)}`);
+    }
+    invalidate(invocation);
+    const lines = [
+      `imported ${result.imported.length} file(s) from ${result.sourceDir}`,
+      `skipped: ${result.skipped.length}   errors: ${result.errors.length}`,
+    ];
+    if (result.skipped.length > 0) {
+      lines.push(`skipped files: ${result.skipped.slice(0, 5).map((item) => item?.file ?? item).join(', ')}`);
+    }
+    return ok(lines.join('\n'));
+  }
+
+  /** `/memory export <path>`: export into a Claude Code memory layout. */
+  async function memoryExport(invocation) {
+    const targetDir = rawArgumentAfter(invocation?.rawInput, 'export');
+    if (targetDir === '') return fail('usage: /memory export <target-dir>');
+    const pctx = await requireProject(invocation);
+    let result;
+    try {
+      result = await service.exportMemory(pctx, { targetDir });
+    } catch (error) {
+      return fail(`memory export: ${errorText(error)}`);
+    }
+    return ok(`exported ${result.exported} file(s) to ${result.targetDir}${result.rules ? ' (rules included)' : ''}`);
+  }
+
   async function memoryUndo(invocation) {
     const blocked = subagentGuard(invocation);
     if (blocked) return blocked;
@@ -669,6 +730,10 @@ usage: /memory dream ${DREAM_HINT}`);
           return args.length ? fail('usage: /memory undo') : await memoryUndo(invocation);
         case 'session':
           return await memorySession(invocation, args);
+        case 'import':
+          return await memoryImport(invocation);
+        case 'export':
+          return await memoryExport(invocation);
         default:
           return fail(`unknown /memory subcommand "${verb}".\nusage: /memory ${MEMORY_HINT}`);
       }
