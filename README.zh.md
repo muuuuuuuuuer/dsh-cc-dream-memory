@@ -58,16 +58,16 @@
 
 需要 Node 22 或更新版本，以及 DeepSeek Harness 0.2.2-rc.1 或更新版本。
 
-npm 上目前仍是 0.12.0，请从 GitHub 安装当前版本：
+npm 上目前是 0.12.0。可以从 GitHub 的功能分支安装 0.26.0。
 
 ```bash
-dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
+dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#feat/memory-workflow-simplification
 ```
 
 如果 `dsh` 不在 PATH 中，用 `npx`：
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
+npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#feat/memory-workflow-simplification
 ```
 
 重启 DeepSeek Harness，然后新建会话。
@@ -95,7 +95,7 @@ npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-m
 
    ```text
    /memory dream switch
-   /memory dream undo
+   /memory undo
    ```
 
 其他命令见[命令参考](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/docs/commands.md)（英文）或[使用手册](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/docs/manual.zh.md)。
@@ -108,15 +108,14 @@ npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-m
 
 **召回。** 按标题、简介和笔记正文生成候选，每轮调用一次模型挑选，默认最多附加 3 篇。长笔记只附加命中的段落，连同标题和适用条件。聊天里会显示附加了哪些笔记，每篇都有“不相关”按钮。
 
-**Dream。** Dream 根据过去的会话整理笔记。它作为宿主子代理运行，读取尚未复查的会话，把改动写进单独的副本。每条新事实都必须引用来源会话的原文，没有通过核验的改动会被暂缓。切换之前你的笔记不会变；切换时先备份当前笔记，撤销会恢复它们。自动 Dream 默认关闭。开启后只在有明确目标时运行：你纠正过的笔记、来源文件有变的笔记、被召回的笔记，最后是归档候选。
+**Dream。** Dream 根据过去的会话整理笔记。它作为宿主子代理运行，读取尚未复查的会话，把改动写进单独的副本。它的主要工作是提炼跨会话的教训：反复出现的错误、变通办法、做成一件事的方式以及如何验证，依据是工具结果（退出码、命令输出）而不是助手说“已修好”。它还会让笔记与实际发生的事保持一致，并让索引保持小。它能看到工具调用和结果，也能搜索本项目的其他会话。每条新事实都必须引用来源会话的原文，没有通过核验的改动会被暂缓。切换之前你的笔记不会变，切换时先备份当前笔记，撤销会恢复它们。自动 Dream 默认关闭。开启后可检查新的会话材料，也可维护你纠正过的笔记或来源失效的笔记。召回次数用于排列维护目标的优先级，归档候选在面板里作提示。
+
+**Wiki 页面。** Dream 也会写 wiki 页面：每个主题（一种工作流、一个模块、一套环境）一页，综合多条笔记和多个会话，并用 `[[文件名]]` 链接相关页面和笔记。它们是扁平的 `wiki_<主题>.md` 文件，和笔记走同样的审阅、切换与撤销。只有 Dream 能写；智能体可以读取和召回；被页面完整覆盖的笔记会被删除并指向该页面。宿主会拒绝失效链接，并限制每页与整个 wiki 的大小（`wikiPageMaxChars`、`wikiTotalMaxChars`），让 wiki 比它所概括的内容更短。`MEMORY.md` 先列 wiki 页面。
+
 
 ## 从 Claude Code 迁移
 
-```text
-/memory import ~/.claude/projects/<你的项目>
-```
-
-导入时会读取 `MEMORY.md` 和主题文件，保留 `name`、`description`、`type`。已存在的文件会跳过，密钥扫描照常生效。`/memory export <路径>` 可以按同样的结构导出。
+可以通过 HTTP API `/api/cc-memory/import` 与 `/api/cc-memory/export` 导入或导出 Claude Code 格式的记忆目录（`~/.claude/projects/<你的项目>`）。导入时会读取 `MEMORY.md` 和主题文件，保留 `name`、`description`、`type`，已存在的文件会跳过，密钥扫描照常生效；导出可以按同样的结构写回。
 
 和 Claude Code 的不同之处：
 
@@ -128,7 +127,7 @@ npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-m
 | 来源 | 笔记可以列出它依赖的仓库文件；来源已失效的笔记不再被召回 |
 | 用户记忆 | `user` 类型笔记由本机所有项目共享，其余仍按项目保存 |
 | 单个对话 | `/memory session use off` 不加载记忆；`/memory session learn off` 让该对话不参与自动抽取和 Dream |
-| 子代理 | 默认不带记忆（`subagentMemory: off`），可选 `shared` 或按代理分目录的 `own` |
+| 子代理 | 默认不带记忆（`subagentMemory: off`），可选 `shared` 或按代理分目录的 `own`；`own` 时 Dream 可把子代理学到的内容合并进项目笔记 |
 
 ## 适合你吗
 

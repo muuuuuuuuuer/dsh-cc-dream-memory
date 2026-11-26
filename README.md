@@ -58,16 +58,16 @@ In a 0.23.1 check of seven queries run twice, unrelated messages pulled in 2 not
 
 Requires Node 22 or newer and DeepSeek Harness 0.2.2-rc.1 or newer.
 
-npm still has 0.12.0, so install the current release from GitHub:
+npm has 0.12.0. The 0.26.0 builds are available on the GitHub feature branch.
 
 ```bash
-dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
+dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#feat/memory-workflow-simplification
 ```
 
 If `dsh` is not on your PATH, use `npx`:
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#v0.26.0
+npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#feat/memory-workflow-simplification
 ```
 
 Restart DeepSeek Harness and start a new session.
@@ -95,7 +95,7 @@ Run these in a session.
 
    ```text
    /memory dream switch
-   /memory dream undo
+   /memory undo
    ```
 
 See the [command reference](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/docs/commands.md) for everything else.
@@ -108,15 +108,13 @@ See the [command reference](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/
 
 **Recall.** Titles, descriptions and note text rank candidates. One model call per turn picks the relevant ones, and up to 3 are attached by default. For a long note, the matching paragraph is attached with its heading and conditions. The chat shows which notes were attached, with a **Not relevant** button for each.
 
-**Dream.** Dream consolidates notes from past sessions. It runs as a host subagent, reads the sessions it has not reviewed, and writes its changes into a separate copy. Every new fact must quote the session it came from, and changes without a checked quote are deferred. Nothing reaches your notes until you switch, switching backs up the current notes first, and undo restores them. Automatic Dreams are off by default. When turned on, they run only when there is something specific to look at: notes you corrected, notes whose source files changed, recalled notes, then archive candidates.
+**Dream.** Dream consolidates notes from past sessions. It runs as a host subagent, reads the sessions it has not reviewed, and writes its changes into a separate copy. Its main job is lessons that span sessions: mistakes that recur, workarounds, the way something was done and how it was verified, judged from tool results (exit codes, command output) rather than from an assistant saying "fixed". It also keeps notes correct against what happened and the index small. It sees tool calls and results, and can search the project's other sessions. Every new fact must quote the session it came from, and changes without a checked quote are deferred. Nothing reaches your notes until you switch, switching backs up the current notes first, and undo restores them. Automatic Dreams are off by default. When turned on, they can review new conversation material or maintain notes you corrected or whose source anchors broke. Recall activity ranks maintenance targets, and the panel lists archive candidates as hints.
+
+**Wiki pages.** Dream can also write wiki pages: one page per topic (a workflow, a module, an environment) that synthesizes several notes and sessions and links related pages and notes with `[[file-name]]`. They are flat `wiki_<topic>.md` files, so they go through the same review, switch and undo as notes. Only Dream writes them; the agent can read and recall them, and a note a page fully covers is removed with a pointer to the page. The host rejects broken links and caps each page and the whole wiki (`wikiPageMaxChars`, `wikiTotalMaxChars`) so the wiki stays shorter than what it summarizes. `MEMORY.md` lists wiki pages first.
 
 ## Coming from Claude Code
 
-```text
-/memory import ~/.claude/projects/<your-project>
-```
-
-The import reads `MEMORY.md` and the topic files and keeps their `name`, `description` and `type`. It skips files that already exist, and secret scanning still applies. `/memory export <path>` writes the same layout back.
+You can import or export a Claude Code-style memory folder via the `/api/cc-memory/import` and `/api/cc-memory/export` endpoints (using the path to `~/.claude/projects/<your-project>`). The import reads `MEMORY.md` and the topic files, keeps their `name`, `description` and `type`, skips existing files, and still runs secret scanning. Export writes the same layout back.
 
 What is different here:
 
@@ -128,7 +126,7 @@ What is different here:
 | Sources | A note can list the repository files it depends on. Recall skips a note whose sources are gone |
 | User memory | Type `user` notes are shared by every project on this machine; everything else stays per project |
 | Per conversation | `/memory session use off` loads nothing; `/memory session learn off` keeps the conversation out of auto-extract and Dream |
-| Subagents | No memory by default (`subagentMemory: off`); `shared` or `own` per-agent directories are available |
+| Subagents | No memory by default (`subagentMemory: off`); `shared` or `own` per-agent directories are available; with `own`, Dream can merge what subagents learned into the project notes |
 
 ## Is it right for you?
 
