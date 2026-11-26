@@ -4,7 +4,9 @@
 
 **为 DeepSeek Harness 带来 Claude Code 式的自动记忆和 Dream。**
 
-让 agent 跨会话记住事情。Dream 提出的每一处改动，你都能先审阅，也能撤销。
+同一个模型，30 道 LongMemEval 题：不装插件答对 27%，有了它的记忆答对 87%。
+
+笔记是纯 Markdown，你可以直接打开和修改。Dream 提出的每一处改动，你都能先审阅，也能撤销。
 
 [![npm](https://img.shields.io/npm/v/dsh-cc-dream-memory)](https://www.npmjs.com/package/dsh-cc-dream-memory)
 [![CI](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml)
@@ -13,6 +15,22 @@
 [English](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/README.md) · 简体中文
 
 </div>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/memory-tab.png" width="860" alt="打开记忆标签的 DeepSeek Harness，列出四篇纯 Markdown 笔记，带搜索、类型筛选和新建按钮">
+</p>
+
+```bash
+dsh plugin --profile web add dsh-cc-dream-memory
+```
+
+从 Claude Code 过来？把笔记一起带上：
+
+```text
+/memory import ~/.claude/projects/<你的项目>
+```
+
+桌面版安装、`npx` 和环境要求见[安装](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/README.zh.md#安装)。
 
 ## 测试结果
 
@@ -34,10 +52,10 @@
 结论：
 
 - **提升来自记忆。** 不装插件时 agent 看不到以前的会话，知识更新和跨会话的 20 题一题没答对；有了记忆，答对 19 题。
-- **Dream 在这里没有提高准确率。** C 比 B 多对 1 题、多错 2 题。Dream 提出的 1,137 处改动中，证据检查暂缓了 1,001 处（88%）。
 - **有记忆时拒答略差。** 不装插件的 agent 更常正确地回答“不知道”，因为它没有可以误读的笔记。
+- **Dream 管的是可审阅，不是提分。** 它在这里没有提高准确率：C 比 B 多对 1 题、多错 2 题，Dream 提出的 1,137 处改动中，证据检查暂缓了 1,001 处（88%），0.27.0 已去掉这项检查。Dream 给你的是一次可以核对的整理：单独的副本，每条新事实都附原文引用，切换后还能撤销。
 
-局限：这是固定的 30 题诊断样本（每组 10 题），不是完整的 500 题。评分用 DeepSeek 加官方 LongMemEval 判分提示词，不是官方的 GPT-4o 评委。本次运行使用 0.25.0 的代码。0.26.0 改了 Dream 挑选和编辑笔记的方式，之后没有重跑这 30 题。[实验设置与样本](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/README.md)（英文） · [Dream 的时间花在哪里](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/DREAM-SELECTION.zh.md)
+局限：这是固定的 30 题诊断样本（每组 10 题），不是完整的 500 题。评分用 DeepSeek 加官方 LongMemEval 判分提示词，不是官方的 GPT-4o 评委。本次运行使用 0.25.0 的代码。0.26.0 和 0.27.0 都改了 Dream 的工作方式，之后没有重跑这 30 题。[实验设置与样本](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/README.md)（英文） · [Dream 的时间花在哪里](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/DREAM-SELECTION.zh.md)
 
 ### 召回，合成用例
 
@@ -52,23 +70,35 @@
 
 ### 测试套件
 
-`npm run verify` 在 80 个测试文件中通过 702 条断言。CI 在 Windows 和 Ubuntu 上用 Node 22 与 24 运行。
+`npm run verify` 在 86 个测试文件中通过 785 条断言。CI 在 Windows 和 Ubuntu 上用 Node 22 与 24 运行。
 
 ## 安装
 
-需要 Node 22 或更新版本，以及 DeepSeek Harness 0.2.2-rc.1 或更新版本。
+需要 DeepSeek Harness 0.2.2-rc.1 或更新版本。使用 Web 命令行安装时还需要 Node 22 或更新版本。
 
-npm 上目前是 0.12.0。可以从 GitHub 的功能分支安装 0.26.0。
+### Web 命令行
 
 ```bash
-dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#feat/memory-workflow-simplification
+dsh plugin --profile web add dsh-cc-dream-memory
 ```
 
 如果 `dsh` 不在 PATH 中，用 `npx`：
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#feat/memory-workflow-simplification
+npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
 ```
+
+### 桌面版
+
+打开 **插件** → **添加插件**，输入 `dsh-cc-dream-memory` 并安装。
+
+如果你的版本不支持按包名安装，改为粘贴下面的发布包地址：
+
+```text
+https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/releases/download/v0.27.0/dsh-cc-dream-memory-0.27.0.tgz
+```
+
+如果安装后插件处于禁用状态，请在插件页启用它。
 
 重启 DeepSeek Harness，然后新建会话。
 
@@ -104,18 +134,21 @@ npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-m
 
 **记忆。** 笔记是纯 Markdown，目录结构和 Claude Code 兼容：一个 `MEMORY.md` 索引，加上每个主题一个文件，类型为 `user`、`feedback`、`project` 或 `reference`。每个文件都能自己打开和修改。聊天旁边有一个 **记忆** 标签，跟随宿主的明暗主题，界面有中英文。
 
-**自动抽取。** 默认开启。每 3 轮只读取对话中新增的部分，通过 agent 自己用的同一个工具保存值得留下的内容。纠正会修改已有笔记中对应的段落，而不是新建一篇。每次写入都经过重复、冲突和密钥检查。
+**自动抽取。** 默认开启。每 3 轮只读取对话中新增的部分，通过 agent 自己用的同一个工具保存值得留下的内容。纠正会修改已有笔记中对应的段落，而不是新建一篇。引用对话原文的写入会核对引文是否存在；相近或矛盾的笔记会被指出，让模型合并；像密钥的内容会被拒绝写入。
 
 **召回。** 按标题、简介和笔记正文生成候选，每轮调用一次模型挑选，默认最多附加 3 篇。长笔记只附加命中的段落，连同标题和适用条件。聊天里会显示附加了哪些笔记，每篇都有“不相关”按钮。
 
-**Dream。** Dream 根据过去的会话整理笔记。它作为宿主子代理运行，读取尚未复查的会话，把改动写进单独的副本。它的主要工作是提炼跨会话的教训：反复出现的错误、变通办法、做成一件事的方式以及如何验证，依据是工具结果（退出码、命令输出）而不是助手说“已修好”。它还会让笔记与实际发生的事保持一致，并让索引保持小。它能看到工具调用和结果，也能搜索本项目的其他会话。每条新事实都必须引用来源会话的原文，没有通过核验的改动会被暂缓。切换之前你的笔记不会变，切换时先备份当前笔记，撤销会恢复它们。自动 Dream 默认关闭。开启后可检查新的会话材料，也可维护你纠正过的笔记或来源失效的笔记。召回次数用于排列维护目标的优先级，归档候选在面板里作提示。
+**Dream。** Dream 根据过去的会话整理笔记。它作为宿主子代理运行，读取尚未复查的会话，把改动写进单独的副本。它的主要工作是提炼跨会话的教训：反复出现的错误、变通办法、做成一件事的方式以及如何验证，依据是工具结果（退出码、命令输出）而不是助手说“已修好”。它还会让笔记与实际发生的事保持一致，并让索引保持小。它能看到工具调用和结果，也能搜索本项目的其他会话。每条新事实都必须引用来源会话的原文；插件核对引文确实存在，并标出是谁说的（你、粘贴的文本、助手或工具），没有有效引文的改动会退回给 Dream 修改。切换之前你的笔记不会变；切换时先备份当前笔记，`/memory undo` 会恢复它们。自动 Dream 默认关闭。
 
-**Wiki 页面。** Dream 也会写 wiki 页面：每个主题（一种工作流、一个模块、一套环境）一页，综合多条笔记和多个会话，并用 `[[文件名]]` 链接相关页面和笔记。它们是扁平的 `wiki_<主题>.md` 文件，和笔记走同样的审阅、切换与撤销。只有 Dream 能写；智能体可以读取和召回；被页面完整覆盖的笔记会被删除并指向该页面。宿主会拒绝失效链接，并限制每页与整个 wiki 的大小（`wikiPageMaxChars`、`wikiTotalMaxChars`），让 wiki 比它所概括的内容更短。`MEMORY.md` 先列 wiki 页面。
-
+**Wiki 页面。** Dream 也会写 wiki 页面：每个主题（一种工作流、一个模块、一套环境）一页，综合多条笔记和多个会话，并用 `[[文件名]]` 链接相关页面和笔记。它们是扁平的 `wiki_<主题>.md` 文件，和笔记走同样的审阅、切换与撤销。只有 Dream 能写；智能体可以读取和召回；被页面完整覆盖的笔记会被删除并指向该页面。插件会拒绝失效链接，并限制每页与整个 wiki 的大小（`wikiPageMaxChars`、`wikiTotalMaxChars`），让 wiki 比它所概括的内容更短。`MEMORY.md` 先列 wiki 页面。
 
 ## 从 Claude Code 迁移
 
-可以通过 HTTP API `/api/cc-memory/import` 与 `/api/cc-memory/export` 导入或导出 Claude Code 格式的记忆目录（`~/.claude/projects/<你的项目>`）。导入时会读取 `MEMORY.md` 和主题文件，保留 `name`、`description`、`type`，已存在的文件会跳过，密钥扫描照常生效；导出可以按同样的结构写回。
+```text
+/memory import ~/.claude/projects/<你的项目>
+```
+
+导入时会读取 `MEMORY.md` 和主题文件，保留 `name`、`description`、`type`。已存在的文件会跳过，密钥扫描照常生效。`/memory export <路径>` 可以按同样的结构导出。
 
 和 Claude Code 的不同之处：
 
@@ -150,7 +183,7 @@ npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-m
 **实验性。** DeepSeek Harness 本身还是预览版，插件 API 可能变化。
 
 - 上面的 LongMemEval 数字来自 30 题样本，Dream 在其中还没有表现出准确率提升。
-- 0.26.0 的 Dream 改动经过回放和定向用例检查，没有在完整样本上重跑。
+- 0.26.0 和 0.27.0 的 Dream 改动经过回放和定向用例检查，没有在完整样本上重跑。
 - 我们需要真实项目上长期使用的反馈。如果你试用了，欢迎[告诉我们它做对和做错了什么](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/issues/new?template=feedback.yml)。
 
 已知局限：

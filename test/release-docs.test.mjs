@@ -18,11 +18,14 @@ const commandsDoc = await read('docs/commands.md');
 const commandsSource = await read('src/commands.js');
 
 const REPO_BASE = 'https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/';
+const pkg = JSON.parse(await read('package.json'));
+
 for (const [name, doc] of [['README.md', readme], ['README.zh.md', readmeZh]]) {
   test(`${name} gives the install command and the not-affiliated note`, () => {
-    const source = 'github:muuuuuuuuuer/dsh-cc-dream-memory#feat/memory-workflow-simplification';
-    assert.ok(doc.includes(`\ndsh plugin --profile web add ${source}\n`), 'install from the release branch');
-    assert.ok(doc.includes(`npx @deepseek-ai/dsh plugin --profile web add ${source}`), 'desktop users have no dsh on PATH');
+    const archive = `https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/releases/download/v${pkg.version}/${pkg.name}-${pkg.version}.tgz`;
+    assert.ok(doc.includes(`\ndsh plugin --profile web add ${pkg.name}\n`), 'Web installs from npm');
+    assert.ok(doc.includes(`npx @deepseek-ai/dsh plugin --profile web add ${pkg.name}\n`), 'Web users can use npx if dsh is not on PATH');
+    assert.ok(doc.includes(`\n${archive}\n`), 'Desktop falls back to the matching release archive');
     assert.match(doc, /Anthropic/);
     assert.match(doc, /DeepSeek/);
   });
@@ -33,7 +36,13 @@ for (const [name, doc] of [['README.md', readme], ['README.zh.md', readmeZh]]) {
   });
 
   test(`${name} links are absolute and point at files in the repository`, () => {
-    assert.doesNotMatch(doc, /<img|\.png\b/, 'the README carries no screenshots');
+    const images = [...doc.matchAll(/<img src="([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(images.length <= 1, 'the README keeps to one screenshot');
+    for (const src of images) {
+      const raw = 'https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/';
+      assert.ok(src.startsWith(raw), `${src} must be an absolute raw URL so npm can show it`);
+      assert.ok(existsSync(localPath(src.slice(raw.length))), `${src} is missing`);
+    }
     const links = [...doc.matchAll(/\]\(([^)]+)\)/g)].map((m) => m[1]);
     for (const link of links) {
       assert.match(link, /^https:\/\//, `${link} must be absolute so npm can follow it`);
@@ -87,7 +96,7 @@ test('the Chinese README says the same', () => {
 
 test('every documented /memory command exists in the code', () => {
   const subcommands = new Set([...commandsDoc.matchAll(/\/memory ([a-z-]+)/g)].map((m) => m[1]));
-  assert.ok(subcommands.size >= 5, 'the reference should cover the command set');
+  assert.ok(subcommands.size >= 7, 'the reference should cover the command set');
   for (const sub of subcommands) assert.ok(commandsSource.includes(sub), sub);
 });
 

@@ -4,7 +4,9 @@
 
 **Claude Code-style auto memory and Dream for DeepSeek Harness.**
 
-Your agent remembers across sessions. Every change Dream proposes is one you can review and undo.
+Same model, 30 LongMemEval questions: 27% correct without the plugin, 87% with its memory.
+
+Notes are plain Markdown you can open and edit. Every change Dream proposes is one you review and can undo.
 
 [![npm](https://img.shields.io/npm/v/dsh-cc-dream-memory)](https://www.npmjs.com/package/dsh-cc-dream-memory)
 [![CI](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml/badge.svg)](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/actions/workflows/ci.yml)
@@ -13,6 +15,22 @@ Your agent remembers across sessions. Every change Dream proposes is one you can
 English · [简体中文](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/README.zh.md)
 
 </div>
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/muuuuuuuuuer/dsh-cc-dream-memory/main/assets/memory-tab.png" width="860" alt="DeepSeek Harness with the Memory tab open, listing four plain-Markdown notes with search, type filters and a New button">
+</p>
+
+```bash
+dsh plugin --profile web add dsh-cc-dream-memory
+```
+
+Coming from Claude Code? Bring your notes with you:
+
+```text
+/memory import ~/.claude/projects/<your-project>
+```
+
+Desktop install, `npx` and requirements are under [Install](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/README.md#install).
 
 ## Test results
 
@@ -34,10 +52,10 @@ Each question comes with about 50 earlier chat sessions. Three lines answered th
 What this shows:
 
 - **Memory is the gain.** Without the plugin the agent cannot see earlier sessions, so it answered none of the 20 knowledge-update and multi-session questions. With memory it answered 19.
-- **Dream did not add accuracy here.** C fixed one question and broke two. The evidence check deferred 1,001 of the 1,137 changes Dream proposed (88%).
 - **Abstention is slightly worse with memory.** The plugin-less agent correctly says "I don't know" more often, because it has nothing to misread.
+- **Dream is for review, not for score.** It did not add accuracy here: C fixed one question and broke two, and the evidence check deferred 1,001 of the 1,137 changes Dream proposed (88%); 0.27.0 removed that check. What Dream gives you is consolidation you can check: a separate copy, a quote behind every new fact, and undo after you switch.
 
-Limits: this is a fixed diagnostic sample of 30 questions (10 per group), not the full 500. The judge is DeepSeek using LongMemEval's own answer-check prompts, not the GPT-4o judge the benchmark specifies. The run used the 0.25.0 code. 0.26.0 changed how Dream selects and edits notes, and these 30 questions have not been rerun since. [Setup and sample](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/README.md) · [Where Dream spent its time](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/DREAM-SELECTION.zh.md) (Chinese)
+Limits: this is a fixed diagnostic sample of 30 questions (10 per group), not the full 500. The judge is DeepSeek using LongMemEval's own answer-check prompts, not the GPT-4o judge the benchmark specifies. The run used the 0.25.0 code. 0.26.0 and 0.27.0 changed how Dream works, and these 30 questions have not been rerun since. [Setup and sample](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/README.md) · [Where Dream spent its time](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/blob/main/eval/longmemeval/DREAM-SELECTION.zh.md) (Chinese)
 
 ### Recall, synthetic cases
 
@@ -52,23 +70,35 @@ In a 0.23.1 check of seven queries run twice, unrelated messages pulled in 2 not
 
 ### Test suite
 
-`npm run verify` passes 702 assertions across 80 test files. CI runs on Windows and Ubuntu with Node 22 and 24.
+`npm run verify` passes 785 assertions across 86 test files. CI runs on Windows and Ubuntu with Node 22 and 24.
 
 ## Install
 
-Requires Node 22 or newer and DeepSeek Harness 0.2.2-rc.1 or newer.
+Requires DeepSeek Harness 0.2.2-rc.1 or newer. The Web CLI also requires Node 22 or newer.
 
-npm has 0.12.0. The 0.26.0 builds are available on the GitHub feature branch.
+### Web CLI
 
 ```bash
-dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#feat/memory-workflow-simplification
+dsh plugin --profile web add dsh-cc-dream-memory
 ```
 
 If `dsh` is not on your PATH, use `npx`:
 
 ```bash
-npx @deepseek-ai/dsh plugin --profile web add github:muuuuuuuuuer/dsh-cc-dream-memory#feat/memory-workflow-simplification
+npx @deepseek-ai/dsh plugin --profile web add dsh-cc-dream-memory
 ```
+
+### Desktop app
+
+Open **Plugins** → **Add plugin**, enter `dsh-cc-dream-memory` and install.
+
+If the package name does not work in your version, paste this release archive URL instead:
+
+```text
+https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/releases/download/v0.27.0/dsh-cc-dream-memory-0.27.0.tgz
+```
+
+If the plugin is disabled after installation, enable it on the Plugins page.
 
 Restart DeepSeek Harness and start a new session.
 
@@ -104,17 +134,21 @@ See the [command reference](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/
 
 **Memory.** Notes are plain Markdown in a Claude Code-compatible layout: a `MEMORY.md` index plus one file per topic, with type `user`, `feedback`, `project` or `reference`. You can open and edit every file yourself. A **Memory** tab sits next to Chat, and it follows the host's light and dark themes in English or Chinese.
 
-**Auto-extract.** On by default. Every 3 turns it reads only the new part of the conversation and saves what is worth keeping through the same tool the agent uses. Corrections edit the matching passage of the existing note instead of adding a new one. Duplicate, conflict and secret checks apply to every write.
+**Auto-extract.** On by default. Every 3 turns it reads only the new part of the conversation and saves what is worth keeping through the same tool the agent uses. Corrections edit the matching passage of the existing note instead of adding a new one. Every write that quotes the conversation has its quote checked, a near-duplicate or contradicting note is reported so the model can merge, and writes that look like secrets are refused.
 
 **Recall.** Titles, descriptions and note text rank candidates. One model call per turn picks the relevant ones, and up to 3 are attached by default. For a long note, the matching paragraph is attached with its heading and conditions. The chat shows which notes were attached, with a **Not relevant** button for each.
 
-**Dream.** Dream consolidates notes from past sessions. It runs as a host subagent, reads the sessions it has not reviewed, and writes its changes into a separate copy. Its main job is lessons that span sessions: mistakes that recur, workarounds, the way something was done and how it was verified, judged from tool results (exit codes, command output) rather than from an assistant saying "fixed". It also keeps notes correct against what happened and the index small. It sees tool calls and results, and can search the project's other sessions. Every new fact must quote the session it came from, and changes without a checked quote are deferred. Nothing reaches your notes until you switch, switching backs up the current notes first, and undo restores them. Automatic Dreams are off by default. When turned on, they can review new conversation material or maintain notes you corrected or whose source anchors broke. Recall activity ranks maintenance targets, and the panel lists archive candidates as hints.
+**Dream.** Dream consolidates notes from past sessions. It runs as a host subagent, reads the sessions it has not reviewed, and writes its changes into a separate copy. Its main job is lessons that span sessions: mistakes that recur, workarounds, the way something was done and how it was verified, judged from tool results (exit codes, command output) rather than from an assistant saying "fixed". It also keeps notes correct against what happened and the index small. It sees tool calls and results, and can search the project's other sessions. Every new fact must quote the session it came from; the plugin checks that the quote exists and shows who said it (you, pasted text, the assistant or a tool), and a change without a valid quote goes back to Dream to fix. Nothing reaches your notes until you switch, switching backs up the current notes first, and `/memory undo` restores them. Automatic Dreams are off by default.
 
-**Wiki pages.** Dream can also write wiki pages: one page per topic (a workflow, a module, an environment) that synthesizes several notes and sessions and links related pages and notes with `[[file-name]]`. They are flat `wiki_<topic>.md` files, so they go through the same review, switch and undo as notes. Only Dream writes them; the agent can read and recall them, and a note a page fully covers is removed with a pointer to the page. The host rejects broken links and caps each page and the whole wiki (`wikiPageMaxChars`, `wikiTotalMaxChars`) so the wiki stays shorter than what it summarizes. `MEMORY.md` lists wiki pages first.
+**Wiki pages.** Dream can also write wiki pages: one page per topic (a workflow, a module, an environment) that synthesizes several notes and sessions and links related pages and notes with `[[file-name]]`. They are flat `wiki_<topic>.md` files, so they go through the same review, switch and undo as notes. Only Dream writes them; the agent can read and recall them, and a note a page fully covers is removed with a pointer to the page. The plugin rejects broken links and caps each page and the whole wiki (`wikiPageMaxChars`, `wikiTotalMaxChars`) so the wiki stays shorter than what it summarizes. `MEMORY.md` lists wiki pages first.
 
 ## Coming from Claude Code
 
-You can import or export a Claude Code-style memory folder via the `/api/cc-memory/import` and `/api/cc-memory/export` endpoints (using the path to `~/.claude/projects/<your-project>`). The import reads `MEMORY.md` and the topic files, keeps their `name`, `description` and `type`, skips existing files, and still runs secret scanning. Export writes the same layout back.
+```text
+/memory import ~/.claude/projects/<your-project>
+```
+
+The import reads `MEMORY.md` and the topic files and keeps their `name`, `description` and `type`. It skips files that already exist, and secret scanning still applies. `/memory export <path>` writes the same layout back.
 
 What is different here:
 
@@ -149,7 +183,7 @@ Look elsewhere if you need:
 **Experimental.** DeepSeek Harness is itself a preview, and its plugin API can change.
 
 - The LongMemEval numbers above come from a 30-question sample, and Dream has not yet shown an accuracy gain there.
-- 0.26.0's Dream changes were checked on replays and targeted cases, not on a rerun of the full sample.
+- The Dream changes in 0.26.0 and 0.27.0 were checked on replays and targeted cases, not on a rerun of the full sample.
 - We need reports from long use on real projects. If you try it, please [tell us what it got right and wrong](https://github.com/muuuuuuuuuer/dsh-cc-dream-memory/issues/new?template=feedback.yml).
 
 Known limits:
