@@ -6,8 +6,7 @@
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { toolsEnv, commandEnv, waitFor } from './v10-helpers.mjs';
-import { removeProposal, writeProposal } from '../src/inbox.js';
+import { toolsEnv, waitFor } from './v10-helpers.mjs';
 import { registerScheduler } from '../src/scheduler.js';
 import { streamOf } from './v10-helpers.mjs';
 
@@ -118,9 +117,8 @@ test('a turn-end agent calls memory_save and writes the note directly', async (t
     return snapshot.lastExtractAt > 0 ? snapshot : null;
   });
   assert.equal(env.toolCalls, 2, 'one tool turn plus a final answer');
-  assert.ok(state.lastExtractAttemptAt > 0);
+  assert.ok(state.lastExtractAt > 0);
   assert.equal(state.lastExtractReason, 'direct');
-  assert.equal(state.lastExtractCount, 1);
 });
 
 test('a write by the main agent skips extraction for that turn', async (t) => {
@@ -143,32 +141,4 @@ test('autoExtractEveryTurns waits for the Nth turn', async (t) => {
     return list.length > 0 ? list : null;
   });
   assert.equal(entries.length, 1);
-});
-
-test('/memory inbox still accepts a manually staged proposal', async (t) => {
-  const env = await commandEnv(t, { autoExtract: false, autoDreamEnabled: false });
-  const record = await writeProposal(env.pctx.paths, {
-    sessionId: 's1',
-    cwd: env.workspaceDir,
-    items: [{
-      name: 'deploy command',
-      type: 'project',
-      description: 'Releases use make release',
-      content: 'Run `make release` to deploy.',
-    }],
-    model: 'fake',
-    trigger: 'manual',
-  });
-
-  const listed = await env.invokeMemory('inbox list');
-  assert.equal(listed.kind, 'success');
-  assert.match(listed.text, new RegExp(record.id));
-  assert.match(listed.text, /deploy command/);
-
-  const accepted = await env.invokeMemory(`inbox accept ${record.id}`);
-  assert.equal(accepted.kind, 'success', accepted.text);
-  const entries = await env.pctx.store.listEntries();
-  assert.equal(entries.length, 1);
-  assert.equal(entries[0].name, 'deploy command');
-  await removeProposal(env.pctx.paths, record.id);
 });

@@ -47,8 +47,7 @@ test('v23 first turn: an explicit save is current, verified, and shows its summa
       type: 'project',
       description: 'API route naming',
       content: 'API 路由都用 kebab-case。',
-      basis: 'user-explicit',
-      evidence: 'API 路由都用 kebab-case。',
+      citations: [{ quote: 'API 路由都用 kebab-case。' }],
     },
     exec,
   );
@@ -59,7 +58,7 @@ test('v23 first turn: an explicit save is current, verified, and shows its summa
   const meta = (await env.pctx.store.listEntries('project')).find((item) => item.file === saved.file);
   assert.match(entry.body, /^STATUS: current\n/, 'the user statement is the active value');
   const ledger = await readLedger(env.pctx.store);
-  assert.equal(ledger.entries[saved.file].source, 'user-explicit');
+  assert.equal(ledger.entries[saved.file].source, 'user-citation');
   assert.equal(
     matchesRecord(ledger.entries[saved.file], { name: meta.name, description: meta.description, body: entry.body }),
     true,
@@ -117,8 +116,7 @@ test('v23 first turn: an explicit correction refreshes the summary and keeps it 
       type: 'project',
       description: '部署目标',
       content: '部署目标是 AWS Lambda。',
-      basis: 'user-explicit',
-      evidence: '部署目标是 AWS Lambda。',
+      citations: [{ quote: '部署目标是 AWS Lambda。' }],
     },
     exec,
   );
@@ -128,8 +126,7 @@ test('v23 first turn: an explicit correction refreshes the summary and keeps it 
     {
       file: saved.file,
       content: '部署目标改成 GCP Cloud Run。',
-      basis: 'user-explicit',
-      evidence: '部署目标改成 GCP Cloud Run。',
+      citations: [{ quote: '部署目标改成 GCP Cloud Run。' }],
     },
     exec,
   );
@@ -186,13 +183,13 @@ test('v23 first turn: an explicit summary change or rename keeps a verified note
   const env = await toolsEnv(t);
   seedUserMessages(env, '部署用 make release。', '把部署这条的摘要改成 发布命令是 make release', '把这条改名为 release command');
   const saved = await saveTool(env).execute(
-    { name: 'deploy', type: 'project', description: '部署', content: '部署用 make release。', basis: 'user-explicit', evidence: '部署用 make release。' },
+    { name: 'deploy', type: 'project', description: '部署', content: '部署用 make release。', citations: [{ quote: '部署用 make release。' }] },
     exec,
   );
   assert.equal(saved.written, true, JSON.stringify(saved));
 
   const described = await updateTool(env).execute(
-    { file: saved.file, description: '发布命令是 make release', basis: 'user-explicit', evidence: '把部署这条的摘要改成 发布命令是 make release' },
+    { file: saved.file, description: '发布命令是 make release', citations: [{ quote: '把部署这条的摘要改成 发布命令是 make release' }] },
     exec,
   );
   assert.equal(described.written, true, JSON.stringify(described));
@@ -200,7 +197,7 @@ test('v23 first turn: an explicit summary change or rename keeps a verified note
   assert.match(index.text, /— 发布命令是 make release/, 'the confirmed summary stays in the first turn');
 
   const renamed = await updateTool(env).execute(
-    { file: saved.file, name: 'release command', basis: 'user-explicit', evidence: '把这条改名为 release command' },
+    { file: saved.file, name: 'release command', citations: [{ quote: '把这条改名为 release command' }] },
     exec,
   );
   assert.equal(renamed.written, true, JSON.stringify(renamed));
@@ -235,8 +232,7 @@ test('v23 first turn: a hand-edited index line reaches the prompt verbatim', asy
       type: 'project',
       description: '部署命令',
       content: '部署用 make release。',
-      basis: 'user-explicit',
-      evidence: '部署用 make release。',
+      citations: [{ quote: '部署用 make release。' }],
     },
     exec,
   );

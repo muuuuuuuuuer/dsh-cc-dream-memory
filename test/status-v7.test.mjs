@@ -147,71 +147,12 @@ test('v7 status: service payload mirrors the HTTP status shape with provenance',
   assert.equal(status.rules.source, 'default');
   assert.equal(typeof status.health, 'object');
   assert.ok(Array.isArray(status.health.warnings));
-  assert.equal(status.state.lastDreamDurationMs, 0, 'state exposes the v7 duration field');
+  assert.equal(status.state.lastDreamAt, 0);
+  assert.equal('lastDreamDurationMs' in status.state, false);
   assert.equal(status.config.recallMode, 'model');
   assert.equal(status.config.autoExtract, true);
   assert.equal(status.config.subagentMemory, 'off');
-  assert.equal(status.inbox.count, 0);
-  assert.equal(status.inbox.items.length, 0);
-});
-
-test('v7 status: inbox proposals list, accept and discard', async (t) => {
-  const env = await makeEnv(t);
-  const inbox = await loadModule('../src/inbox.js', { requireExports: ['writeProposal'] });
-  const record = await inbox.writeProposal(env.paths, {
-    sessionId: 'sess-inbox',
-    cwd: env.workspaceDir,
-    model: 'fake',
-    trigger: 'auto',
-    items: [
-      {
-        name: 'deploy command',
-        type: 'project',
-        description: 'How this repo deploys',
-        content: 'We deploy with make release.',
-      },
-    ],
-  });
-
-  const status = await env.service.status(env.pctx);
-  assert.equal(status.inbox.count, 1);
-  assert.equal(status.inbox.items[0].id, record.id);
-
-  const listed = await env.service.inbox(env.pctx, { action: 'list' });
-  assert.equal(listed.ok, true);
-  assert.equal(listed.count, 1);
-
-  const saved = [];
-  env.runtime.memoryTools = new Map([
-    [
-      'memory_save',
-      {
-        execute: async (input, exec) => {
-          saved.push({ input, exec });
-          return { ok: true, written: true };
-        },
-      },
-    ],
-  ]);
-  const accepted = await env.service.inbox(env.pctx, { action: 'accept', id: record.id });
-  assert.equal(accepted.ok, true);
-  assert.equal(accepted.applied, 1);
-  assert.equal(accepted.failed, 0);
-  assert.equal(saved.length, 1);
-  assert.equal(saved[0].input.basis, 'inference');
-  assert.equal(saved[0].exec.sessionId, 'sess-inbox');
-  assert.equal((await env.service.inbox(env.pctx, { action: 'list' })).count, 0);
-
-  const second = await inbox.writeProposal(env.paths, {
-    sessionId: 'sess-inbox',
-    cwd: env.workspaceDir,
-    model: 'fake',
-    trigger: 'auto',
-    items: [{ name: 'keep', type: 'user', content: 'Keep this.' }],
-  });
-  const discarded = await env.service.inbox(env.pctx, { action: 'discard', id: second.id });
-  assert.equal(discarded.ok, true);
-  assert.equal((await env.service.inbox(env.pctx, { action: 'list' })).count, 0);
+  assert.equal('inbox' in status, false);
 });
 
 test('v7 status: file/rules/saveRules/toggle round-trip', async (t) => {
@@ -517,35 +458,11 @@ test('v7 http: new backup/trash/restore endpoints work and stay authenticated', 
   assert.equal(evilOrigin.json().error, 'bad-origin');
 });
 
-test('v7 http: inbox list and discard endpoints stay authenticated', async (t) => {
+test('v7 http: retired /inbox routes return 404 not-found', async (t) => {
   const env = await httpEnv(t);
-  const inbox = await loadModule('../src/inbox.js', { requireExports: ['writeProposal'] });
-  const record = await inbox.writeProposal(env.paths, {
-    sessionId: 'sess-http-inbox',
-    cwd: env.workspaceDir,
-    model: 'fake',
-    trigger: 'auto',
-    items: [{ name: 'http inbox note', type: 'user', content: 'Staged note.' }],
-  });
-
-  const listed = await callHttp(env.handle, { token: env.token, path: '/inbox' });
-  assert.equal(listed.statusCode, 200);
-  assert.equal(listed.json().ok, true);
-  assert.equal(listed.json().count, 1);
-  assert.equal(listed.json().items[0].id, record.id);
-
-  const discarded = await callHttp(env.handle, {
-    method: 'POST',
-    path: '/inbox',
-    token: env.token,
-    body: { action: 'discard', id: record.id },
-    origin: 'http://127.0.0.1:61784',
-  });
-  assert.equal(discarded.statusCode, 200);
-  assert.equal(discarded.json().ok, true);
-  const after = await callHttp(env.handle, { token: env.token, path: '/inbox' });
-  assert.equal(after.json().count, 0);
-
+  const res = await callHttp(env.handle, { token: env.token, path: '/inbox' });
+  assert.equal(res.statusCode, 404);
+  assert.equal(res.json().error, 'not-found');
   assert.equal((await callHttp(env.handle, { path: '/inbox' })).statusCode, 401);
 });
 
@@ -614,7 +531,7 @@ async function commandHarness(t, configOverrides = {}) {
   return { ...env, invoke };
 }
 
-test('v7 commands: backups/trash/restore list and restore batches', async (t) => {
+test('v7 service & commands: backups/trash/restore work via service while retired CLI verbs error', async (t) => {
   const env = await commandHarness(t, { dreamAllowDelete: true });
   const batchId = '2026-11-07T11-00-00';
   const backupDir = path.join(env.paths.dreamsDir, batchId);
@@ -624,23 +541,23 @@ test('v7 commands: backups/trash/restore list and restore batches', async (t) =>
   await mkdir(trashDir, { recursive: true });
   await writeFile(path.join(trashDir, 'user_cmd_trash.md'), memoryFileText('cmd trash', 'body'), 'utf8');
 
-  const backups = await env.invoke('backups');
-  assert.equal(backups.kind, 'success', backups.text);
-  assert.match(backups.text, new RegExp(batchId.replace(/[-]/g, '\\-')));
+  const backups = await env.service.backups(env.pctx);
+  assert.ok(backups.items.some((item) => item.id === batchId));
 
-  const trash = await env.invoke('trash');
-  assert.equal(trash.kind, 'success', trash.text);
-  assert.match(trash.text, new RegExp(batchId.replace(/[-]/g, '\\-')));
+  const trash = await env.service.trash(env.pctx);
+  assert.ok(trash.items.some((item) => item.id === batchId));
 
-  const backupRestore = await env.invoke(`restore backup ${batchId}`);
-  assert.equal(backupRestore.kind, 'success', backupRestore.text);
-  assert.match(backupRestore.text, /restor/i);
+  const backupRestore = await env.service.restore(env.pctx, { kind: 'backup', id: batchId });
+  assert.ok(backupRestore.restored.includes('user_cmd_backup.md'));
   assert.equal(await exists(path.join(env.paths.memoryDir, 'user_cmd_backup.md')), true);
 
-  const trashRestore = await env.invoke(`restore trash ${batchId}`);
-  assert.equal(trashRestore.kind, 'success', trashRestore.text);
+  const trashRestore = await env.service.restore(env.pctx, { kind: 'trash', id: batchId });
+  assert.ok(trashRestore.restored.includes('user_cmd_trash.md'));
   assert.equal(await exists(path.join(env.paths.memoryDir, 'user_cmd_trash.md')), true);
 
-  const usage = await env.invoke('restore');
-  assert.equal(usage.kind, 'error', 'restore without arguments must fail with usage');
+  for (const retired of ['backups', 'trash', `restore backup ${batchId}`]) {
+    const out = await env.invoke(retired);
+    assert.equal(out.kind, 'error');
+    assert.match(out.text, /unknown \/memory subcommand/);
+  }
 });

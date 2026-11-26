@@ -96,14 +96,14 @@ test('the Chinese README says the same', () => {
 
 test('every documented /memory command exists in the code', () => {
   const subcommands = new Set([...commandsDoc.matchAll(/\/memory ([a-z-]+)/g)].map((m) => m[1]));
-  assert.ok(subcommands.size >= 10, 'the reference should cover the command set');
+  assert.ok(subcommands.size >= 7, 'the reference should cover the command set');
   for (const sub of subcommands) assert.ok(commandsSource.includes(sub), sub);
 });
 
 test('a finished run points at switching, not at a second run', () => {
   assert.doesNotMatch(commandsSource, /apply with \/memory dream run/);
   assert.match(commandsSource, /memory switched to the dream result/);
-  assert.match(commandsSource, /undo with \/memory dream undo/);
+  assert.match(commandsSource, /undo with \/memory undo/);
 });
 
 test('screenshots.json lists files that exist', async () => {

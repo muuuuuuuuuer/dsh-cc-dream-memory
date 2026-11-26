@@ -10,7 +10,6 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { readFile } from 'node:fs/promises';
 import { resolveConfig } from '../src/config.js';
-import { DreamEngine } from '../src/dream.js';
 import { MEMORY_INSTRUCTIONS } from '../src/inject.js';
 import { readMetrics, recordRead, recordRecall } from '../src/metrics.js';
 import { registerScheduler } from '../src/scheduler.js';
@@ -53,16 +52,18 @@ test('a body change through memory_update is recorded as a correction; a subagen
   assert.deepEqual(env.pctx.state.snapshot().correctedFiles, [], 'a description-only edit is not a body correction');
 });
 
-test('buildFocus orders corrected, broken, recalled, archive and caps each group', async (t) => {
+test('buildFocus prioritizes recalled actionable notes and excludes recall-only and archive-only notes', async (t) => {
   const env = await toolsEnv(t, { userMemory: 'project', archiveHintDays: 30 });
   const store = env.pctx.store;
   const note = (name, extra = {}) => store.saveEntry({ name, type: 'project', description: name, content: `STATUS: current\n${name} fact.`, ...extra });
   const corrected = await note('corrected');
   const broken = await note('broken', { sources: ['missing-file.js'] });
+  const brokenRecent = await note('second broken', { sources: ['also-missing.js'] });
   const recalled = await note('recalled');
   const old = await note('old');
   await note('quiet');
   await recordRecall(env.pctx.paths, 1, [recalled.file]);
+  await recordRecall(env.pctx.paths, 1, [brokenRecent.file]);
   await env.pctx.state.noteCorrected(corrected.file);
   await env.pctx.state.noteCorrected('deleted_since.md');
   // An old note nobody reads: age the file itself, then nothing has touched it.
@@ -74,13 +75,14 @@ test('buildFocus orders corrected, broken, recalled, archive and caps each group
   const focus = await buildFocus(env.pctx, env.runtime.config);
   assert.deepEqual(focus.files, [
     { file: corrected.file, reason: 'corrected' },
+    { file: brokenRecent.file, reason: 'broken' },
     { file: broken.file, reason: 'broken' },
-    { file: recalled.file, reason: 'recalled' },
-    { file: old.file, reason: 'archive' },
   ]);
+  assert.deepEqual(focus.maintenance.map(({ file }) => file), focus.files.map(({ file }) => file));
   assert.match(focus.text, /priority order/);
-  assert.ok(focus.text.indexOf(corrected.file) < focus.text.indexOf(old.file));
-  assert.doesNotMatch(focus.text, /deleted_since|quiet/);
+  assert.match(focus.text, /also-missing\.js.*missing/);
+  assert.ok(focus.text.indexOf(corrected.file) < focus.text.indexOf(brokenRecent.file));
+  assert.doesNotMatch(focus.text, /deleted_since|quiet|project_recalled|project_old/);
 });
 
 test('archiveCandidates needs both no recent read/recall and no recent write', () => {
@@ -91,8 +93,8 @@ test('archiveCandidates needs both no recent read/recall and no recent write', (
   assert.deepEqual(archiveCandidates(entries, metrics, 60, now), [{ file: 'idle.md', idleDays: 100 }]);
 });
 
-async function schedulerEnv(t) {
-  const env = await toolsEnv(t, { userMemory: 'project', autoDreamEnabled: true, autoExtract: false, minHours: 0, minSessions: 1 });
+async function schedulerEnv(t, overrides = {}) {
+  const env = await toolsEnv(t, { userMemory: 'project', autoDreamEnabled: true, autoExtract: false, minHours: 0, minSessions: 1, ...overrides });
   const starts = [];
   env.runtime.startDream = async (_pctx, options) => {
     starts.push(options);
@@ -107,6 +109,12 @@ const turnEnd = (env) => env.host.emit('session/event', { id: 's1', header: { cw
 
 test('the automatic Dream skips with no-focus when nothing names a target', async (t) => {
   const { env, starts } = await schedulerEnv(t);
+  const recalled = await env.pctx.store.saveEntry({ name: 'frequently used', type: 'project', content: 'A current project fact.' });
+  await recordRecall(env.pctx.paths, 1, [recalled.file]);
+  await env.pctx.store.writeRawEntry('project_idle.md', { type: 'project', body: 'An old fact.' });
+  const archived = path.join(env.pctx.paths.memoryDir, 'project_idle.md');
+  const raw = await readFile(archived, 'utf8');
+  await writeFile(archived, raw.replace(/modified: .*/, 'modified: 2025-01-01T00:00:00.000Z'));
   turnEnd(env);
   await waitFor(() => env.pctx.state.snapshot().lastDreamSkipReason === 'no-focus');
   await env.runtime.drain();
@@ -114,32 +122,51 @@ test('the automatic Dream skips with no-focus when nothing names a target', asyn
   assert.equal(env.pctx.state.snapshot().counters.skipped, 1);
 });
 
-test('the automatic Dream runs with the focus list; a Dream switch consumes the corrections', async (t) => {
+test('the automatic Dream runs with the focus list', async (t) => {
   const { env, starts } = await schedulerEnv(t);
   const saved = await env.pctx.store.saveEntry({ name: 'port', type: 'project', description: 'dev port', content: 'STATUS: current\nPort 3000.' });
   await env.pctx.state.noteCorrected(saved.file);
   turnEnd(env);
   await waitFor(() => starts.length === 1);
   assert.equal(starts[0].trigger, 'auto');
+  assert.equal(starts[0].noSessions, true);
+  assert.deepEqual(starts[0].maintenance.map(({ file }) => file), [saved.file]);
   assert.match(starts[0].focus, new RegExp(saved.file));
 
-  // The engine's answer is stubbed: only the bookkeeping after a successful switch is under test.
-  const real = DreamEngine.prototype.switchShadow;
-  DreamEngine.prototype.switchShadow = async () => ({ ok: true });
-  t.after(() => { DreamEngine.prototype.switchShadow = real; });
-  assert.equal((await env.runtime.switchDream({ pctx: env.pctx })).ok, true);
-  assert.deepEqual(env.pctx.state.snapshot().correctedFiles, []);
-  await env.pctx.state.noteCorrected(saved.file);
-  DreamEngine.prototype.switchShadow = async () => ({ ok: false, error: 'stale' });
-  await env.runtime.switchDream({ pctx: env.pctx });
-  assert.deepEqual(env.pctx.state.snapshot().correctedFiles, [saved.file], 'a failed switch keeps the record');
+  assert.deepEqual(env.pctx.state.snapshot().correctedFiles, [saved.file]);
+});
 
-  // A pending run records the corrections it saw; one made later survives the switch.
-  await env.pctx.state.noteCorrected('later.md');
-  await env.pctx.state.setShadowPending({ dir: path.join(env.pctx.paths.projectDir, '.dreams', 'shadow'), runId: 'r1', corrected: [saved.file] });
-  DreamEngine.prototype.switchShadow = async () => ({ ok: true });
-  assert.equal((await env.runtime.switchDream({ pctx: env.pctx })).ok, true);
-  assert.deepEqual(env.pctx.state.snapshot().correctedFiles, ['later.md']);
+test('the automatic Dream still offers active dialogue after auto-extract has advanced', async (t) => {
+  const { env, starts } = await schedulerEnv(t);
+  env.host.services.sessionQuery.filterSessions = async () => [{ header: { id: 's1', cwd: env.workspaceDir } }];
+  await env.pctx.state.noteExtractSeq('s1', 3);
+  turnEnd(env);
+  await waitFor(() => starts.length === 1);
+  assert.equal(starts[0].noSessions, false);
+  assert.equal(starts[0].focus, '');
+});
+
+test('automatic maintenance can run before the dialogue threshold and leaves dialogue for later', async (t) => {
+  const { env, starts } = await schedulerEnv(t, { minSessions: 5 });
+  const saved = await env.pctx.store.saveEntry({ name: 'port', type: 'project', content: 'Port 3000.' });
+  await env.pctx.state.noteCorrected(saved.file);
+  env.host.services.sessionQuery.filterSessions = async () => {
+    assert.fail('do not look up dialogue below the dialogue threshold');
+  };
+  turnEnd(env);
+  await waitFor(() => starts.length === 1);
+  assert.equal(starts[0].noSessions, true);
+  assert.deepEqual(starts[0].maintenance.map(({ file }) => file), [saved.file]);
+  assert.deepEqual(env.pctx.state.snapshot().sessionsSince.map(({ id }) => id), ['s1']);
+});
+
+test('a local scan below the dialogue threshold does not start a child without a maintenance target', async (t) => {
+  const { env, starts } = await schedulerEnv(t, { minSessions: 5 });
+  turnEnd(env);
+  await waitFor(() => env.pctx.state.snapshot().lastScanAt > 0);
+  await env.runtime.drain();
+  assert.deepEqual(starts, []);
+  assert.equal(env.pctx.state.snapshot().counters.skipped, 0);
 });
 
 // ------------------------------------------------------------- session flags
@@ -309,12 +336,15 @@ test('a dismissed note stays hidden after reopening the conversation, while anot
   await reopened.drain();
 });
 
-test('/memory recall dismiss shares the implementation', async (t) => {
+test('status.dismissRecall rejects invalid input and retired /memory recall errors cleanly', async (t) => {
   const env = await commandEnv(t, {});
-  const result = await env.invokeMemory('recall dismiss project_deploy.md', { id: 'agent-1' });
-  assert.equal(result.kind, 'success', result.text);
+  const { createStatusService } = await import('../src/status.js');
+  const service = createStatusService(env.runtime);
+  const result = await service.dismissRecall(env.pctx, { sessionId: 'agent-1', file: 'project_deploy.md' });
+  assert.equal(result.dismissed, true);
   assert.ok((await env.pctx.state.readRecallDismissals('agent-1')).has('project/project_deploy.md'));
-  assert.equal((await env.invokeMemory('recall dismiss', { id: 'agent-1' })).kind, 'error');
+  await assert.rejects(() => service.dismissRecall(env.pctx, { sessionId: 'agent-1', file: '' }));
+  assert.match((await env.invokeMemory('recall dismiss project_deploy.md', { id: 'agent-1' })).text, /unknown \/memory subcommand/);
 });
 
 test('recall counts attached files per note', async (t) => {
@@ -391,6 +421,6 @@ test('the status lists archive candidates and /memory status says so', async (t)
   assert.deepEqual(payload.archive.candidates, [{ file: saved.file, idleDays: 45 }]);
   assert.equal(payload.archive.days, 30);
   const text = (await env.invokeMemory('status')).text;
-  assert.match(text, /archive candidates \(not read or recalled for 30\+ days; nothing is deleted automatically\): project_ancient\.md/);
+  assert.match(text, /archive candidates: project_ancient\.md/);
   assert.equal((await env.pctx.store.listEntries()).length, 1, 'nothing was deleted');
 });

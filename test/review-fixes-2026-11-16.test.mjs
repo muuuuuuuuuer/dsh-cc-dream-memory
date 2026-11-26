@@ -69,23 +69,30 @@ test('the index stays put across refreshes after pruning a superseded page', asy
   assert.equal(second, first, 'the index is stable between refreshes');
 });
 
-test('/memory edit saves the page it read', async (t) => {
+test('status.writeFile saves the page it read and /memory edit is retired', async (t) => {
   const env = await commandEnv(t);
+  const service = env.mods.status.createStatusService(env.runtime);
   const saved = await env.pctx.store.saveEntry({
     name: 'deploy', type: 'project', description: 'how we deploy', content: 'Deploy with make release.\n',
   });
-  const result = await env.invokeMemory(`edit ${saved.file} --content=Deploy-with-pnpm-release.`);
-  assert.equal(result.kind, 'success', JSON.stringify(result));
+  const opened = await service.file(env.pctx, saved.file, 'project');
+  const updated = await service.writeFile(env.pctx, {
+    file: saved.file, content: 'Deploy-with-pnpm-release.', expectedHash: opened.expectedHash,
+  });
+  assert.equal(updated.ok, true);
   assert.match(await bodyOf(env, saved.file), /Deploy-with-pnpm-release\./u);
+  assert.match((await env.invokeMemory(`edit ${saved.file} --content=x`)).text, /unknown \/memory subcommand/);
 });
 
-test('/memory export counts the files it wrote', async (t) => {
+test('status.exportMemory counts the files it wrote and /memory export reports the same count', async (t) => {
   const env = await commandEnv(t);
+  const service = env.mods.status.createStatusService(env.runtime);
   await env.pctx.store.saveEntry({ name: 'deploy', type: 'project', description: 'how we deploy', content: 'Body.\n' });
   const target = `${env.workspaceDir}/export-target`;
-  const result = await env.invokeMemory(`export ${target}`);
-  assert.equal(result.kind, 'success', JSON.stringify(result));
-  assert.match(result.text, /exported 1 file\(s\)/u);
+  const result = await service.exportMemory(env.pctx, { targetDir: target });
+  assert.equal(result.ok, true);
+  assert.equal(result.exported, 1);
+  assert.match((await env.invokeMemory(`export ${target}-cmd`)).text, /^exported 1 file\(s\)/);
 });
 
 test('an unknown dream subcommand answers instead of returning nothing', async (t) => {
@@ -93,10 +100,10 @@ test('an unknown dream subcommand answers instead of returning nothing', async (
   const unknown = await env.invokeMemory('dream bogus');
   assert.equal(unknown.kind, 'error');
   assert.match(unknown.text, /unknown dream subcommand "bogus"/u);
-  assert.match(unknown.text, /usage: \/memory dream run\|cancel/u);
+  assert.match(unknown.text, /usage: \/memory dream run\|status\|/u);
   const apply = await env.invokeMemory('dream apply');
   assert.equal(apply.kind, 'error');
-  assert.match(apply.text, /replaced by switch/u);
+  assert.match(apply.text, /unknown dream subcommand "apply"/u);
 });
 
 test('editing a page the dream cited stops the switch', async (t) => {

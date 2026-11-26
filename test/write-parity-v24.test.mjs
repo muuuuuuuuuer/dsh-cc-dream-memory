@@ -2,8 +2,7 @@
  * v24: everyday memory behaves like Claude Code auto memory.
  *
  * Nothing queues for review. A model write lands immediately; a duplicate or an
- * opposite fact stops it so the model edits the page that owns the fact; every
- * other signal (near-duplicate, low confidence) is reported as an advisory.
+ * opposite fact is reported as an advisory so the model can merge.
  * The first-turn index shows the summary of every note, rendered from the note
  * itself (Claude Code parity): the prompt gets MEMORY.md verbatim, so a
  * hand-edited line reaches the model as written.
@@ -35,28 +34,11 @@ test('v24 write: a model save writes at once and reports its version', async (t)
   assert.equal(typeof saved.version, 'string');
   const entry = await env.pctx.store.readEntry(saved.file);
   assert.match(entry.body, /Deploys go to Cloud Run\./);
-  assert.doesNotMatch(entry.body, /^STATUS: /, 'no evidence means no status marker');
+  assert.doesNotMatch(entry.body, /^STATUS: /, 'no citation means no status marker');
   assert.equal(saved.verification, 'not-applicable');
 });
 
-test('v24 write: low confidence and near duplicates are advisory, not blocking', async (t) => {
-  const env = await toolsEnv(t);
-  const saved = await env.definitions.get('memory_save').execute(
-    {
-      name: 'release checklist',
-      type: 'project',
-      description: 'Release steps',
-      content: 'Run npm run release:check before tagging a release.',
-      confidence: 'low',
-    },
-    exec,
-  );
-  assert.equal(saved.written, true, JSON.stringify(saved));
-  assert.equal(saved.advisory, true);
-  assert.match(JSON.stringify(saved.reasons ?? []), /confidence is low/);
-});
-
-test('v24 write: a duplicate stops the write and force only bypasses the duplicate', async (t) => {
+test('v24 write: a near-duplicate is advisory, not blocking', async (t) => {
   const env = await toolsEnv(t);
   const body = 'Nightly releases run at 02:00 UTC; the on-call engineer starts the release train.';
   await env.definitions.get('memory_save').execute(
@@ -64,22 +46,39 @@ test('v24 write: a duplicate stops the write and force only bypasses the duplica
     exec,
   );
   const duplicate = await env.definitions.get('memory_save').execute(
-    { name: 'nightly release', type: 'project', description: 'Release window', content: body },
+    { name: 'nightly release copy', type: 'project', description: 'Release window', content: body },
     exec,
   );
-  assert.equal(duplicate.ok, false, JSON.stringify(duplicate));
-  assert.equal(duplicate.error, 'DUPLICATE');
-  assert.equal(typeof duplicate.existingFile, 'string');
-
-  const forced = await env.definitions.get('memory_save').execute(
-    { name: 'nightly release copy', type: 'project', description: 'Release window', content: body, force: true },
-    exec,
-  );
-  assert.equal(forced.written, true, JSON.stringify(forced));
-
+  assert.equal(duplicate.written, true, JSON.stringify(duplicate));
+  assert.equal(duplicate.advisory, true);
+  assert.equal(typeof duplicate.candidates[0].file, 'string');
+  assert.match(duplicate.hint, /already covers this/);
+  assert.equal((await env.pctx.store.listEntries()).length, 2);
 });
 
-test('v24 write: a verified user statement is marked current and recorded', async (t) => {
+test('v24 write: legacy basis, evidence, confidence and force arguments are ignored', async (t) => {
+  const env = await toolsEnv(t);
+  seedUserMessages(env, 'API 路由都用 kebab-case。');
+  const saved = await env.definitions.get('memory_save').execute(
+    {
+      name: 'release checklist',
+      type: 'project',
+      description: 'Release steps',
+      content: 'Run npm run release:check before tagging a release.',
+      basis: 'user-explicit',
+      evidence: 'API 路由都用 kebab-case。',
+      confidence: 'low',
+      force: true,
+    },
+    exec,
+  );
+  assert.equal(saved.written, true, JSON.stringify(saved));
+  assert.equal(saved.verification, 'not-applicable', 'only a citation verifies');
+  assert.equal(saved.basis, undefined);
+  assert.doesNotMatch((await env.pctx.store.readEntry(saved.file)).body, /^STATUS: /);
+});
+
+test('v24 write: a cited user statement is marked current and recorded', async (t) => {
   const env = await toolsEnv(t);
   seedUserMessages(env, 'API 路由都用 kebab-case。');
   const saved = await env.definitions.get('memory_save').execute(
@@ -88,17 +87,17 @@ test('v24 write: a verified user statement is marked current and recorded', asyn
       type: 'project',
       description: 'API route naming',
       content: 'API 路由都用 kebab-case。',
-      basis: 'user-explicit',
-      evidence: 'API 路由都用 kebab-case。',
+      citations: [{ quote: 'API 路由都用 kebab-case。' }],
     },
     exec,
   );
   assert.equal(saved.written, true, JSON.stringify(saved));
   assert.equal(saved.verification, 'recorded');
+  assert.deepEqual(saved.citations, [{ seq: 1, role: 'user' }]);
   const entry = await env.pctx.store.readEntry(saved.file);
   assert.match(entry.body, /^STATUS: current\n/);
   const ledger = await readLedger(env.pctx.store);
-  assert.equal(ledger.entries[saved.file].source, 'user-explicit');
+  assert.equal(ledger.entries[saved.file].source, 'user-citation');
 });
 
 test('v24 first turn: every note shows its summary, written by the model or not', async (t) => {

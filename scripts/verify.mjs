@@ -26,6 +26,7 @@ const VERBOSE = process.argv.includes('--verbose');
 const REQUIRED_FILES = [
   'package.json',
   'index.js',
+  'client.js',
   'cordis.patch.yml',
   'icon.svg',
   'docs/INTERFACES.md',
@@ -54,7 +55,6 @@ const REQUIRED_FILES = [
   'src/dream-shadow.js',
   'src/dream-run.js',
   'src/tool-loop.js',
-  'src/inbox.js',
   'src/dream-session-text.js',
   'src/dream-evidence.js',
   'src/write-review.js',
@@ -68,11 +68,6 @@ const REQUIRED_FILES = [
   'src/lock.js',
   'src/import-export.js',
 ];
-
-// The Web client bundle is optional while the UI is still being finished: when
-// it exists it enters the syntax stage automatically (the walker picks up every
-// .js file), when it does not the harness just notes that it is skipped.
-const OPTIONAL_FILES = ['client.js'];
 
 const results = [];
 let failures = 0;
@@ -125,15 +120,6 @@ async function stageStructure() {
       if (VERBOSE) record('structure', `file ${rel}`, true);
     } catch (error) {
       record('structure', `file ${rel}`, false, `missing or unreadable (${error.code ?? error.message})`);
-    }
-  }
-  for (const rel of OPTIONAL_FILES) {
-    try {
-      await readFile(path.join(PLUGIN_ROOT, rel));
-      // Present: it is syntax-checked by the walker in stage 2.
-      record('structure', `optional file ${rel} present (syntax-checked below)`, true);
-    } catch {
-      console.log(`  SKIP  optional ${rel} not present yet (will be syntax-checked when it lands)`);
     }
   }
   for (const locale of ['locale/en.json', 'locale/zh.json']) {

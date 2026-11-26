@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
-import { isCurrentPage, stampVerification } from '../src/memory-body.js';
+import { isCurrentPage } from '../src/memory-body.js';
 import { recordVerification, verifiedPage } from '../src/verification-ledger.js';
 import { buildRecallText } from '../src/recall.js';
 import { makeTempDir } from './helpers.mjs';
@@ -29,6 +29,6 @@ test('the host ledger vouches only for the exact content it recorded', async (t)
   await recordVerification({ store, scope: 'project', file: entry.file, name: entry.name, description: entry.description, body });
   assert.equal(await verifiedPage({ store, scope: 'project', entry, body }), true);
   // A hand-written stamp proves nothing; any edit voids the record until the host verifies it again.
-  assert.equal(await verifiedPage({ store, scope: 'project', entry, body: stampVerification(`${body}\nedited`, '2026-11-11') }), false);
+  assert.equal(await verifiedPage({ store, scope: 'project', entry, body: `${body}\nVERIFIED: 2026-11-11\nedited` }), false);
   assert.equal(await verifiedPage({ store, scope: 'project', entry: { ...entry, description: 'renamed' }, body }), false);
 });

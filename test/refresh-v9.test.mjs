@@ -201,8 +201,9 @@ test('v9 refresh: memory_refresh is no longer a model tool; manual refresh still
   assert.match(agentText(env.agent), /delta/, 'a manual refresh rebuilds the frozen snapshot');
 });
 
-test('v9 refresh: /memory refresh rebuilds the snapshot', async (t) => {
+test('v9 refresh: saveRules rebuilds the snapshot and /memory refresh is retired', async (t) => {
   const env = await injectionEnv(t);
+  const service = env.mods.status.createStatusService(env.runtime);
   const definitions = new Map();
   const commandCtx = {
     commands: {
@@ -227,7 +228,9 @@ test('v9 refresh: /memory refresh rebuilds the snapshot', async (t) => {
   await env.pctx.store.saveEntry({ name: 'epsilon', type: 'user', description: 'command refresh', content: 'epsilon body' });
 
   const refresh = await invoke('refresh');
-  assert.equal(refresh.kind, 'success', refresh.text);
-  assert.match(refresh.text, /epsilon|refresh/i);
+  assert.equal(refresh.kind, 'error');
+  assert.match(refresh.text, /unknown \/memory subcommand/);
+
+  await service.saveRules(env.pctx, 'project', '- rebuild snapshot on rules save');
   await waitFor(() => /epsilon/.test(agentText(env.agent)));
 });

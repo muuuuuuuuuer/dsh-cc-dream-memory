@@ -59,6 +59,7 @@ async function dreamEnv(t, sessions = [{ id: 's1', lastSeq: 9 }]) {
 }
 
 const styleFile = 'feedback_style.md';
+const cite = [{ session_id: 's1', seq: 1, quote: 'Keep answers short.' }];
 
 test('a write without type or description keeps the page metadata', async (t) => {
   const env = await dreamEnv(t);
@@ -91,7 +92,7 @@ test('a run with nothing to change does not mark unread sessions reviewed', asyn
 test('a run cut short by the turn cap keeps unread sessions eligible', async (t) => {
   const env = await dreamEnv(t);
   const steps = Array.from({ length: 20 }, () => [{ name: 'memory_index', arguments: {} }]);
-  steps[0] = [{ name: 'memory_write', arguments: { file: styleFile, body: 'Keep answers very short.' } }];
+  steps[0] = [{ name: 'memory_write', arguments: { file: styleFile, body: 'Keep answers very short.', citations: cite } }];
   script(env, steps);
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-cap' });
   assert.equal(result.ready, true);
@@ -101,7 +102,7 @@ test('a run cut short by the turn cap keeps unread sessions eligible', async (t)
 
 test('an explicitly rejected change is remembered and shown to the next Dream', async (t) => {
   const env = await dreamEnv(t);
-  script(env, [[{ name: 'memory_write', arguments: { file: styleFile, description: 'Answer in long essays', body: 'Write long essays.' } }]]);
+  script(env, [[{ name: 'memory_write', arguments: { file: styleFile, description: 'Answer in long essays', body: 'Write long essays.', citations: cite } }]]);
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-reject' });
   assert.equal(result.ready, true);
   const discarded = await env.runtime.switchDream({ pctx: env.pctx, reject: [styleFile] });
@@ -154,7 +155,7 @@ test('a note created during the run neither fails the run nor gets removed by th
 
 test('a live edit to a page Dream rewrote still blocks the run', async (t) => {
   const env = await dreamEnv(t);
-  script(env, [[{ name: 'memory_write', arguments: { file: styleFile, body: 'Dream version.' } }]], {
+  script(env, [[{ name: 'memory_write', arguments: { file: styleFile, body: 'Dream version.', citations: cite } }]], {
     before: async (call) => {
       if (call !== 2) return;
       await env.pctx.store.updateEntry(styleFile, { content: 'Human version.' });
@@ -175,8 +176,8 @@ test('shadow deletes and rewrites stay out of the live trash and history', async
     source: { via: 'test' },
   });
   script(env, [[
-    { name: 'memory_delete', arguments: { file: 'project_old.md' } },
-    { name: 'memory_write', arguments: { file: styleFile, body: 'Rewritten in the copy.' } },
+    { name: 'memory_delete', arguments: { file: 'project_old.md', citations: cite } },
+    { name: 'memory_write', arguments: { file: styleFile, body: 'Rewritten in the copy.', citations: cite } },
   ]]);
   const result = await env.runtime.dream({ pctx: env.pctx, force: true, trigger: 'manual', runId: 'run-trash' });
   assert.equal(result.ready, true);

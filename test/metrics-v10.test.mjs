@@ -111,25 +111,29 @@ test('v10 metrics: dream quality fields and /metrics?days trend', async (t) => {
   assert.equal(defaultRes.json().ok, true);
 });
 
-test('v10 metrics: /memory metrics prints the 7-day trend and quality', async (t) => {
+test('v10 metrics: status metricsReport exposes the 7-day trend and quality', async (t) => {
   const env = await commandEnv(t);
+  const service = env.mods.status.createStatusService(env.runtime);
   await env.mods.metrics.recordInjection(env.paths);
   await env.mods.metrics.recordDream(env.paths, { event: 'proposed', ops: 2 });
   await env.mods.metrics.recordDream(env.paths, { event: 'applied', ops: 2, planOps: 2 });
-  const output = await env.invokeMemory('metrics');
-  assert.equal(output.kind, 'success', output.text);
-  assert.match(output.text, /trend|day|7/i);
-  assert.match(output.text, /quality|applied|dropped/i);
-  assert.match(output.text, /first reads per session/i);
+  const report = await service.metricsReport(env.pctx, { days: 7 });
+  assert.equal(report.days, 7);
+  assert.equal(report.trend.length, 7);
+  assert.equal(report.quality.appliedOps, 2);
+  assert.equal(typeof report.summary.adoptions.count, 'number');
+  assert.match((await env.invokeMemory('metrics')).text, /unknown \/memory subcommand/);
 });
 
-test('automatic recalls are visible to the human, not only recorded', async (t) => {
-  const env = await commandEnv(t);
+test('automatic recalls are counted in metricsSummary and /metrics', async (t) => {
+  const env = await httpEnv(t);
   await env.mods.metrics.recordRecall(env.paths, 2);
   await env.mods.metrics.recordRecall(env.paths, 1);
   const summary = env.mods.metrics.metricsSummary(await env.mods.metrics.readMetrics(env.paths));
   assert.equal(summary.recalls.count, 2);
   assert.equal(summary.recalls.files, 3);
-  const output = await env.invokeMemory('metrics');
-  assert.match(output.text, /auto recalls: 2 \(3 memories attached\)/);
+  const res = await callHttp(env, { path: '/metrics' });
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().metrics.recalls.count, 2);
+  assert.equal(res.json().metrics.recalls.files, 3);
 });

@@ -282,12 +282,12 @@ test('v5: dispose removes tools/commands/prompt/listeners and repeats cleanly', 
 
   assert.ok(plugin && typeof plugin.dispose === 'function');
   assert.equal(records.tools.length, 4);
-  assert.equal(records.commands.length, 3, '/memory, /remember and /dream (short alias) must be registered');
+  assert.equal(records.commands.length, 2, '/memory and /remember must be registered');
   assert.ok(pendingListenerCount(records) > 0);
 
   await assert.doesNotReject(() => plugin.dispose(), 'first dispose must not throw');
   assert.equal(records.toolDisposers.length, 4, 'every tool registration disposer must run');
-  assert.equal(records.commandDisposers.length, 3, 'every command registration disposer must run');
+  assert.equal(records.commandDisposers.length, 2, 'every command registration disposer must run');
   assert.equal(records.promptDisposers.length, 1, 'the systemPrompt context disposer must run');
   assert.equal(pendingListenerCount(records), 0, 'every event listener must be removed on dispose');
 

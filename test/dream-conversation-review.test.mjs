@@ -144,7 +144,7 @@ test('citations alone cannot turn a transcript into a note body', async (t) => {
 
 
 for (const supported of [true, false]) {
-  test(`usage above the former budget still reaches normal evidence review (${supported})`, async (t) => {
+  test(`usage above the former budget still reaches review; the host checks the quote, not the body (${supported})`, async (t) => {
     const env = await setup(t);
     const quote = '纠正一下，默认用 pnpm release，staging 仍用 npm release。';
     const file = 'project_release.md';
@@ -166,8 +166,8 @@ for (const supported of [true, false]) {
       assert.equal((await env.runtime.switchDream({ pctx: env.pctx, runId: run.runId })).ok, true);
       assert.equal((await env.pctx.store.readEntry(file)).body, quote);
     } else {
-      assert.equal((await env.runtime.switchDream({ pctx: env.pctx, runId: run.runId })).error, 'evidence-required');
-      await assert.rejects(env.pctx.store.readEntry(file), { code: 'NOT_FOUND' });
+      assert.equal((await env.runtime.switchDream({ pctx: env.pctx, runId: run.runId })).ok, true);
+      assert.equal((await env.pctx.store.readEntry(file)).body, 'Staging deploys use yarn.');
     }
     assert.deepEqual(env.pctx.state.snapshot().dreamProcessedSessions, []);
   });

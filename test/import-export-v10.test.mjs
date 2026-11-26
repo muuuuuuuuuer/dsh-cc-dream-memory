@@ -163,16 +163,18 @@ test('v10 export: HTTP POST /export writes a Claude-compatible memory dir plus r
 test('v10 import/export: /memory import and /memory export commands', async (t) => {
   const env = await commandEnv(t);
   const sourceDir = await makeClaudeDir(env);
-  // The slash-command tokenizer treats backslashes as escapes, so Windows
-  // absolute paths are passed with forward slashes (as a user would).
-  const asCommandPath = (value) => value.replaceAll('\\', '/');
-  const imported = await env.invokeMemory(`import ${asCommandPath(sourceDir)}`);
+  // The raw path is passed as typed, so Windows backslashes survive the tokenizer.
+  const imported = await env.invokeMemory(`import ${sourceDir}`);
   assert.equal(imported.kind, 'success', imported.text);
-  assert.match(imported.text, /import/i);
+  assert.match(imported.text, /imported [1-9]\d* file\(s\)/);
+  assert.ok((await env.pctx.store.listEntries()).some((entry) => entry.file.includes('plain_note')));
 
-  const targetDir = path.join(env.tmp, 'command-export');
-  const exported = await env.invokeMemory(`export ${asCommandPath(targetDir)}`);
+  const targetDir = path.join(env.tmp, 'command export');
+  const exported = await env.invokeMemory(`export "${targetDir}"`);
   assert.equal(exported.kind, 'success', exported.text);
-  assert.match(exported.text, /export/i);
+  assert.match(exported.text, /exported [1-9]\d* file\(s\)/);
   assert.equal(await exists(path.join(targetDir, 'memory', 'MEMORY.md')), true);
+
+  assert.match((await env.invokeMemory('import')).text, /usage: \/memory import/);
+  assert.match((await env.invokeMemory('export')).text, /usage: \/memory export/);
 });

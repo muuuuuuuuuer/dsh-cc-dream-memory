@@ -169,7 +169,7 @@ test('resume rechecks a memory page that informed a saved no-change decision', a
   assert.deepEqual(env.pctx.state.snapshot().dreamProcessedSessions, []);
 });
 
-test('an unchecked tail cannot delete a checkpointed draft and consume its source', async (t) => {
+test('an uncited tail deletion is refused and cannot remove a checkpointed draft', async (t) => {
   const env = await setup(t);
   const runId = 'run-unchecked-tail';
   assert.equal((await pause(env, runId)).status, 'paused');
@@ -178,12 +178,10 @@ test('an unchecked tail cannot delete a checkpointed draft and consume its sourc
     tool('memory_delete', { file }),
     end('tool-calls'),
   ] : [{ type: 'text-delta', text: 'DONE' }, end('stop')]);
-  const stopped = await env.runtime.dream({ pctx: env.pctx, runId, resume: true });
-  assert.equal(stopped.status, 'paused');
+  const resumed = await env.runtime.dream({ pctx: env.pctx, runId, resume: true });
+  assert.equal(resumed.ready, true);
   assert.deepEqual(env.pctx.state.snapshot().dreamProcessedSessions, []);
-
-  env.host.services.llm.stream = () => streamOf([{ type: 'text-delta', text: 'DONE' }, end('stop')]);
-  assert.equal((await env.runtime.dream({ pctx: env.pctx, runId, resume: true })).ready, true);
+  assert.deepEqual(env.pctx.state.snapshot().shadowPending.reviewRecords.map(({ id }) => id), ['s1']);
   assert.equal((await env.runtime.switchDream({ pctx: env.pctx, runId })).ok, true);
   assert.equal((await env.pctx.store.readEntry(file)).body, first);
 });

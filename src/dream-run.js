@@ -204,13 +204,10 @@ export function summarizeRun(manifest, { running = false, checkpoint = false, ou
     finishedAt: manifest.finishedAt,
     models: manifest.models,
     input: {
-      expectedUnits: Number(manifest.input?.expectedUnits) || 0,
       memoryFiles: Number(manifest.input?.memoryFiles) || 0,
       sessions: (manifest.input?.sessions ?? []).map((session) => session.id),
     },
     counts: manifest.counts,
-    coverageComplete: manifest.coverageComplete,
-    planPath: manifest.planPath,
     applied: manifest.applied,
     decision: manifest.decision,
     error: interrupted && !resumable && !manifest.error ? 'stopped before finishing (the host process ended); run Dream again' : manifest.error,
@@ -220,14 +217,5 @@ export function summarizeRun(manifest, { running = false, checkpoint = false, ou
     usage: manifest.usage,
     reviewRanges: manifest.reviewRanges,
     errors: manifest.errors ?? [],
-    sessions: (manifest.input?.sessions ?? []).map((session) => ({
-      id: session.id,
-      units: (session.units ?? []).length,
-      done: (session.units ?? []).filter((unit) => unit.status === 'done').length,
-      failed: (session.units ?? []).filter((unit) => unit.status === 'failed').length,
-    })),
-    pendingUnits: (manifest.input?.sessions ?? []).flatMap((session) => (session.units ?? [])
-      .filter((unit) => unit.status !== 'done')
-      .map((unit) => ({ sessionId: session.id, ...unit }))),
   };
 }

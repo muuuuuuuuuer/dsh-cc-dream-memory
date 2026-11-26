@@ -218,10 +218,8 @@ test('v2 config exposes the new autoMemoryEnabled / dream budget defaults', asyn
   const resolved = config.resolveConfig();
   assert.equal(resolved.autoMemoryEnabled, true, 'autoMemoryEnabled defaults to true');
   assert.equal(resolved.dreamMaxFileChars, 100_000, 'dreamMaxFileChars defaults to 100000 (Claude cookbook 100KB)');
-  assert.equal(resolved.dreamTimeoutMs, 600_000, 'dreamTimeoutMs defaults to ten minutes');
   assert.equal(resolved.enabled, true, 'plugin master switch default stays true');
   assert.equal(config.DEFAULTS.dreamMaxFileChars, 100_000);
-  assert.equal(config.DEFAULTS.dreamTimeoutMs, 600_000);
 
   const overridden = config.resolveConfig({
     autoMemoryEnabled: false,

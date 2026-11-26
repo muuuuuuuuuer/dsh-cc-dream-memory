@@ -131,37 +131,49 @@ export function mountDreamFixture(host, spec, { append = () => {}, restrict = ()
       } } },
     },
   });
-  return async (name, args, transform = (content) => content) => {
+  return async (name, args, transform = (content) => content, { deliver = true } = {}) => {
     const definition = definitions.get(name);
     const exec = { arguments: args, signal: spec.signal };
     const value = await definition.execute(args, exec);
     const content = transform(definition.output.render(args, value));
-    definition.finalizeContent?.(exec, { content, isError: false });
+    if (deliver) definition.finalizeContent?.(exec, { content, isError: false });
     return content[0].text;
   };
 }
 
+/**
+ * Play a per-session model script against the Dream child's tools: read every
+ * offered session, run the script once per session and submit its changes
+ * after each one, then end with done: true. A session whose script did not report its work
+ * as done is read without a delivery receipt, so the host does not count it.
+ */
 export async function playDreamTasks(host, spec, invoke, playTask) {
-  let prompt = spec.prompt[0].text;
-  // The host ends the batch when it is finished or when a task is left unfinished.
-  while (!prompt.includes('Call structured_output with {"finished":true}')) {
-    const task = Number(/\nTask (\d+) of \d+[.]/u.exec(prompt)?.[1]);
-    if (!task) throw new Error(prompt);
-    if (/session_id=\S+?,/u.test(prompt) && !prompt.startsWith('Review before writing:')) {
-      const lastLine = prompt.split('\n').at(-1);
-      const inline = lastLine.startsWith('{"task":') ? JSON.parse(lastLine) : null;
-      const material = inline?.task === task ? [inline.source] : [];
-      for (let page = material.length ? null : 0; page !== null;) {
-        const read = await invoke('dream_read_source', { task, page });
-        material.push(read);
-        page = JSON.parse(read.split('\n')[0]).next_page;
-      }
-      host.dreamSourcePages = material;
+  const prompt = spec.prompt[0].text;
+  const ids = [...prompt.matchAll(/^- (\S+) \| (?:\d{4}-\d{2}-\d{2}|unknown date) \| /gmu)].map((match) => match[1]);
+  const read = async (id, deliver) => {
+    const pages = [];
+    for (let from; ;) {
+      const text = await invoke('dream_read_session', { session_id: id, ...(from === undefined ? {} : { from_seq: from }) }, undefined, { deliver });
+      pages.push(text);
+      const header = JSON.parse(text.split('\n')[0]);
+      if (header.next_from_seq === null) return { pages, after: pages[0] ? JSON.parse(pages[0].split('\n')[0]).from_seq - 1 : -1 };
+      from = header.next_from_seq;
     }
-    const result = await playTask({ ...spec, prompt: [{ type: 'text', text: prompt }] }, invoke);
+  };
+  for (const id of ids.length ? ids : [null]) {
+    let after = -1;
+    if (id) {
+      const material = await read(id, false);
+      host.dreamSourcePages = material.pages;
+      after = material.after;
+    }
+    const text = id ? prompt + '\n\nSource session_id=' + id + ', after seq ' + after + '.' : prompt;
+    const result = await playTask({ ...spec, prompt: [{ type: 'text', text }] }, invoke);
     if (result.stopReason !== 'completed' || !result.structured) return result;
-    prompt = await invoke('dream_submit_task', { task, ...result.structured });
+    if (id && result.structured.done) await read(id, true);
+    host.dreamSubmitReply = await invoke('dream_submit', { changes: result.structured.changes, done: false });
   }
+  host.dreamSubmitReply = await invoke('dream_submit', { changes: [], done: true });
   return { stopReason: 'completed', output: [], structured: { finished: true } };
 }
 

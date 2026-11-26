@@ -1,21 +1,17 @@
 /**
- * The host-built focus list for an automatic Dream.
+ * The host-built focus list for automatic Dream maintenance.
  *
- * Field runs showed that a Dream given an explicit target succeeds, while an
- * open-ended one proposes rewrites the evidence gate rejects. So the automatic
- * Dream only runs when the host can name what to look at, in priority order:
- *   1. notes the user corrected in a live session since the last Dream switch;
- *   2. notes whose `sources` no longer resolve;
- *   3. notes recalled since the last Dream, most recalled first;
- *   4. archive candidates (unread and unrecalled for `archiveHintDays`).
- * An empty list means there is nothing to consolidate and the Dream is skipped.
- * Manual runs never go through this module.
+ * Corrected notes and broken source anchors qualify. Recall helps rank those
+ * targets. Session review has its own scheduling path.
  */
 import { checkSources } from './sources.js';
-import { normalizeMetrics, readMetrics } from './metrics.js';
+import { readMetrics } from './metrics.js';
+import { mapNoteFiles } from './store.js';
+import { memoryHash } from './write-review.js';
+import { scanSecrets } from './secrets.js';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const LIMITS = { corrected: 8, broken: 5, recalled: 5, archive: 5 };
+const LIMITS = { corrected: 8, broken: 5 };
 /** Notes whose sources are checked per focus build. */
 const MAX_SOURCE_CHECKS = 50;
 
@@ -40,48 +36,82 @@ export function archiveCandidates(entries, metrics, days, now = Date.now()) {
   return candidates.sort((a, b) => b.idleDays - a.idleDays || a.file.localeCompare(b.file));
 }
 
-/** Notes whose `sources` do not all resolve, with the broken source names. */
-export async function brokenSourceNotes(root, entries) {
-  const broken = [];
-  for (const entry of (Array.isArray(entries) ? entries : []).filter((item) => item.sources?.length > 0).slice(0, MAX_SOURCE_CHECKS)) {
-    const check = await checkSources(root, entry.sources);
-    if (check.broken.length > 0) broken.push({ file: entry.file, sources: check.broken.map((item) => item.source) });
-  }
-  return broken;
+/** Select maintenance targets whose current inputs have not been reviewed. */
+export async function buildFocus(pctx) {
+  const [entries, metrics] = await Promise.all([pctx.store.listEntries('project'), readMetrics(pctx.paths)]);
+  return focusFrom(pctx, entries, metrics, pctx.state.snapshot());
 }
 
-/**
- * Build the focus list for one project.
- * @param {{state:object, store:object, paths:object}} pctx
- * @param {{archiveHintDays?:number}} config
- * @returns {Promise<{files:Array<{file:string, reason:string}>, text:string}>}
- */
-export async function buildFocus(pctx, config = {}, now = Date.now()) {
-  const entries = await pctx.store.listEntries('project');
-  const existing = new Set(entries.map((entry) => entry.file));
-  const snapshot = pctx.state.snapshot();
-  const metrics = normalizeMetrics(await readMetrics(pctx.paths));
-  const picked = new Map();
-  const add = (reason, files, limit) => {
-    for (const file of files) {
-      if (picked.size >= 30 || picked.has(file) || [...picked.values()].filter((item) => item === reason).length >= limit) continue;
-      picked.set(file, reason);
-    }
+async function focusFrom(pctx, entries, metrics, snapshot) {
+  const corrected = new Set(snapshot.correctedFiles);
+  const recentRecalls = ({ file }) => {
+    const row = metrics.entries[file];
+    return row?.lastRecallAt > snapshot.lastDreamAt ? row.recalls : 0;
   };
-  add('corrected', snapshot.correctedFiles.filter((file) => existing.has(file)), LIMITS.corrected);
-  add('broken', (await brokenSourceNotes(pctx.paths.projectRoot, entries)).map((item) => item.file), LIMITS.broken);
-  const recalled = entries
-    .filter((entry) => (metrics.entries[entry.file]?.lastRecallAt ?? 0) > snapshot.lastDreamAt)
-    .sort((a, b) => (metrics.entries[b.file].recalls ?? 0) - (metrics.entries[a.file].recalls ?? 0) || a.file.localeCompare(b.file));
-  add('recalled', recalled.map((entry) => entry.file), LIMITS.recalled);
-  add('archive', archiveCandidates(entries, metrics, config.archiveHintDays, now).map((item) => item.file), LIMITS.archive);
-  const files = [...picked].map(([file, reason]) => ({ file, reason }));
-  const names = (reason) => files.filter((item) => item.reason === reason).map((item) => item.file).join(', ');
-  const parts = [
-    ['corrected', 'the user corrected something these notes say since the last Dream; make sure each note now states only what is true'],
-    ['broken', 'the sources these notes cite have changed or are gone; check them against the repository and fix or drop what no longer holds'],
-    ['recalled', 'recalled most since the last Dream; check they are accurate and concise'],
-    ['archive', 'lowest priority: not read or recalled for a long time; merge or retire only what is clearly obsolete'],
-  ].filter(([reason]) => names(reason) !== '').map(([reason, note]) => `- ${names(reason)}: ${note}`);
-  return { files, text: files.length === 0 ? '' : `Work only on these notes, in this priority order; leave every other note alone.\n${parts.join('\n')}` };
+  const byRecall = (a, b) => recentRecalls(b) - recentRecalls(a);
+  const cited = entries.filter((entry) => !corrected.has(entry.file) && entry.sources?.length).sort(byRecall);
+  const broken = await mapNoteFiles(cited.slice(0, MAX_SOURCE_CHECKS), async (entry) => {
+    const check = await checkSources(pctx.paths.projectRoot, entry.sources, { withRevision: true });
+    return check.broken.length ? { entry, check, reason: 'broken' } : undefined;
+  });
+  const targets = [
+    ...entries.filter(({ file }) => corrected.has(file)).sort(byRecall).map((entry) => ({ entry, reason: 'corrected' })),
+    ...broken,
+  ];
+  const counts = { corrected: 0, broken: 0 };
+  const selected = [];
+  for (const { entry, reason, check } of targets) {
+    if (counts[reason] >= LIMITS[reason]) continue;
+    const { file } = entry;
+    const note = await pctx.store.readEntry(file).catch(() => null);
+    if (!note || note.revision !== entry.revision) continue;
+    const sources = check ?? await checkSources(pctx.paths.projectRoot, entry.sources, { withRevision: true });
+    const version = memoryHash(note.raw);
+    const key = memoryHash(JSON.stringify([version, snapshot.correctionVersions?.[file], sources.items]));
+    if (snapshot.dreamMaintenance?.[file] === key) continue;
+    selected.push({ file, reason, version, key, brokenSources: sources.broken });
+    counts[reason] += 1;
+  }
+  const files = selected.map(({ file, reason }) => ({ file, reason }));
+  const parts = selected.map(({ file, reason, brokenSources }) => {
+    const [first] = brokenSources;
+    const correction = reason === 'corrected' ? 'user correction' : '';
+    const anchor = first && (scanSecrets(first.source).matches.length ? '[redacted anchor]' : JSON.stringify(first.source.slice(0, 120)));
+    const failed = first ? `source anchor ${anchor} reported ${first.status}` + (brokenSources.length > 1 ? `, plus ${brokenSources.length - 1} more` : '') : '';
+    return `- ${file}: ${[correction, failed].filter(Boolean).join('. ')}`;
+  });
+  const text = files.length === 0 ? '' : `For maintenance, check these notes in priority order. Anchor failures are lookup results. Verify the fact and its scope before changing or retiring it. If the task has a source session, also preserve its durable new facts.\n${parts.join('\n')}`;
+  return { files, text, maintenance: selected.map(({ file, version, key }) => ({ file, version, key })) };
+}
+
+const SUSPECT_LIMITS = { dismissed: 8, archive: 8 };
+
+/**
+ * The notes Dream is told to look at first, from signals the host has: a user
+ * correction since the last Dream, a source anchor that no longer resolves, a
+ * dismissal in recall ("Not relevant"), or no read or recall for a long time.
+ * The host does not judge whether a note is wrong; each entry says why it is
+ * listed and which session the note came from, if it names one.
+ * @returns {Promise<Array<{file:string, reasons:string[], sourceSession:string}>>}
+ */
+export async function buildSuspects(pctx, config = {}) {
+  const [entries, metrics] = await Promise.all([pctx.store.listEntries('project'), readMetrics(pctx.paths)]);
+  const snapshot = pctx.state.snapshot();
+  const focus = await focusFrom(pctx, entries, metrics, snapshot);
+  const byFile = new Map(entries.map((entry) => [entry.file, entry]));
+  const suspects = new Map();
+  const add = (file, reason) => {
+    if (!byFile.has(file)) return;
+    suspects.set(file, [...(suspects.get(file) ?? []), reason]);
+  };
+  for (const { file, reason } of focus.files) {
+    add(file, reason === 'corrected' ? 'the user corrected it since the last Dream' : 'a source anchor in its frontmatter no longer resolves');
+  }
+  const dismissed = new Set(Object.values(snapshot.recallDismissals ?? {}).flat()
+    .filter((ref) => typeof ref === 'string' && ref.startsWith('project/')).map((ref) => ref.slice('project/'.length)));
+  [...dismissed].slice(-SUSPECT_LIMITS.dismissed).forEach((file) => add(file, 'the user dismissed it in recall as not relevant'));
+  const days = config.archiveHintDays;
+  archiveCandidates(entries, metrics, days).slice(0, SUSPECT_LIMITS.archive)
+    .forEach(({ file, idleDays }) => add(file, `not read or recalled for ${idleDays} days`));
+  return [...suspects].map(([file, reasons]) => ({ file, reasons, sourceSession: byFile.get(file).sourceSession || '' }));
 }

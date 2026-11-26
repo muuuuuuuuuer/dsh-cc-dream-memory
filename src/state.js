@@ -12,27 +12,19 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { withFileLock } from './lock.js';
 
 const STATE_VERSION = 1;
 const MAX_SESSIONS = 200;
-/** Notes corrected since the last Dream, and per-session switches kept. */
+/** Notes corrected since the last Dream. */
 const MAX_CORRECTED = 200;
-const MAX_SESSION_FLAGS = 200;
+const MAX_MAINTENANCE = 200;
+const MAX_AGENT_NOTES = 1000;
 /** Rejected Dream proposals kept so the same fact is not proposed again. */
 const MAX_REJECTED = 2000;
 const LOCK_TTL_MS = 10_000;
-const LOCK_RETRY_MS = 15;
 const LOCK_MAX_WAIT_MS = 3_000;
-/** Token usage fields a dream cost record may carry (from `llm.stream` usage chunks). */
-const USAGE_KEYS = Object.freeze([
-  'inputTokens',
-  'outputTokens',
-  'totalTokens',
-  'cacheReadTokens',
-  'cacheWriteTokens',
-  'reasoningTokens',
-]);
-
 function emptyState() {
   return {
     version: STATE_VERSION,
@@ -41,13 +33,14 @@ function emptyState() {
     lastScanAt: 0,
     lastDreamSessions: 0,
     lastDreamOps: 0,
-    lastDreamFiles: 0,
     lastDreamSummary: '',
     lastError: '',
     sessionsSince: [],
     // v0.10.8: sessions already consumed by a successful dream; the corpus
     // fallback must not re-read them unless they became active again.
     dreamProcessedSessions: [],
+    // `agent:<preset>/<file>` -> content hash of the subagent note Dream last reviewed.
+    dreamAgentNotes: {},
     // Scheduling only. A deferred review has not consumed any source events.
     dreamDeferredSessions: [],
     counters: { dreams: 0, skipped: 0, failures: 0 },
@@ -59,23 +52,9 @@ function emptyState() {
     // Keys of Dream proposals the human did not pass (claim keys and
     // `retire:<file>`). Merge skips them, so they are never proposed again.
     dreamRejected: [],
-    lastDreamMode: '',
     consecutiveFailures: 0,
-    // v7: duration / cost of the last completed dream (0/null on old files).
-    lastDreamDurationMs: 0,
-    lastDreamInputChars: 0,
-    lastDreamOutputChars: 0,
-    lastDreamUsage: null,
-    // v8: the last dream's usage exceeded `dreamMaxTotalTokens`.
-    lastDreamCostExceeded: false,
-    // v21: last automatic extraction outcome, so the UI can explain why the
-    // Inbox is empty without asking the user to read host logs.
     lastExtractAt: 0,
-    lastExtractAttemptAt: 0,
-    lastExtractCount: 0,
     lastExtractReason: '',
-    lastExtractError: '',
-    lastExtractTrigger: '',
     // Per-session extraction cursors survive a Host restart. The in-memory
     // runtime map is only the fast path.
     extractSeqs: {},
@@ -83,6 +62,9 @@ function emptyState() {
     // v0.24: note files whose body the user corrected in a live session since
     // the last Dream switch; the automatic Dream's focus list.
     correctedFiles: [],
+    correctionVersions: {},
+    // Input fingerprint of the last completed automatic no-op review per note.
+    dreamMaintenance: {},
     // v0.24: why the last automatic Dream did not start ('no-focus', ...).
     lastDreamSkipReason: '',
     // v0.24: per-session switches; only the off values are stored,
@@ -93,26 +75,13 @@ function emptyState() {
   };
 }
 
-/** Keep only known numeric token counters; arbitrary content is ignored. */
-function normalizeUsage(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  const usage = {};
-  let seen = false;
-  for (const key of USAGE_KEYS) {
-    const n = Number(value[key]);
-    if (Number.isFinite(n) && n >= 0) {
-      usage[key] = n;
-      seen = true;
-    }
-  }
-  return seen ? usage : null;
-}
-
 function normalize(raw) {
   const base = emptyState();
   if (!raw || typeof raw !== 'object') return base;
-  const state = { ...base, ...raw };
-  state.version = STATE_VERSION;
+  const state = { ...base };
+  for (const key of Object.keys(base)) {
+    if (key !== 'version' && Object.hasOwn(raw, key)) state[key] = raw[key];
+  }
   state.sessionsSince = Array.isArray(raw.sessionsSince)
     ? raw.sessionsSince
         .filter((entry) => entry && typeof entry.id === 'string' && entry.id !== '')
@@ -132,6 +101,9 @@ function normalize(raw) {
           ...(entry.partial === true ? { partial: true } : {}),
         }))
     : [];
+  state.dreamAgentNotes = Object.fromEntries(Object.entries(raw.dreamAgentNotes && typeof raw.dreamAgentNotes === 'object' ? raw.dreamAgentNotes : {})
+    .filter(([name, hash]) => name.startsWith('agent:') && typeof hash === 'string' && hash !== '')
+    .slice(-MAX_AGENT_NOTES));
   state.counters = { ...base.counters, ...(raw.counters && typeof raw.counters === 'object' ? raw.counters : {}) };
   state.dreamDeferredSessions = Array.isArray(raw.dreamDeferredSessions)
     ? raw.dreamDeferredSessions.filter((item) => typeof item?.id === 'string' && Number.isFinite(item.at)).slice(-MAX_SESSIONS)
@@ -143,37 +115,32 @@ function normalize(raw) {
     'lastScanAt',
     'lastDreamSessions',
     'lastDreamOps',
-    'lastDreamFiles',
-    'lastDreamDurationMs',
-    'lastDreamInputChars',
-    'lastDreamOutputChars',
     'lastExtractAt',
-    'lastExtractAttemptAt',
-    'lastExtractCount',
   ]) {
     state[key] = Number(state[key]) || 0;
   }
-  state.lastDreamUsage = normalizeUsage(raw.lastDreamUsage);
-  state.lastDreamCostExceeded = state.lastDreamCostExceeded === true;
   for (const key of [
     'lastDreamSummary',
     'lastError',
-    'lastDreamMode',
     'lastExtractReason',
-    'lastExtractError',
-    'lastExtractTrigger',
   ]) {
     state[key] = typeof state[key] === 'string' ? state[key] : '';
   }
   state.correctedFiles = Array.isArray(raw.correctedFiles)
     ? [...new Set(raw.correctedFiles.filter((file) => typeof file === 'string' && file !== ''))].slice(-MAX_CORRECTED)
     : [];
+  state.correctionVersions = Object.fromEntries(state.correctedFiles.flatMap((file) => {
+    const version = raw.correctionVersions?.[file];
+    return typeof version === 'string' && version !== '' ? [[file, version]] : [];
+  }));
+  state.dreamMaintenance = Object.fromEntries(Object.entries(raw.dreamMaintenance ?? {})
+    .filter(([file, key]) => file.endsWith('.md') && typeof key === 'string' && /^[a-f0-9]{64}$/u.test(key))
+    .slice(-MAX_MAINTENANCE));
   state.lastDreamSkipReason = typeof raw.lastDreamSkipReason === 'string' ? raw.lastDreamSkipReason : '';
   state.sessionFlags = Object.fromEntries(
     Object.entries(raw.sessionFlags && typeof raw.sessionFlags === 'object' && !Array.isArray(raw.sessionFlags) ? raw.sessionFlags : {})
       .map(([id, flags]) => [id, { ...(flags?.use === false ? { use: false } : {}), ...(flags?.learn === false ? { learn: false } : {}) }])
-      .filter(([id, flags]) => id !== '' && Object.keys(flags).length > 0)
-      .slice(-MAX_SESSION_FLAGS),
+      .filter(([id, flags]) => id !== '' && Object.keys(flags).length > 0),
   );
   state.recallDismissals = Object.fromEntries(
     Object.entries(raw.recallDismissals ?? {})
@@ -209,6 +176,11 @@ function applyDreamCoverage(state, drop, reads) {
   const captured = new Map();
   for (const read of reads) {
     if (typeof read?.id !== 'string' || read.id === '') continue;
+    if (read.agentNote === true) {
+      // A reviewed subagent note, not a session: remember the content Dream saw.
+      state.dreamAgentNotes = Object.fromEntries(Object.entries({ ...state.dreamAgentNotes, [read.id]: read.hash }).slice(-MAX_AGENT_NOTES));
+      continue;
+    }
     const seq = Math.max(0, Math.trunc(Number(read.seq) || 0));
     const partial = read.complete !== true;
     const coverageVersion = read.capturedAt ? (read.coverageVersion === 2 ? 2 : 1) : undefined;
@@ -236,14 +208,22 @@ function recordRunOutcome(state, outcome) {
   state.dreamRunOutcomes = [...state.dreamRunOutcomes.filter((item) => item.runId !== outcome.runId), outcome].slice(-20);
 }
 
+function recordDreamMaintenance(state, maintenance) {
+  if (maintenance.length === 0) return;
+  const recent = new Map(Object.entries(state.dreamMaintenance));
+  for (const { file, key } of maintenance) {
+    recent.delete(file);
+    recent.set(file, key);
+  }
+  state.dreamMaintenance = Object.fromEntries([...recent].slice(-MAX_MAINTENANCE));
+}
+
 function recordRunDecision(state, runId, decision) {
   if (!runId) return;
   const prior = state.dreamRunOutcomes.find((item) => item.runId === runId);
   recordRunOutcome(state, { ...prior, runId, status: 'done', decision,
     applied: decision === 'applied' || decision === 'partially-applied' });
 }
-
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export class ProjectState {
   /** @param {{stateFile:string}} paths */
@@ -292,57 +272,16 @@ export class ProjectState {
     await fs.rename(tmp, this.stateFile);
   }
 
-  /**
-   * Run `fn` while holding the state lock, with a freshly read state object.
-   * Falls back to a lockless write if the lock cannot be acquired in time so a
-   * stale lock can never wedge dreaming.
-   */
+  /** Mutate the latest persisted state under a cross-process lock. */
   async _mutate(mutator) {
-    await this.load();
-    const deadline = Date.now() + LOCK_MAX_WAIT_MS;
-    let handle = null;
-    while (handle === null && Date.now() < deadline) {
-      try {
-        handle = await fs.open(this.lockFile, 'wx');
-        await handle.writeFile(JSON.stringify({ pid: process.pid, at: Date.now() }), 'utf8');
-      } catch (error) {
-        if (error && error.code === 'EEXIST') {
-          try {
-            const stat = await fs.stat(this.lockFile);
-            if (Date.now() - stat.mtimeMs > LOCK_TTL_MS) {
-              await fs.unlink(this.lockFile);
-              continue;
-            }
-          } catch {
-            /* lock vanished: retry */
-          }
-          await sleep(LOCK_RETRY_MS);
-          continue;
-        }
-        // Not a lock contention problem: mutate without the lock.
-        break;
-      }
-    }
-    try {
+    return withFileLock(this.lockFile, async () => {
       const fresh = normalize(await this._readForMutation());
       await mutator(fresh);
       await this._writeState(fresh);
       this.state = fresh;
+      this.loaded = true;
       return fresh;
-    } finally {
-      if (handle !== null) {
-        try {
-          await handle.close();
-        } catch {
-          /* already closed */
-        }
-        try {
-          await fs.unlink(this.lockFile);
-        } catch {
-          /* lock already removed by a TTL steal */
-        }
-      }
-    }
+    }, { ttlMs: LOCK_TTL_MS, waitMs: LOCK_MAX_WAIT_MS, strict: true, reclaimDeadOwner: true });
   }
 
   async _readForMutation() {
@@ -418,6 +357,7 @@ export class ProjectState {
     await this._mutate((state) => {
       state.dreamProcessedSessions = (Array.isArray(state.dreamProcessedSessions) ? state.dreamProcessedSessions : [])
         .filter((entry) => !restore.has(entry.id));
+      state.dreamAgentNotes = Object.fromEntries(Object.entries(state.dreamAgentNotes ?? {}).filter(([name]) => !restore.has(name)));
       recordRunDecision(state, runId, 'undone');
     });
   }
@@ -438,27 +378,13 @@ export class ProjectState {
   async markDreamDone({
     sessions = 0,
     ops = 0,
-    files = 0,
     summary = '',
-    mode = '',
-    durationMs = 0,
-    inputChars = 0,
-    outputChars = 0,
-    usage = null,
-    costExceeded = false,
   } = {}) {
     await this._mutate((state) => {
       state.lastDreamAt = Date.now();
       state.lastDreamSessions = Number(sessions) || 0;
       state.lastDreamOps = Number(ops) || 0;
-      state.lastDreamFiles = Number(files) || 0;
       state.lastDreamSummary = String(summary ?? '').slice(0, 2000);
-      state.lastDreamMode = typeof mode === 'string' ? mode : '';
-      state.lastDreamDurationMs = Math.max(0, Math.trunc(Number(durationMs) || 0));
-      state.lastDreamInputChars = Math.max(0, Math.trunc(Number(inputChars) || 0));
-      state.lastDreamOutputChars = Math.max(0, Math.trunc(Number(outputChars) || 0));
-      state.lastDreamUsage = normalizeUsage(usage);
-      state.lastDreamCostExceeded = costExceeded === true;
       state.lastError = '';
       state.consecutiveFailures = 0;
       state.counters.dreams = (Number(state.counters.dreams) || 0) + 1;
@@ -473,28 +399,10 @@ export class ProjectState {
     });
   }
 
-  /** Record the start of one automatic extraction attempt. */
-  async markExtractStart(trigger = 'auto') {
+  async markExtractResult({ ok = false, reason = '' } = {}) {
     await this._mutate((state) => {
-      state.lastExtractAttemptAt = Date.now();
-      state.lastExtractTrigger = typeof trigger === 'string' ? trigger.slice(0, 40) : 'auto';
-    });
-  }
-
-  /**
-   * Record the outcome of one automatic extraction. `reason` stays a short
-   * machine code (`ok`, `no-proposals`, `timeout`, ...) so the status line can
-   * render it without leaking provider error bodies into the UI.
-   */
-  async markExtractResult({ ok = false, count = 0, reason = '', error = '', trigger = 'auto', at = Date.now() } = {}) {
-    await this._mutate((state) => {
-      const finishedAt = Number(at) || Date.now();
-      state.lastExtractAttemptAt = Math.max(Number(state.lastExtractAttemptAt) || 0, finishedAt);
-      state.lastExtractTrigger = typeof trigger === 'string' ? trigger.slice(0, 40) : 'auto';
-      state.lastExtractCount = Math.max(0, Math.trunc(Number(count) || 0));
-      state.lastExtractReason = String(reason ?? '').slice(0, 200);
-      state.lastExtractError = ok ? '' : String(error?.message ?? error ?? '').slice(0, 2000);
-      if (ok) state.lastExtractAt = finishedAt;
+      state.lastExtractReason = String(reason).slice(0, 200);
+      if (ok) state.lastExtractAt = Date.now();
     });
   }
 
@@ -522,34 +430,26 @@ export class ProjectState {
   }
 
   /**
-   * Record whether the last dream/cost decision exceeded `dreamMaxTotalTokens`
-   * without touching the rest of the dream fields (used by cost-mode review/block
-   * decisions that do not complete a dream).
-   */
-  async noteCostExceeded(exceeded = true) {
-    await this._mutate((state) => {
-      state.lastDreamCostExceeded = exceeded === true;
-    });
-  }
-
-  /**
    * Record the pending copy produced by a finished run: its directory, the
    * baseline hashes it was built from, and the file-level diff the panel shows.
    */
-  async setShadowPending(pending = null, outcome) {
+  async setShadowPending(pending = null, outcome, maintenance = []) {
     await this._mutate((state) => {
       state.shadowPending = pending && typeof pending === 'object' && typeof pending.dir === 'string'
         ? { ...pending }
         : null;
-      if (state.shadowPending) state.lastDreamMode = 'shadow';
-      if (state.shadowPending && outcome) recordRunOutcome(state, outcome);
+      if (state.shadowPending && outcome) {
+        recordRunOutcome(state, outcome);
+        recordDreamMaintenance(state, maintenance);
+      }
     });
   }
 
   /** Publish a terminal result and its covered input in the same state write. */
-  async completeDreamRun(outcome, reads) {
+  async completeDreamRun(outcome, reads, maintenance = []) {
     await this._mutate((state) => {
       if (reads.length > 0) applyDreamCoverage(state, new Set(), reads);
+      recordDreamMaintenance(state, maintenance);
       recordRunOutcome(state, outcome);
     });
   }
@@ -565,7 +465,7 @@ export class ProjectState {
   }
 
   /** Save the human decision and any accepted progress in one state write. */
-  async settleShadowPending(runId, decision, rejected = [], { reads } = {}) {
+  async settleShadowPending(runId, decision, rejected = [], { reads, appliedFiles } = {}) {
     await this._mutate((state) => {
       const pending = state.shadowPending;
       if (!pending || pending.runId !== runId) throw new Error('pending Dream changed before settlement');
@@ -577,7 +477,8 @@ export class ProjectState {
         const held = (pending.reviewRecords ?? []).filter(({ id }) => !consumed.has(id));
         const deferred = new Map(state.dreamDeferredSessions.map((item) => [item.id, item]));
         const activity = new Map(state.sessionsSince.map((item) => [item.id, item.lastActivityAt || item.at]));
-        for (const { id, capturedAt } of held) {
+        for (const { id, capturedAt, agentNote } of held) {
+          if (agentNote) continue;
           deferred.delete(id);
           const at = capturedAt || pending.createdAt || Date.now();
           if ((activity.get(id) || 0) < at) deferred.set(id, { id, at });
@@ -585,6 +486,16 @@ export class ProjectState {
         state.dreamDeferredSessions = [...deferred.values()].slice(-MAX_SESSIONS);
       }
       state.dreamRejected = [...new Set([...state.dreamRejected, ...rejected])].slice(-MAX_REJECTED);
+      if (decision === 'applied' || decision === 'partially-applied') {
+        const observed = new Map((Array.isArray(pending.corrected) ? pending.corrected : [])
+          .map((item) => typeof item === 'string' ? [item, null] : [item?.file, item?.version ?? null]));
+        state.correctedFiles = state.correctedFiles.filter((file) => {
+          if (decision === 'partially-applied' && appliedFiles && !appliedFiles.has(file)) return true;
+          if (!observed.has(file) || observed.get(file) !== (state.correctionVersions[file] ?? null)) return true;
+          delete state.correctionVersions[file];
+          return false;
+        });
+      }
       state.lastDreamDecision = { runId, decision, reads: settled, at: Date.now() };
       recordRunDecision(state, runId, decision);
       state.shadowPending = null;
@@ -668,18 +579,22 @@ export class ProjectState {
     if (typeof file !== 'string' || file === '') return;
     await this._mutate((state) => {
       state.correctedFiles = [...state.correctedFiles.filter((item) => item !== file), file].slice(-MAX_CORRECTED);
+      state.correctionVersions = { ...state.correctionVersions, [file]: randomUUID() };
+      for (const key of Object.keys(state.correctionVersions)) {
+        if (!state.correctedFiles.includes(key)) delete state.correctionVersions[key];
+      }
     });
   }
 
-  /**
-   * Forget corrections a Dream switch consumed: the named files, or all of them
-   * when no list is given (a pending record from before 0.24.0).
-   */
+  /** Explicitly clear correction tracking for the named files or the whole project. */
   async clearCorrected(files) {
     if (this.state.correctedFiles.length === 0) return;
     const consumed = Array.isArray(files) ? new Set(files) : null;
     await this._mutate((state) => {
       state.correctedFiles = consumed ? state.correctedFiles.filter((file) => !consumed.has(file)) : [];
+      for (const file of Object.keys(state.correctionVersions)) {
+        if (!consumed || consumed.has(file)) delete state.correctionVersions[file];
+      }
     });
   }
 
@@ -697,9 +612,7 @@ export class ProjectState {
       if (value === false) flags[key] = false;
       else delete flags[key];
       delete state.sessionFlags[sessionId];
-      if (Object.keys(flags).length > 0) state.sessionFlags[sessionId] = flags;
-      const ids = Object.keys(state.sessionFlags);
-      for (const id of ids.slice(0, Math.max(0, ids.length - MAX_SESSION_FLAGS))) delete state.sessionFlags[id];
+      if (Object.keys(flags).length > 0) state.sessionFlags = { ...state.sessionFlags, [sessionId]: flags };
     });
   }
 }

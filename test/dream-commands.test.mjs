@@ -60,3 +60,11 @@ test('dream resume --wait continues the named run and reports its result', async
   };
   assert.match(messageOf(await env.invokeMemory(`dream resume ${runId} --wait`)), /Draft restored/u);
 });
+test('memory registers two commands and retires the old command surfaces', async (t) => {
+  const env = await commandEnv(t);
+  assert.deepEqual([...env.commandDefinitions.keys()].sort(), ['memory', 'remember']);
+  for (const verb of ['inbox', 'json', 'metrics', 'edit', 'plugin', 'recall']) {
+    assert.match((await env.invokeMemory(verb)).text, /unknown \/memory subcommand/);
+  }
+  assert.match((await env.invokeMemory('undo')).text, /undo/i);
+});

@@ -32,10 +32,10 @@ const OPTIONAL_SERVICES = ['commands', 'agents', 'workingDirectory', 'webServer'
 /**
  * Build the health block returned by the HTTP status endpoint and
  * `memory_status`. Never throws.
- * @param {{runtime?:object, projectContext?:object, rules?:object}} input
+ * @param {{runtime?:object, projectContext?:object, rules?:object, entries?:object[]}} input
  * @returns {Promise<{ok:boolean, warnings:string[], version:string, dataSchema:number, services:Record<string,boolean>}>}
  */
-export async function buildHealth({ runtime, projectContext, rules } = {}) {
+export async function buildHealth({ runtime, projectContext, rules, entries } = {}) {
   const warnings = [];
   try {
     if (rules && rules.truncated === true) {
@@ -47,7 +47,7 @@ export async function buildHealth({ runtime, projectContext, rules } = {}) {
   try {
     const store = projectContext && projectContext.store;
     if (store) {
-      const audit = await store.auditIndex('project');
+      const audit = await store.auditIndex('project', { entries });
       if (audit && Array.isArray(audit.missing) && audit.missing.length > 0) {
         warnings.push(`${audit.missing.length} memory file(s) are missing from MEMORY.md (run a dream to reconcile)`);
       }

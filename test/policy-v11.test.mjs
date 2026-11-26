@@ -13,7 +13,7 @@ test('v11 policy: a very short body is written directly (no low-confidence gate)
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
 
   const short = await save.execute(
-    { name: 'brevity', type: 'user', description: 'reply style', content: '用户要求回答简短。', basis: 'user-explicit', evidence: '用户要求回答简短。' },
+    { name: 'brevity', type: 'user', description: 'reply style', content: '用户要求回答简短。', citations: [{ quote: '用户要求回答简短。' }] },
     exec,
   );
   assert.equal(short.ok, true, JSON.stringify(short));
@@ -38,25 +38,24 @@ test('v11 policy: "vitest --run ..." short bodies are written directly', async (
   assert.equal((await env.pctx.store.listEntries()).length, 1, 'the note is written');
 });
 
-test('policy: conflicting writes stop and identify the owning memory', async (t) => {
+test('policy: conflicting writes are written and identify the owning memory', async (t) => {
   const env = await toolsEnv(t, { userMemory: 'project' });
   seedUserMessages(env, '用户喜欢中文回复。', '用户讨厌中文回复。');
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
   await save.execute(
-    { name: 'language', type: 'user', description: 'reply language', content: '用户喜欢中文回复。', basis: 'user-explicit', evidence: '用户喜欢中文回复。' },
+    { name: 'language', type: 'user', description: 'reply language', content: '用户喜欢中文回复。', citations: [{ quote: '用户喜欢中文回复。' }] },
     exec,
   );
 
   // Same topic, opposite polarity, worded differently enough to avoid the
-  // duplicate gate: the tool refuses a second active contradictory fact and
-  // names the page that owns it.
+  // duplicate signal: the tool writes it and names the page that may contradict.
   const conflicting = await save.execute(
-    { name: 'reply preference', type: 'user', description: 'Chinese replies', content: '用户讨厌中文回复。', basis: 'user-explicit', evidence: '用户讨厌中文回复。' },
+    { name: 'reply preference', type: 'user', description: 'Chinese replies', content: '用户讨厌中文回复。', citations: [{ quote: '用户讨厌中文回复。' }] },
     exec,
   );
-  assert.equal(conflicting.ok, false, JSON.stringify(conflicting));
-  assert.equal(conflicting.error, 'CONFLICT');
+  assert.equal(conflicting.ok, true, JSON.stringify(conflicting));
+  assert.equal(conflicting.written, true);
   assert.ok(Array.isArray(conflicting.conflicts) && conflicting.conflicts.length >= 1, JSON.stringify(conflicting));
   const conflict = conflicting.conflicts[0];
   assert.equal(conflict.file, 'user_language.md');
@@ -64,27 +63,28 @@ test('policy: conflicting writes stop and identify the owning memory', async (t)
 
   const entries = await env.pctx.store.listEntries();
   assert.equal(entries.some((entry) => entry.name === 'language'), true);
-  assert.equal(entries.some((entry) => entry.name === 'reply preference'), false);
+  assert.equal(entries.some((entry) => entry.name === 'reply preference'), true);
 });
 
-test('v11 policy: a high-similarity duplicate is still blocked', async (t) => {
+test('v11 policy: a high-similarity duplicate is written and reported', async (t) => {
   const env = await toolsEnv(t);
   seedUserMessages(env, 'the same durable body');
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
   const first = await save.execute(
-    { name: 'dup note', type: 'user', description: 'duplicate target', content: 'the same durable body', basis: 'user-explicit', evidence: 'the same durable body' },
+    { name: 'dup note', type: 'user', description: 'duplicate target', content: 'the same durable body', citations: [{ quote: 'the same durable body' }] },
     exec,
   );
   assert.equal(first.ok, true, JSON.stringify(first));
 
   const duplicate = await save.execute(
-    { name: 'dup note', type: 'user', description: 'duplicate target', content: 'the same durable body', basis: 'user-explicit', evidence: 'the same durable body' },
+    { name: 'dup note copy', type: 'user', description: 'duplicate target', content: 'the same durable body', citations: [{ quote: 'the same durable body' }] },
     exec,
   );
-  assert.equal(duplicate.ok, false, JSON.stringify(duplicate));
-  assert.equal(duplicate.error, 'DUPLICATE');
-  assert.equal(typeof duplicate.existingFile, 'string');
+  assert.equal(duplicate.ok, true, JSON.stringify(duplicate));
+  assert.equal(duplicate.written, true);
+  assert.equal(duplicate.advisory, true);
+  assert.equal(duplicate.candidates[0].file, first.file);
 });
 
 test('v11 policy: possible-duplicate is advisory (write + candidates, not blocked)', async (t) => {
@@ -93,7 +93,7 @@ test('v11 policy: possible-duplicate is advisory (write + candidates, not blocke
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
   await save.execute(
-    { name: 'indent style', type: 'feedback', description: 'prefer tabs for indentation', content: 'Prefer tabs for indentation in code.', basis: 'user-explicit', evidence: 'Prefer tabs for indentation in code.' },
+    { name: 'indent style', type: 'feedback', description: 'prefer tabs for indentation', content: 'Prefer tabs for indentation in code.', citations: [{ quote: 'Prefer tabs for indentation in code.' }] },
     exec,
   );
   const similar = await save.execute(
@@ -102,8 +102,7 @@ test('v11 policy: possible-duplicate is advisory (write + candidates, not blocke
       type: 'feedback',
       description: 'prefer tabs for indentation in code',
       content: 'Prefer tabs for indentation in all source files.',
-    basis: 'user-explicit',
-    evidence: 'Prefer tabs for indentation in all source files.',
+    citations: [{ quote: 'Prefer tabs for indentation in all source files.' }],
     },
     exec,
   );
@@ -113,7 +112,7 @@ test('v11 policy: possible-duplicate is advisory (write + candidates, not blocke
   assert.equal(typeof similar.candidates[0].file, 'string');
 });
 
-test('v11 policy: explicit confidence:"low" is written with an advisory reason', async (t) => {
+test('v11 policy: a legacy confidence:"low" argument is ignored', async (t) => {
   const env = await toolsEnv(t);
   const save = env.definitions.get('memory_save');
   const exec = { agent: { id: 'agent-1' }, sessionId: 'sess-1' };
@@ -123,8 +122,8 @@ test('v11 policy: explicit confidence:"low" is written with an advisory reason',
   );
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.written, true);
-  assert.equal(result.advisory, true);
-  assert.deepEqual(result.reasons, ['confidence is low']);
+  assert.equal(result.advisory, undefined);
+  assert.equal(result.reasons, undefined);
   assert.equal(typeof result.file, 'string');
 });
 

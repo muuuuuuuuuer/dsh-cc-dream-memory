@@ -2,8 +2,9 @@ import assert from 'node:assert/strict';
 import { access, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
-import { mountDreamFixture, playDreamTasks, toolsEnv } from './v10-helpers.mjs';
-import { readRunManifest, runDirOf } from '../src/dream-run.js';
+import { mountDreamFixture, playDreamTasks, toolsEnv, waitFor } from './v10-helpers.mjs';
+import { readRunCheckpoint, readRunManifest, runDirOf } from '../src/dream-run.js';
+import { buildFocus } from '../src/dream-focus.js';
 
 const message = (seq, role, text) => ({
   seq, type: role + '/message',
@@ -11,7 +12,8 @@ const message = (seq, role, text) => ({
 });
 const QUOTE = '默认用 pnpm release，staging 仍用 npm release';
 const NOTE = { file: 'project_release.md', op: 'write', name: 'Release command', type: 'project', body: QUOTE + '。' };
-const sessionOf = (spec) => spec.prompt[0].text.match(/session_id=(\S+?),/u)[1];
+const sessionOf = (spec) => (spec.prompt[0].text.match(/session_id=(\S+?),/u) ?? spec.prompt[0].text.match(/^- (\S+) \| /mu))[1];
+const offeredIn = (spec) => [...spec.prompt[0].text.matchAll(/^- (\S+) \| (?:\d{4}-\d{2}-\d{2}|unknown date) \| /gmu)].map((match) => match[1]);
 
 async function setup(t, config = {}, sessionIds = ['s1']) {
   const env = await toolsEnv(t, { autoDreamEnabled: false, ...config });
@@ -47,7 +49,7 @@ async function setup(t, config = {}, sessionIds = ['s1']) {
         restrict: (filter) => restrictions.push(filter),
       });
       const result = playDreamTasks(env.host, spec, (name, args) => {
-        if (name === 'dream_read_source') sourceReads.push(args);
+        if (name === 'dream_read_session') sourceReads.push(args);
         return invoke(name, args);
       }, (task) => {
         prompts.push(task.prompt[0].text);
@@ -80,62 +82,16 @@ test('Dream runs a scoped standard-preset child and checks its proposed shadow d
   await assert.rejects(env.pctx.store.readEntry('project_release.md'));
 });
 
-test('one child handles up to dreamMaxTasks sessions; the remainder waits for the next run', async (t) => {
+test('dreamMaxTasks caps the sessions offered to the one child; the remainder waits for the next run', async (t) => {
   const env = await setup(t, { dreamMaxTasks: 2 }, ['s1', 's2', 's3']);
   const result = await env.runtime.dream({ pctx: env.pctx, agent: env.parent, force: true });
   assert.equal(env.starts.length, 1);
   assert.equal(result.ready, true);
   const records = env.pctx.state.snapshot().shadowPending.reviewRecords;
   assert.deepEqual(records.map(({ id }) => id), ['s1', 's2']);
-  const fixedRules = (prompt) => prompt.slice(prompt.indexOf('You are Dream'), prompt.indexOf('\n\nTask '));
-  assert.match(fixedRules(env.prompts[0]), /Use dream_list_notes/u);
-  assert.equal(fixedRules(env.prompts[1]), fixedRules(env.prompts[0]));
-  assert.match(env.prompts[1], /session_id=s2,/u);
-});
-
-test('four short sessions need only the first page fetch, with no shadow listing before launch', async (t) => {
-  const env = await setup(t, { dreamMaxTasks: 4 }, ['s1', 's2', 's3', 's4']);
-  const proto = Object.getPrototypeOf(env.pctx.store);
-  const listEntries = proto.listEntries;
-  const shadowDir = path.join(env.pctx.paths.dreamsDir, 'shadow');
-  let startupListings = 0;
-  t.mock.method(proto, 'listEntries', function (...args) {
-    if (this.paths.memoryDir === shadowDir && env.starts.length === 0) startupListings++;
-    return listEntries.apply(this, args);
-  });
-  env.setChild(async () => ({ stopReason: 'completed', structured: { done: true, summary: 'Checked.', changes: [] } }));
-  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
-  assert.equal(run.sessionsReviewed, 4);
-  assert.deepEqual(env.sourceReads, [{ task: 1, page: 0 }]);
-  assert.equal(startupListings, 0);
-  for (const prompt of env.prompts.slice(1)) {
-    const page = JSON.parse(prompt.split('\n').at(-1));
-    assert.match(page.source, /\[seq 2\] user\/message/u);
-    assert.ok(page.source.includes(QUOTE));
-    assert.ok(prompt.length <= 8000);
-  }
-});
-
-test('a changed handoff must recover its source through an explicit page read', async (t) => {
-  const env = await setup(t, {}, ['s1', 's2']);
-  env.host.services.subagents.startActivation = async (spec) => {
-    const invoke = mountDreamFixture(env.host, spec);
-    const result = (async () => {
-      const submit = { done: true, summary: 'Checked.', changes: [] };
-      await invoke('dream_read_source', { task: 1, page: 0 });
-      await invoke('dream_submit_task', { ...submit, task: 1 }, ([block]) => {
-        assert.match(block.text, /Complete source page/u);
-        return [{ ...block, text: block.text.replace(QUOTE, '[removed]') }];
-      });
-      assert.match(await invoke('dream_submit_task', { ...submit, task: 2 }), /dream_read_source with task 2 and page 0/u);
-      assert.ok((await invoke('dream_read_source', { task: 2, page: 0 })).includes(QUOTE));
-      assert.match(await invoke('dream_submit_task', { ...submit, task: 2 }), /Batch finished/u);
-      return { stopReason: 'completed', structured: { finished: true } };
-    })();
-    return { result, dispose: async () => {} };
-  };
-  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
-  assert.equal(run.sessionsReviewed, 2);
+  assert.deepEqual(offeredIn(env.starts[0]), ['s1', 's2']);
+  assert.match(env.starts[0].prompt[0].text, /\bdream_read_session\b/u);
+  assert.doesNotMatch(env.starts[0].prompt[0].text, /^- s3 \|/mu);
 });
 
 test('a purely social session settles locally and later substantive activity is still reviewed', async (t) => {
@@ -167,117 +123,113 @@ test('a tool-only session with no model-visible result body settles without a ch
   assert.equal(env.pctx.state.snapshot().dreamProcessedSessions[0].seq, 3);
 });
 
-test('overview screens disposable pages once and requires raw evidence for a new fact', async (t) => {
-  const env = await setup(t, { userMemory: 'project' });
-  // Five long replies to a one-off request, then a plain statement with no preference keyword.
-  const fact = 'My piano lessons start on October 12.';
-  env.events.splice(0, env.events.length, message(0, 'user', 'Give me examples of rhymes.'),
-    ...Array.from({ length: 5 }, (_, i) => message(i + 1, 'assistant', ('Example rhyme number ' + i + '. ').repeat(140))),
-    message(6, 'user', fact));
-  env.events.at(-1).time = Date.UTC(2026, 8, 20);
-  env.host.services.subagents.startActivation = async (spec) => {
-    const invoke = mountDreamFixture(env.host, spec);
-    const result = (async () => {
-      assert.match(spec.prompt[0].text, /view=overview/u);
-      const submit = { task: 1, done: true, summary: 'Lessons start in October.', changes: [] };
-      const view = { task: 1, view: 'overview', page: 0 };
-      const first = JSON.parse(await invoke('dream_read_source', view));
-      const last = JSON.parse(await invoke('dream_read_source', { ...view, page: first.next_page }));
-      assert.equal(last.next_page, null);
-      const entries = [...first.entries, ...last.entries];
-      const { page, excerpts } = entries.find((e) => e.excerpts.some((s) => s.text === fact));
-      assert.equal(excerpts.find((s) => s.seq === 6).time, '2026-09-20T00:00:00.000Z');
-      const all = entries.map((e) => e.page);
-      const change = { ...NOTE, type: 'user', file: 'user_lessons.md', body: fact, citations: [{ session_id: 's1', seq: 6, quote: fact }] };
-      assert.match(await invoke('dream_submit_task', { ...submit, skip_pages: all, changes: [change] }), /open the raw page/u);
-      await invoke('dream_read_source', { task: 1, page });
-      assert.match(await invoke('dream_submit_task', { ...submit, skip_pages: all.filter((p) => p !== page), changes: [change] }), /Batch finished/u);
-      return { stopReason: 'completed', structured: { finished: true } };
-    })();
-    return { result, dispose: async () => {} };
-  };
-  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
-  assert.equal(run.ready, true);
-  assert.ok(env.pctx.state.snapshot().shadowPending.evidence.some((item) => item.verified && item.quote === fact));
-  const { tasks: [task] } = await readRunManifest(runDirOf(env.pctx.paths, run.runId));
-  assert.deepEqual([task.totalPages, task.rawPagesRead, task.pagesScreened], [5, 1, 4]);
-});
-
-test('a clipped overview and an abbreviated user message cannot be used to skip pages', async (t) => {
+test('Dream note lookup returns bounded candidates and can widen to note bodies or the catalog', async (t) => {
   const env = await setup(t);
-  env.events.splice(0, env.events.length, message(0, 'user', 'Many details. '.repeat(240)),
-    message(1, 'assistant', 'An illustration. '.repeat(200)), message(2, 'assistant', 'Another illustration. '.repeat(160)));
+  const files = [
+    ['project_piano.md', 'Piano lessons', 'Lesson schedule', 'A piano lesson runs on Tuesday.'],
+    ['project_hidden.md', 'Workshop checklist', 'Equipment', 'Calibrate the theremin after setup.'],
+    ...Array.from({ length: 15 }, (_, i) => ['project_other_' + i + '.md', 'Other ' + i, 'Other note', 'Other detail.']),
+  ];
+  for (const [file, name, description, body] of files) {
+    await env.pctx.store.writeRawEntry(file, { name, description, body, type: 'project' });
+  }
+  // On-disk notes written outside the plugin still go through output redaction.
+  await writeFile(path.join(env.pctx.paths.memoryDir, 'project_private.md'),
+    '---\nname: Private\ntype: project\ndescription: AKIAIOSFODNN7EXAMPLE\n---\nOther detail.\n');
   env.host.services.subagents.startActivation = async (spec) => {
     const invoke = mountDreamFixture(env.host, spec);
     const result = (async () => {
-      const view = { task: 1, page: 0, view: 'overview' };
-      const submit = { task: 1, done: true, summary: 'One-off discussion.', changes: [], skip_pages: [0, 1, 2] };
-      await invoke('dream_read_source', view, () => [{ type: 'text', text: 'clipped' }]);
-      assert.match(await invoke('dream_submit_task', { ...submit, skip_pages: [1, 2] }), /requires a delivered overview/u);
-      const { entries } = JSON.parse(await invoke('dream_read_source', view));
-      assert.deepEqual(entries.map((entry) => entry.requiresDetail), [true, false, false]);
-      assert.match(await invoke('dream_submit_task', submit), /Open requiresDetail/u);
-      await invoke('dream_read_source', { task: 1, page: 0 });
-      assert.match(await invoke('dream_submit_task', { ...submit, skip_pages: [1, 2] }), /Batch finished/u);
+      const list = async (args) => JSON.parse(await invoke('dream_list_notes', args));
+      const piano = await list({ query: 'piano lessons' });
+      assert.deepEqual(piano.items.map(({ file }) => file), ['project_piano.md']);
+      assert.equal(piano.next_offset, null);
+      assert.doesNotMatch(JSON.stringify(piano), /runs on Tuesday/u);
+      assert.deepEqual(await list({ query: 'theremin' }), { items: [], next_offset: null, empty_catalog: false });
+      const widened = await list({ query: 'theremin', include_body: true });
+      assert.deepEqual(widened.items.map(({ file }) => file), ['project_hidden.md']);
+      assert.doesNotMatch(JSON.stringify(widened), /Calibrate the theremin/u);
+      const first = await list({});
+      const next = await list({ offset: first.next_offset });
+      assert.equal(first.items.length, 12);
+      assert.equal(next.next_offset, null);
+      assert.equal(new Set([...first.items, ...next.items].map(({ file }) => file)).size, files.length + 1);
+      assert.doesNotMatch(JSON.stringify([...first.items, ...next.items]), /AKIA/u);
+      assert.match(await invoke('dream_submit', { done: true, changes: [] }), /structured_output/u);
       return { stopReason: 'completed', structured: { finished: true } };
     })();
     return { result, dispose: async () => {} };
   };
-  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
-  assert.equal(run.sessionsReviewed, 1);
+  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent, noSessions: true });
   assert.equal(run.skipReason, 'nothing-new');
-  assert.equal(env.pctx.state.snapshot().dreamProcessedSessions[0].seq, 2);
 });
 
-test('a disposable long exchange settles with one overview and no raw read or note lookup', async (t) => {
+test('Dream tells the child an empty catalog needs no lookup and reports it as empty', async (t) => {
   const env = await setup(t);
-  env.events.splice(0, env.events.length, message(0, 'user', 'Give me a list of sample rhymes.'),
-    ...Array.from({ length: 3 }, (_, i) => message(i + 1, 'assistant', 'A sample rhyme. '.repeat(215))),
-    message(4, 'user', 'Internal label before credential: AKIAIOSFODNN7EXAMPLE'));
-  env.host.services.subagents.startActivation = async (spec) => {
-    const invoke = mountDreamFixture(env.host, spec);
-    const result = (async () => {
-      const overview = await invoke('dream_read_source', { task: 1, view: 'overview', page: 0 });
-      const { entries, next_page } = JSON.parse(overview);
-      assert.equal(next_page, null);
-      assert.doesNotMatch(overview, /AKIA|Internal label/u);
-      assert.match(overview, /sensitive passage omitted/u);
-      assert.match(await invoke('dream_submit_task', { task: 1, done: true, changes: [],
-        summary: 'One-time examples.', skip_pages: entries.map(({ page }) => page) }), /Batch finished/u);
-      return { stopReason: 'completed', structured: { finished: true } };
-    })();
-    return { result, dispose: async () => {} };
-  };
-  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
-  assert.equal(run.skipReason, 'nothing-new');
-  assert.equal(run.sessionsRead, 0);
-  assert.equal(run.sessionsReviewed, 1);
-  const manifest = await readRunManifest(runDirOf(env.pctx.paths, run.runId));
-  assert.deepEqual(manifest.tasks.map(({ totalPages, pagesScreened, rawPagesRead }) => [totalPages, pagesScreened, rawPagesRead]), [[3, 3, 0]]);
-});
-
-test('overview protects a buried result and bypasses triage when it could not save a fetch', async () => {
-  const { taskSourceOverview } = await import('../src/dream-transcript.js');
-  const pages = Array.from({ length: 3 }, (_, seq) => {
-    const text = 'Example '.repeat(110) + (seq === 1 ? 'The migration failed. ' : '') + 'More examples. '.repeat(90);
-    return { text, fragments: [{ seq, type: 'assistant/message', text }] };
+  env.setChild(async (spec, invoke) => {
+    assert.match(spec.prompt[0].text, /The project note catalog is empty\./u);
+    const list = async (args) => JSON.parse(await invoke('dream_list_notes', args));
+    assert.deepEqual(await list({ query: 'release' }), { items: [], next_offset: null, empty_catalog: true });
+    assert.deepEqual(await list({ query: 'release', include_body: true }), { items: [], next_offset: null, empty_catalog: true });
+    return { stopReason: 'completed', structured: { done: true, summary: 'Checked.', changes: [] } };
   });
-  assert.deepEqual(taskSourceOverview(pages).map(({ requiresDetail }) => requiresDetail), [false, true, false]);
-  pages[2].fragments[0].type = 'user/message';
-  assert.deepEqual(taskSourceOverview(pages), []);
+  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
+  assert.equal(run.sessionsReviewed, 1, run.error);
 });
 
-for (const reason of ['multiple pages', 'large project rules']) {
-  test('handoff keeps explicit paging for ' + reason, async (t) => {
-    const env = await setup(t, {}, ['s1', 's2']);
-    if (reason === 'multiple pages') env.events.push(message(3, 'user', 'Long dialogue '.repeat(400)));
-    else env.runtime.rulesFor = () => ({ text: 'Preserve scoped conditions. '.repeat(260) });
-    const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
-    assert.equal(run.sessionsReviewed, 2);
-    assert.deepEqual(env.sourceReads.filter(({ task }) => task === 2).map(({ page }) => page),
-      env.sourceReads.filter(({ task }) => task === 1).map(({ page }) => page));
-    assert.ok(env.sourceReads.some(({ task }) => task === 2));
-    assert.doesNotMatch(env.prompts[1], /Complete source page/u);
+test('a note written by one submission is visible to the next in the same run', async (t) => {
+  const env = await setup(t);
+  env.host.services.subagents.startActivation = async (spec) => {
+    const invoke = mountDreamFixture(env.host, spec);
+    const result = (async () => {
+      assert.match(spec.prompt[0].text, /The project note catalog is empty/u);
+      await invoke('dream_read_session', { session_id: 's1' });
+      const change = { ...NOTE, citations: [{ session_id: 's1', seq: 2, quote: QUOTE }] };
+      assert.match(await invoke('dream_submit', { done: false, changes: [change] }), /WROTE project_release\.md/u);
+      const listed = JSON.parse(await invoke('dream_list_notes', { query: NOTE.name }));
+      assert.equal(listed.empty_catalog, false);
+      assert.deepEqual(listed.items.map(({ file }) => file), [NOTE.file]);
+      await invoke('dream_submit', { done: true, changes: [] });
+      return { stopReason: 'completed', structured: { finished: true } };
+    })();
+    return { result, dispose: async () => {} };
+  };
+  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
+  assert.equal(run.sessionsReviewed, 1, run.error);
+  assert.deepEqual(env.pctx.state.snapshot().shadowPending.files.map(({ file }) => file), [NOTE.file]);
+});
+
+for (const [label, name, quote, old, replacement, allowed, cited = quote, timing = ''] of [
+  ['Chinese production command', 'Atlas release', '纠正 Atlas 生产发布命令，以后生产环境使用 pnpm run atlas-release，预发环境继续用 npm run atlas-stage。', 'Use npm run atlas-release for production.', 'Use pnpm run atlas-release for production.', true],
+  ['English production command', 'Atlas release', 'Correction to the existing Atlas release note: for production, use pnpm run atlas-release. Staging still uses npm run atlas-stage.', 'Use npm run atlas-release for production.', 'Use pnpm run atlas-release for production.', true],
+  ['the cited correction preserves its release timing', 'Atlas release', '纠正一下：Atlas 生产环境固定改用 pnpm run atlas-release。预发仍用 npm run atlas-stage。这条规则适用于后续发布。', 'Use npm run atlas-release for production.', 'Use pnpm run atlas-release for production.', true, undefined, 'This applies to subsequent releases.'],
+  ['a shorter quote of the same event', 'Atlas release', '纠正一下：Atlas 生产环境固定改用 pnpm run atlas-release。预发仍用 npm run atlas-stage。这条规则适用于后续发布。', 'Use npm run atlas-release for production.', 'Use pnpm run atlas-release for production.', false, 'Atlas 生产环境固定改用 pnpm run atlas-release。', 'This applies to subsequent releases.'],
+  ['a named frequency correction', 'Room guide', 'Correction for the existing Workshop Kestrel record: tune the theremin to 443 Hz every rehearsal, replacing the 440 Hz setting.', 'In Workshop Kestrel, tune the theremin to 440 Hz every rehearsal.', 'In Workshop Kestrel, tune the theremin to 443 Hz every rehearsal.', true],
+  ['wrong production scope', 'Atlas release', 'Correction to the existing Atlas release note: for staging, use pnpm run atlas-release.', 'Use npm run atlas-release for production.', 'Use pnpm run atlas-release for production.', false],
+  ['unrelated project scope', 'Atlas release', '纠正 Orion 生产发布命令，以后生产环境使用 pnpm run atlas-release。', 'Use npm run atlas-release for production.', 'Use pnpm run atlas-release for production.', false],
+  ['becomes unconditional', 'Atlas release', 'Correction to the existing Atlas release note: for production, use pnpm run atlas-release only when the canary passes.', 'Use npm run atlas-release for production.', 'Use pnpm run atlas-release for production.', false],
+  ['drops a following condition', 'Atlas release', 'Correction to the existing Atlas release note: for production, use pnpm run atlas-release. Exception: only after sign-off.', 'Use npm run atlas-release for production.', 'Use pnpm run atlas-release for production.', false, 'Correction to the existing Atlas release note: for production, use pnpm run atlas-release.'],
+  ['the cited old frequency was different', 'Room guide', 'Correction for the existing Workshop Kestrel record: tune the theremin to 443 Hz every rehearsal, replacing the 442 Hz setting.', 'In Workshop Kestrel, tune the theremin to 440 Hz every rehearsal.', 'In Workshop Kestrel, tune the theremin to 443 Hz every rehearsal.', false],
+]) {
+  test('a targeted edit with an existing quote applies: ' + label, async (t) => {
+    const env = await setup(t);
+    const { file } = NOTE;
+    const other = 'Keep the staging command npm run atlas-stage.';
+    const before = old + ' ' + other;
+    const after = replacement + ' ' + other + (timing ? ' ' + timing : '');
+    await env.pctx.store.writeRawEntry(file, { name, type: 'project', body: before });
+    env.events.splice(0, env.events.length, message(2, 'user', quote));
+    env.setChild(async (_spec, invoke) => {
+      const header = JSON.parse((await invoke('dream_read_note', { file })).split('\n')[0]);
+      return { stopReason: 'completed', structured: { done: true, summary: 'Checked the correction.', changes: [{
+        file, op: 'edit', old_text: timing ? before : old, body: timing ? after : replacement, version: header.version,
+        citations: [{ session_id: 's1', seq: 2, quote: cited }],
+      }] } };
+    });
+    const result = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
+    assert.equal(result.ready, true, result.error);
+    const switched = await env.runtime.switchDream({ pctx: env.pctx, runId: result.runId });
+    assert.equal(switched.ok, true, switched.error);
+    assert.equal((await env.pctx.store.readEntry(file)).body, after + '\n\n- Superseded: ' + (timing ? before : old));
   });
 }
 
@@ -290,20 +242,25 @@ test('targeted additions and corrections keep other sections and their independe
   const rule = 'I prefer tagged releases.';
   const correction = 'Replace use make release with use pnpm release.';
   env.events.push(message(3, 'user', rule), message(4, 'user', correction));
-  env.setChild(async (spec, invoke) => {
-    const session_id = sessionOf(spec);
-    const { version } = JSON.parse((await invoke('dream_read_note', { file })).split('\n')[0]);
-    const change = session_id === 's1'
-      ? { op: 'add', body: 'User prefers tagged releases.', citations: [{ session_id, seq: 3, quote: rule }] }
-      : { op: 'edit', old_text: old, body: 'Use pnpm release.',
-        citations: [{ session_id, seq: 4, quote: correction }] };
-    return { stopReason: 'completed', structured: { done: true, summary: 'Checked release guidance.', changes: [{ file, version, ...change }] } };
-  });
+  env.host.services.subagents.startActivation = async (spec) => {
+    const invoke = mountDreamFixture(env.host, spec);
+    const result = (async () => {
+      const submit = async (session_id, change, done) => {
+        await invoke('dream_read_session', { session_id });
+        const { version } = JSON.parse((await invoke('dream_read_note', { file })).split('\n')[0]);
+        return invoke('dream_submit', { done, changes: [{ file, version, ...change }] });
+      };
+      await submit('s1', { op: 'add', body: 'User prefers tagged releases.', citations: [{ session_id: 's1', seq: 3, quote: rule }] }, false);
+      await submit('s2', { op: 'edit', old_text: old, body: 'Use pnpm release.', citations: [{ session_id: 's2', seq: 4, quote: correction }] }, true);
+      return { stopReason: 'completed', structured: { finished: true } };
+    })();
+    return { result, dispose: async () => {} };
+  };
   const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
   assert.equal(run.ready, true);
   const pending = env.pctx.state.snapshot().shadowPending;
-  assert.deepEqual(pending.proofs[0].unsupportedClaims, []);
-  assert.deepEqual(new Set(pending.evidence.filter((e) => e.claims.length).map((e) => e.sessionId)), new Set(['s1', 's2']));
+  assert.deepEqual(pending.proofs.map(({ kind }) => kind), ['citation']);
+  assert.deepEqual(new Set(pending.evidence.filter((e) => e.verified).map((e) => e.sessionId)), new Set(['s1', 's2']));
   assert.equal((await env.runtime.switchDream({ pctx: env.pctx, runId: run.runId })).ok, true);
   const note = await env.pctx.store.readEntry(file);
   assert.equal(note.frontmatter.description, 'Release notes');
@@ -320,7 +277,7 @@ for (const invalid of ['ambiguous', 'stale']) {
       const { version } = JSON.parse((await invoke('dream_read_note', { file })).split('\n')[0]);
       return { stopReason: 'completed', structured: { done: true, summary: 'Edit release.', changes: [{
         op: 'edit', file, version: invalid === 'stale' ? 'old-version' : version,
-        old_text: invalid === 'ambiguous' ? 'build' : body, body: 'Use pnpm.', citations: [],
+        old_text: invalid === 'ambiguous' ? 'build' : body, body: 'Use pnpm.', citations: [{ session_id: 's1', seq: 2, quote: QUOTE }],
       }] } };
     });
     const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
@@ -334,7 +291,7 @@ test('deferred work rotates behind unseen sessions and stays eligible without ad
   const run = () => env.runtime.dream({ pctx: env.pctx, agent: env.parent });
   for (const expected of ['s1', 's2', 's1']) {
     assert.equal((await run()).ready, true);
-    assert.equal(sessionOf(env.starts.at(-1)), expected);
+    assert.equal(offeredIn(env.starts.at(-1))[0], expected);
     assert.equal((await env.runtime.switchDream({ pctx: env.pctx, defer: [NOTE.file] })).ok, true);
     await env.pctx.state.read();
     assert.equal((await env.runtime.dreamCoverage(env.pctx)).counts.todo, 2);
@@ -377,85 +334,24 @@ test('one short fact supplies the recall description without importing extra cla
   assert.equal(note.frontmatter.description, note.body);
 });
 
-test('a worker can refine a broad correction citation once before writing', async (t) => {
+test('a change without a valid citation comes back as an error and nothing is applied', async (t) => {
   const env = await setup(t);
-  const file = 'project_format.md';
-  const old = 'Use text reports.';
-  const instruction = 'Replace use text reports with use PDF reports.';
-  const broad = 'Report format update. ' + instruction;
-  env.events.push(message(3, 'user', broad));
-  await env.pctx.store.writeRawEntry(file, { type: 'project', body: old });
-  let submissions = 0;
-  env.setChild(async (_spec, invoke) => {
-    const { version } = JSON.parse((await invoke('dream_read_note', { file })).split('\n')[0]);
-    const quote = ++submissions === 1 ? broad : instruction;
-    return { stopReason: 'completed', structured: { done: true, summary: 'Report format corrected.', changes: [{
-      op: 'edit', file, version, old_text: old, body: 'Use PDF reports.', citations: [{ session_id: 's1', seq: 3, quote }],
-    }] } };
-  });
-  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
-  assert.equal(submissions, 2);
-  assert.equal((await env.runtime.switchDream({ pctx: env.pctx, runId: run.runId })).ok, true);
-  assert.equal((await env.pctx.store.readEntry(file)).body, 'Use PDF reports.\n\n- Superseded: ' + old);
-});
-
-test('a historical source date binds only to its own event; a dropped sibling never reaches shadow or settlement', async (t) => {
-  const env = await setup(t);
-  env.events[2].time = Date.UTC(2026, 8, 30, 1, 20);
-  const cite = [{ session_id: 's1', seq: 2, quote: QUOTE }];
-  const submit = { task: 1, done: true, summary: 'Keep the release decision.' };
+  const replies = [];
   env.host.services.subagents.startActivation = async (spec) => {
     const invoke = mountDreamFixture(env.host, spec);
     const result = (async () => {
-      const page = await invoke('dream_read_source', { task: '1', page: '0' });
-      assert.match(page, /Source date 2026-09-30 UTC/u);
-      const note = { ...NOTE, body: 'Recorded 2026-09-30 UTC: ' + QUOTE, citations: cite };
-      const transient = { ...note, file: 'project_transient.md', body: 'Recorded 2026-11-20 UTC: ' + QUOTE };
-      const retry = await invoke('dream_submit_task', { ...submit, changes: [note, transient] });
-      assert.match(retry, /Review before writing: project_transient\.md/u);
-      assert.deepEqual(JSON.parse(await invoke('dream_list_notes', {})), []);
-      assert.match(await invoke('dream_submit_task', { ...submit, changes: [note] }), /Batch finished/u);
+      await invoke('dream_read_session', { session_id: 's1' });
+      replies.push(await invoke('dream_submit', { done: false, changes: [{ ...NOTE, citations: [] }] }));
+      replies.push(await invoke('dream_submit', { done: true, changes: [], skipped_sessions: [] }));
       return { stopReason: 'completed', structured: { finished: true } };
     })();
     return { result, dispose: async () => {} };
   };
   const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
-  assert.equal(run.ready, true, run.error);
-  const pending = env.pctx.state.snapshot().shadowPending;
-  assert.deepEqual(pending.files.map(({ file }) => file), [NOTE.file]);
-  assert.deepEqual(pending.proofs[0].unsupportedClaims, []);
-  assert.equal(pending.evidence.length, 1);
-  assert.equal((await env.runtime.switchDream({ pctx: env.pctx, runId: run.runId })).ok, true);
-});
-
-test('dropping all unsupported facts settles without a pending draft', async (t) => {
-  const env = await setup(t);
-  let calls = 0;
-  env.setChild(async () => ({ stopReason: 'completed', structured: { done: true, summary: 'Reviewed.',
-    changes: ++calls === 1 ? [{ ...NOTE, body: 'The build is currently blocked.', citations: [] }] : [] } }));
-  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
-  assert.equal(calls, 2);
+  assert.match(replies[0], /^ERROR: no change in this call was applied\.\n- project_release\.md: no valid citation/u);
   assert.equal(run.skipReason, 'nothing-new');
   assert.equal(run.sessionsReviewed, 1);
   assert.equal(env.pctx.state.snapshot().shadowPending, null);
-});
-
-test('card overview indexes requests and latest receipts and retains intervening user rulings', async () => {
-  const { taskSourceOverview } = await import('../src/dream-transcript.js');
-  const rows = [
-    ['user', '只执行 T01，不执行 T02。'], ['assistant', 'T01 BLOCKED. ' + 'passed '.repeat(150)],
-    ['user', '继续补修 T01，授权使用 schema 56。'], ['assistant', 'T01 completed. ' + 'passed '.repeat(150)],
-    ['user', '只执行 T02。'], ['assistant', 'T02 pending review. ' + 'passed '.repeat(150)],
-    ['user', 'My piano lessons start tomorrow. ' + 'My instructions. '.repeat(120)],
-  ];
-  const pages = rows.map(([role, text], seq) => ({ text, fragments: [{ type: role + '/message', seq, text }] }));
-  const overview = taskSourceOverview(pages);
-  assert.deepEqual(overview.slice(0, 6).map(({ excerpts }) => [excerpts[0].card, excerpts[0].role]), [
-    ['T01', 'first request'], ['T01', 'earlier reply'], ['T01', 'follow-up'], ['T01', 'latest reply'],
-    ['T02', 'first request'], ['T02', 'latest reply'],
-  ]);
-  assert.match(overview[2].excerpts[0].text, /授权使用 schema 56/u);
-  assert.equal(overview[6].requiresDetail, true);
 });
 
 test('a child that fails leaves no edit in the copy and pauses the run', async (t) => {
@@ -469,28 +365,158 @@ test('a child that fails leaves no edit in the copy and pauses the run', async (
   assert.equal(env.pctx.state.snapshot().shadowPending, null);
 });
 
-test('a reused worker must correct a previous task citation before any change in the submission is applied', async (t) => {
-  const env = await setup(t, {}, ['s1', 's2']);
+test('switch settles only the correction versions the original Dream observed', async (t) => {
+  const env = await setup(t);
+  const corrected = 'project_other.md';
+  const observed = 'project_done.md';
+  for (const file of [corrected, observed]) {
+    await env.pctx.store.writeRawEntry(file, { type: 'project', body: 'An existing fact.' });
+    await env.pctx.state.noteCorrected(file);
+  }
+  const result = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
+  assert.equal(result.ready, true, result.error);
+  await env.pctx.store.writeRawEntry(corrected, { type: 'project', body: 'A newer fact corrected after Dream.' });
+  await env.pctx.state.noteCorrected(corrected);
+  assert.equal((await env.runtime.switchDream({ pctx: env.pctx, runId: 'stale-run' })).ok, false);
+  assert.deepEqual(env.pctx.state.snapshot().correctedFiles, [observed, corrected]);
+  assert.equal((await env.runtime.switchDream({ pctx: env.pctx, runId: result.runId })).ok, true);
+  assert.deepEqual(env.pctx.state.snapshot().correctedFiles, [corrected]);
+});
+
+test('automatic note focus names the note as a suspect', async (t) => {
+  const env = await setup(t, { autoDreamEnabled: true });
+  await env.pctx.store.writeRawEntry('project_probe.md', { type: 'project', body: 'Use pnpm.' });
+  await env.pctx.state.noteCorrected('project_probe.md');
+  const focus = await buildFocus(env.pctx, env.runtime.config);
+  env.setChild(async () => ({ stopReason: 'completed', structured: { done: true, summary: 'Checked.', changes: [] } }));
+  const result = await env.runtime.dream({ pctx: env.pctx, agent: env.parent, trigger: 'auto', focus: focus.text });
+  assert.equal(result.sessionsReviewed, 1);
+  assert.match(env.starts[0].prompt[0].text, /Suspect notes[\s\S]*- project_probe\.md: the user corrected it since the last Dream/u);
+});
+
+test('automatic focus does not spend a session slot on an already reviewed conversation', async (t) => {
+  const env = await setup(t, { dreamMaxTasks: 2 }, ['s1']);
+  env.setChild(async () => ({ stopReason: 'completed', structured: { done: true, summary: 'Checked.', changes: [] } }));
+  assert.equal((await env.runtime.dream({ pctx: env.pctx, agent: env.parent })).sessionsReviewed, 1);
+  const query = env.host.services.sessionQuery;
+  const old = (await query.filterSessions())[0];
+  query.filterSessions = async () => [old, { header: { id: 's2', cwd: env.workspaceDir, createdAt: 2 } }];
+  const lookedUp = [];
+  const readSession = query.readSession;
+  query.readSession = (id) => {
+    if (id === 's1' || id === 's2') lookedUp.push(id);
+    return readSession(id);
+  };
+  await env.pctx.store.writeRawEntry('project_port.md', { type: 'project', body: 'Port 4000.' });
+  await env.pctx.state.noteCorrected('project_port.md');
+  const focus = await buildFocus(env.pctx, env.runtime.config);
+  const result = await env.runtime.dream({ pctx: env.pctx, agent: env.parent, trigger: 'auto', focus: focus.text });
+  assert.equal(result.sessionsReviewed, 1);
+  assert.match(env.prompts.at(-1), /session_id=s2,/u);
+  assert.deepEqual(lookedUp, ['s2']);
+});
+
+test('completed automatic no-op remembers only fully read notes and reopens changed inputs', async (t) => {
+  const env = await setup(t);
+  const checked = 'project_checked.md';
+  const unread = 'project_unread.md';
+  const source = path.join(env.workspaceDir, 'release.js');
+  await writeFile(source, 'export const replaced = true;');
+  await env.pctx.store.saveEntry({ name: 'checked', type: 'project', content: 'Old release convention.',
+    sources: ['release.js#oldName'] });
+  await env.pctx.store.writeRawEntry(unread, { type: 'project', body: 'An edited convention.\n'.repeat(450) });
+  await env.pctx.state.noteCorrected(unread);
+  const focus = await buildFocus(env.pctx, env.runtime.config);
+  env.setChild(async (_task, invoke) => {
+    const read = await invoke('dream_read_note', { file: checked });
+    assert.match(read, /Old release convention/u);
+    const partial = await invoke('dream_read_note', { file: unread });
+    assert.ok(partial.length <= 8_000, 'the response budget includes its header');
+    assert.ok(JSON.parse(partial.split('\n', 1)[0]).next > 0, 'the second note was only partly read');
+    return { stopReason: 'completed', structured: { done: true, summary: 'Checked.', changes: [] } };
+  });
+  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent, trigger: 'auto', noSessions: true,
+    focus: focus.text, maintenance: focus.maintenance });
+  assert.equal(run.skipReason, 'nothing-new');
+
+  const state = new env.pctx.state.constructor(env.pctx.paths);
+  await state.load();
+  const refreshed = { ...env.pctx, state };
+  const targets = async () => (await buildFocus(refreshed, env.runtime.config)).files.map(({ file }) => file);
+  assert.deepEqual(await targets(), [unread]);
+  await state.noteCorrected(checked);
+  assert.ok((await targets()).includes(checked), 'a new explicit correction makes it eligible again');
+  await state.clearCorrected([checked]);
+  assert.deepEqual(await targets(), [unread]);
+  await writeFile(source, 'export const changedAgain = true;');
+  assert.deepEqual(await targets(), [unread, checked], 'a cited source changing makes it eligible again');
+});
+
+test('a clipped note tool result does not settle an unchanged maintenance target', async (t) => {
+  const env = await setup(t);
+  const file = 'project_port.md';
+  await env.pctx.store.writeRawEntry(file, { type: 'project', body: 'Use port 4000 for development.' });
+  await env.pctx.state.noteCorrected(file);
+  const { text: focus, maintenance } = await buildFocus(env.pctx);
+  env.setChild(async (_task, invoke) => {
+    await invoke('dream_read_note', { file }, (content) => [{ ...content[0], text: content[0].text.slice(0, -10) }]);
+    return { stopReason: 'completed', structured: { done: true, summary: 'Checked.', changes: [] } };
+  });
+  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent, trigger: 'auto', noSessions: true, focus, maintenance });
+  assert.equal(run.skipReason, 'nothing-new');
+  assert.deepEqual((await buildFocus(env.pctx)).files.map((item) => item.file), [file]);
+});
+
+test('adopting an automatic dialogue proposal does not drop corrections the child never reviewed', async (t) => {
+  const env = await setup(t);
+  const file = 'project_port.md';
+  await env.pctx.store.writeRawEntry(file, { type: 'project', body: 'Use port 4000 for development.' });
+  await env.pctx.state.noteCorrected(file);
+  const { text: focus, maintenance } = await buildFocus(env.pctx);
+  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent, trigger: 'auto', focus, maintenance });
+  assert.equal(run.ready, true, run.error);
+  assert.equal((await env.runtime.switchDream({ pctx: env.pctx, runId: run.runId })).ok, true);
+  assert.deepEqual((await buildFocus(env.pctx)).files.map((item) => item.file), [file]);
+});
+
+test('a completed review remembers an unchanged target even when it also proposes a dialogue edit', async (t) => {
+  const env = await setup(t);
+  const file = 'project_port.md';
+  await env.pctx.store.writeRawEntry(file, { type: 'project', body: 'Use port 4000 for development.' });
+  await env.pctx.state.noteCorrected(file);
+  const { text: focus, maintenance } = await buildFocus(env.pctx);
+  env.setChild(async (spec, invoke) => {
+    await invoke('dream_read_note', { file });
+    return { stopReason: 'completed', structured: { done: true, summary: 'Reviewed port and release facts.',
+      changes: [{ ...NOTE, citations: [{ session_id: sessionOf(spec), seq: 2, quote: QUOTE }] }] } };
+  });
+  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent, trigger: 'auto', focus, maintenance });
+  assert.equal(run.ready, true, run.error);
+  assert.deepEqual((await buildFocus(env.pctx)).files, []);
+  assert.deepEqual(env.pctx.state.snapshot().correctedFiles, [file]);
+});
+
+test('a citation to a session that was not offered or a quote that is not there rejects the whole call', async (t) => {
+  const env = await setup(t, { dreamMaxTasks: 1 }, ['s1', 's2']);
   env.host.services.subagents.startActivation = async (spec) => {
     const invoke = mountDreamFixture(env.host, spec);
     const result = (async () => {
-      const submit = { done: true, summary: 'checked', changes: [] };
-      await invoke('dream_read_source', { task: 1, page: 0 });
-      await invoke('dream_submit_task', { task: 1, ...submit });
-      await invoke('dream_read_source', { task: 2, page: 0 });
-      const change = { ...NOTE, citations: [{ session_id: 's2', seq: 2, quote: QUOTE }] };
-      const foreign = { ...NOTE, file: 'project_foreign.md', citations: [{ session_id: 's1', seq: 2, quote: QUOTE }] };
-      const refused = await invoke('dream_submit_task', { task: 2, ...submit, changes: [change, foreign] });
-      assert.match(refused, /ERROR:.*current task/u);
-      assert.deepEqual(JSON.parse(await invoke('dream_list_notes', {})), []);
-      assert.match(await invoke('dream_submit_task', { task: 2, ...submit, changes: [change] }), /Batch finished/u);
+      await invoke('dream_read_session', { session_id: 's1' });
+      const change = { ...NOTE, citations: [{ session_id: 's1', seq: 2, quote: QUOTE }] };
+      const foreign = { ...NOTE, file: 'project_foreign.md', citations: [{ session_id: 's2', seq: 2, quote: QUOTE }] };
+      const missing = { ...NOTE, file: 'project_missing.md', citations: [{ session_id: 's1', seq: 2, quote: 'Never said in this session.' }] };
+      const refused = await invoke('dream_submit', { done: false, changes: [change, foreign, missing] });
+      assert.match(refused, /session s2 was not offered/u);
+      assert.match(refused, /the quote is not in event 2 of s1/u);
+      assert.deepEqual(JSON.parse(await invoke('dream_list_notes', {})).items, []);
+      assert.match(await invoke('dream_submit', { done: true, changes: [change] }), /WROTE project_release\.md/u);
       return { stopReason: 'completed', structured: { finished: true } };
     })();
     return { result, dispose: async () => {} };
   };
   const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
   assert.equal(run.ready, true, run.error);
-  assert.deepEqual(env.pctx.state.snapshot().shadowPending.origins, { 'project_release.md': ['s2'] });
+  assert.deepEqual(env.pctx.state.snapshot().shadowPending.origins, { 'project_release.md': ['s1'] });
 });
 
 test('resume publishes the last checkpoint without starting a notes-only child', async (t) => {
@@ -521,21 +547,6 @@ test('lowering the next batch limit does not drop frozen tasks on resume', async
   const resumed = await env.runtime.dream({ pctx: env.pctx, agent: env.parent, resume: true, runId: paused.runId });
   assert.equal(resumed.sessionsReviewed, 3, resumed.error);
   assert.equal(env.starts.length, 2);
-});
-
-test('an edit without a matching quote is shown as unsupported, not applied silently', async (t) => {
-  const env = await setup(t);
-  env.setChild(async () => {
-    return { stopReason: 'completed', output: [], structured: { done: true, summary: 'x', changes: [
-      { ...NOTE, body: NOTE.body.replace('pnpm', 'yarn'), citations: [{ session_id: 's1', seq: 2, quote: 'yarn release everywhere' }] },
-    ] } };
-  });
-  await env.runtime.dream({ pctx: env.pctx, agent: env.parent, force: true });
-  const pending = env.pctx.state.snapshot().shadowPending;
-  assert.ok(pending, 'the change still reaches review');
-  assert.ok(!pending.evidence.some((item) => item.verified));
-  const proof = pending.proofs.find((item) => item.file === 'project_release.md');
-  assert.equal(proof.kind, 'missing');
 });
 
 test('without a live conversation to parent the children, Dream skips and says why', async (t) => {
@@ -575,7 +586,8 @@ test('without the yield option Dream starts at once and retries when the host is
     return start(spec);
   };
   const run = await env.runtime.startDream(env.pctx, { agent: env.parent, force: true });
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // Wait for the first refusal instead of a fixed delay: slow CI runners need longer than 50 ms.
+  await waitFor(() => refused >= 1);
   assert.equal(refused, 1);
   env.host.emit('subagent/end', { runId: 'u1', id: 'user-child' });
   const result = await run.done;
@@ -604,14 +616,14 @@ test('a Dream child cannot use the memory tools even when subagents share memory
   assert.equal(env.runtime.canWriteMemory({ id: 'other-child', session: { header: { parentSession: 'lead-1', origin: 'subagent' } } }), true);
 });
 
-test('session pages retain sequence markers, omit credentials and leave no source file', async (t) => {
+test('session pages carry seq numbers and labels, omit credentials and leave no source file', async (t) => {
   const env = await setup(t);
   const secret = 'sk-proj-' + 'SyntheticFixture1234567890'.repeat(3);
   env.events.push(message(3, 'user', 'Synthetic credential ' + secret));
   await env.runtime.dream({ pctx: env.pctx, agent: env.parent, force: true });
   const text = env.host.dreamSourcePages.join('\n');
-  assert.match(text, /\[seq 2\] user\/message\n纠正一下/u);
-  assert.match(text, /\[seq 3\] user\/message\n\[sensitive passage omitted\]/u);
+  assert.match(text, /\[seq 2\] \[user\] 纠正一下/u);
+  assert.match(text, /\[seq 3\] \[sensitive passage omitted\]/u);
   assert.ok(!text.includes(secret));
   const runId = env.pctx.state.snapshot().shadowPending.runId;
   await assert.rejects(access(path.join(env.pctx.paths.dreamsDir, runId, 'tasks')), { code: 'ENOENT' });
@@ -623,7 +635,7 @@ test('the task list shows, per workspace, which conversations Dream reviewed and
   assert.deepEqual(before.sessions.map(({ status }) => status), ['todo', 'todo', 'todo']);
   await env.runtime.dream({ pctx: env.pctx, agent: env.parent, force: true });
   const pending = await env.runtime.dreamCoverage(env.pctx);
-  const reviewed = env.starts[0].prompt[0].text.match(/session_id=(\S+?),/u)[1];
+  const reviewed = offeredIn(env.starts[0])[0];
   assert.equal(pending.sessions.find(({ id }) => id === reviewed).status, 'review');
   assert.equal(pending.counts.todo, 2);
   assert.equal((await env.runtime.switchDream({ pctx: env.pctx })).ok, true);
@@ -653,14 +665,14 @@ test('task rows carry the host session title when it has one', async (t) => {
 test('a partial switch settles the session whose changes went live and holds the one deferred', async (t) => {
   const env = await setup(t, {}, ['s1', 's2']);
   env.setChild(async (spec) => {
-    const session = spec.prompt[0].text.match(/session_id=(\S+?),/u)[1];
+    const session = sessionOf(spec);
     if (session === 's1') {
       return { stopReason: 'completed', output: [], structured: { done: true, summary: 'release', changes: [
         { ...NOTE, citations: [{ session_id: 's1', seq: 2, quote: QUOTE }] },
       ] } };
     }
-    // An unsourced paraphrase: review cannot bind it to a quote.
-    const style = { op: 'write', file: 'feedback_style.md', name: 'Style', type: 'feedback', body: 'Answer directly.', citations: [] };
+    const style = { op: 'write', file: 'feedback_style.md', name: 'Style', type: 'feedback', body: 'Answer directly.',
+      citations: [{ session_id: 's2', seq: 2, quote: QUOTE }] };
     return { stopReason: 'completed', output: [], structured: { done: true, summary: 'style', changes: [style] } };
   });
   const result = await env.runtime.dream({ pctx: env.pctx, agent: env.parent, force: true });
@@ -670,28 +682,6 @@ test('a partial switch settles the session whose changes went live and holds the
   assert.deepEqual(env.pctx.state.snapshot().dreamProcessedSessions.map(({ id }) => id), ['s1']);
   const { sessions } = await env.runtime.dreamCoverage(env.pctx);
   assert.deepEqual(sessions.map(({ id, status }) => [id, status]).sort(), [['s1', 'done'], ['s2', 'todo']]);
-});
-
-test('skipped or replaced source pages cannot advance the review cursor', async (t) => {
-  const env = await setup(t);
-  env.events.push(message(3, 'user', 'Long dialogue '.repeat(400)));
-  env.host.services.subagents.startActivation = async (spec) => {
-    const invoke = mountDreamFixture(env.host, spec);
-    const result = (async () => {
-      const submit = { task: 1, done: true, summary: 'checked', changes: [] };
-      assert.match(await invoke('dream_submit_task', submit), /read all source pages/u);
-      const first = await invoke('dream_read_source', { task: 1, page: 0 });
-      const next = JSON.parse(first.split('\n')[0]).next_page;
-      assert.equal(next, 1);
-      await invoke('dream_read_source', { task: 1, page: next }, () => [{ type: 'text', text: 'redacted by host' }]);
-      assert.match(await invoke('dream_submit_task', submit), /read all source pages/u);
-      return { stopReason: 'completed', structured: { finished: true } };
-    })();
-    return { result, dispose: async () => {} };
-  };
-  const run = await env.runtime.dream({ pctx: env.pctx, agent: env.parent });
-  assert.equal(run.error, 'subagent-incomplete-tasks');
-  assert.deepEqual(env.pctx.state.snapshot().dreamProcessedSessions, []);
 });
 
 for (const userMemory of ['global', 'project']) {
@@ -767,37 +757,4 @@ test('a note named with its type prefix keeps one prefix', async (t) => {
   const env = await setup(t);
   const saved = await env.pctx.store.saveEntry({ name: 'feedback_handover_doc_format', type: 'feedback', description: '', content: 'Handover: conclusions and to-dos.', source: { via: 'test' } });
   assert.equal(saved.file, 'feedback_handover_doc_format.md');
-});
-
-const unfinishedIn = (env, unfinished) => env.setChild(async (spec) => {
-  const session = sessionOf(spec);
-  return { stopReason: 'completed', output: [], structured: {
-    done: session !== unfinished, summary: 'task ' + session,
-    changes: session === unfinished ? [{ ...NOTE, file: 'project_unfinished.md', citations: [{ session_id: session, seq: 2, quote: QUOTE }] }] : [],
-  } };
-});
-
-test('an unfinished task with a draft ends the batch, so no later task is handed out or reviewed', async (t) => {
-  const env = await setup(t, {}, ['s1', 's2']);
-  unfinishedIn(env, 's1');
-  const result = await env.runtime.dream({ pctx: env.pctx, agent: env.parent, force: true });
-  assert.equal(env.prompts.length, 1);
-  assert.match(env.prompts[0], /session_id=s1,/u);
-  // Its draft reaches review only as an incomplete review; no session is marked reviewed.
-  assert.equal(result.ready, true, result.error);
-  assert.equal(env.pctx.state.snapshot().dreamRunOutcomes.at(-1).skipReason, 'incomplete-review');
-  assert.deepEqual(env.pctx.state.snapshot().shadowPending.reviewRecords, []);
-});
-
-test('an unfinished task after a finished one pauses, and its draft stays out of the checkpoint', async (t) => {
-  const env = await setup(t, {}, ['s1', 's2']);
-  unfinishedIn(env, 's2');
-  const paused = await env.runtime.dream({ pctx: env.pctx, agent: env.parent, force: true });
-  assert.equal(paused.status, 'paused');
-  assert.equal(paused.error, 'unchecked-draft');
-  assert.equal(env.pctx.state.snapshot().shadowPending, null);
-  const { readFile: read } = await import('node:fs/promises');
-  const checkpoint = JSON.parse(await read(path.join(env.pctx.paths.dreamsDir, paused.runId, 'checkpoint.json'), 'utf8'));
-  assert.deepEqual(checkpoint.work.map(({ id }) => id), ['s1']);
-  assert.ok(!checkpoint.draft.pages.some(({ file }) => file === 'project_unfinished.md'));
 });

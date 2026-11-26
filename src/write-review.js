@@ -169,3 +169,23 @@ export function composeCorrection({ existingBody, content, source = {}, date, no
     history,
   };
 }
+
+/**
+ * Replace one unique passage of a note body, keeping the replaced text as a
+ * `- Superseded:` line (history). A replacement that still contains the passage
+ * only adds to it, so nothing is superseded. The passage edit shared by Dream's
+ * `edit` op and `memory_update` with `old_text`.
+ * @param {string} body current note body
+ * @param {string} oldText exact passage to replace
+ * @param {string} replacement
+ * @returns {{body:string}|{unchanged:true}|{error:'not-found'|'ambiguous'}}
+ */
+export function replacePassage(body, oldText, replacement) {
+  const start = oldText.trim() === '' ? -1 : body.indexOf(oldText);
+  if (start < 0) return { error: 'not-found' };
+  if (start !== body.lastIndexOf(oldText)) return { error: 'ambiguous' };
+  if (replacement === oldText) return { unchanged: true };
+  const edited = body.slice(0, start) + replacement + body.slice(start + oldText.length);
+  if (replacement.includes(oldText.trim())) return { body: edited };
+  return { body: `${edited}\n\n- Superseded: ${oneLine(oldText)}` };
+}

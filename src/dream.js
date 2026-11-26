@@ -17,6 +17,7 @@ import path from 'node:path';
 import { MemoryStore } from './store.js';
 import { withFileLock } from './lock.js';
 import { recordDream } from './metrics.js';
+import { recordVerification } from './verification-ledger.js';
 import {
   clearShadow,
   archiveShadow,
@@ -112,7 +113,7 @@ async function settleWithoutSwitch(store, state, pending, decision, rejected, re
   const sources = new Set(pending.analysisFiles ?? []);
   if (sources.size === 0 || reads.length === 0) return state.settleShadowPending(pending.runId, decision, rejected, { reads });
   return store.withWriteTransaction(async () => {
-    const changed = (await shadowConflicts({ store, base: pending.base })).some(({ file }) => sources.has(file));
+    const changed = (await shadowConflicts({ store, base: pending.base, files: sources })).length > 0;
     await state.settleShadowPending(pending.runId, decision, rejected, { reads: changed ? [] : reads });
   });
 }
@@ -198,7 +199,7 @@ export class DreamEngine {
     const changedFiles = diff.files.map((item) => item.file);
     const proofs = new Map((pending.proofs ?? []).map((item) => [item.file, item]));
     const evidence = pending.evidence ?? [];
-    const boundEvidence = evidence.filter((item) => item?.verified && item.claims?.length);
+    const boundEvidence = evidence.filter((item) => item?.verified);
     const deferredFiles = changedFiles.filter((file) => deferred.has(file));
     // Without bound evidence, the sessions whose Dream task changed the file hold it.
     const originOf = (file) => (Array.isArray(pending.origins?.[file]) ? pending.origins[file] : null);
@@ -207,7 +208,7 @@ export class DreamEngine {
       if (['preserved', 'description'].includes(proof?.kind)) return [];
       if (proof?.kind !== 'citation' || proof.unsupportedClaims?.length !== 0) return originOf(file);
       const sources = boundEvidence.filter((item) => item.file === file);
-      return sources.length > 0 ? sources.flatMap((item) => item.sessionId ? [item.sessionId] : []) : originOf(file);
+      return sources.length > 0 ? sources.flatMap((item) => item.sessionId ? [item.sessionId] : item.source === 'agent-memory' ? [item.memoryFile] : []) : originOf(file);
     };
     const deferredSources = deferredFiles.map(sourcesOf);
     const heldSessions = new Set(deferredSources.flat());
@@ -270,12 +271,34 @@ export class DreamEngine {
         // state write must restore the same pages and index as a failed copy.
         await state.settleShadowPending(pending.runId,
           rejectedFiles.length > 0 || deferredFiles.length > 0 ? 'partially-applied' : 'applied',
-          proposalsOf(pending, rejectedFiles), { reads: settledReads });
+          proposalsOf(pending, rejectedFiles), { reads: settledReads, appliedFiles: passedFiles });
       },
       rollbackSwitch: ({ backupDir }) => fs.rm(path.join(path.dirname(backupDir), 'meta.json'), { force: true }),
     });
     if (result.ok !== true) {
       return result;
+    }
+    // A page whose final revision cites words the user wrote is recorded the
+    // same way a tool write with such a citation is. Best-effort: the switch
+    // already happened.
+    for (const { file } of passed) {
+      const revision = proofs.get(file)?.revision;
+      if (!revision || revision === 'removed'
+        || !boundEvidence.some((item) => item.file === file && item.role === 'user' && item.revision === revision)) continue;
+      try {
+        const entry = await store.readEntry(file);
+        if (hashText(entry.raw) !== revision) continue;
+        await recordVerification({
+          store,
+          file,
+          name: entry.frontmatter.name,
+          description: entry.frontmatter.description,
+          body: entry.body,
+          source: 'user-citation',
+        });
+      } catch {
+        /* the page stays listed by name */
+      }
     }
     // Claude Code parity: the applied result is kept next to the backup so the
     // human can inspect what the dream produced after switching to it.

@@ -19,6 +19,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -27,7 +28,7 @@ import { resolveConfig } from '../../src/config.js';
 import { runAutoExtract } from '../../src/auto-extract.js';
 import { registerTools } from '../../src/tools.js';
 import { resolveDshPaths } from '../dsh-paths.mjs';
-import { apiUsage, judge, loadDataset, makeHost, sampleQuestions, sessionsOf } from './lme-lib.mjs';
+import { apiUsage, extractLimits, judge, loadDataset, makeHost, sampleQuestions, sessionsOf } from './lme-lib.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const DATA = process.env.LME_DATA || path.join(process.env.LOCALAPPDATA ?? '', 'Temp', 'lme-data', 'longmemeval_s_cleaned.json');
@@ -37,6 +38,9 @@ const PROJECT_ID = 'eval-project';
 const TOOL_LOCK = ['tool-plugin-manager', 'tool-working-directory', 'tool-bash', 'tool-pwsh', 'tool-jobs', 'tool-fs', 'tool-fs-search',
   'tool-skill', 'tool-agent-team', 'tool-subagent-control', 'tool-subagent', 'tool-subagent-fork', 'tool-workflow', 'tool-goal', 'tool-web'];
 // tool-todo stays on in every line: with no tools at all the model writes tool calls as text instead of answering.
+// Opt-in: LME_EXTRACT_EVERY_TURNS=N replays the live cadence (one auto-extract run per N user turns, one chunk each).
+// Unset keeps the default: every session is extracted whole, window after window.
+const EXTRACT_EVERY = Math.max(0, Math.floor(Number(process.env.LME_EXTRACT_EVERY_TURNS)) || 0);
 const [phase] = process.argv.slice(2);
 const option = (name, fallback) => {
   const index = process.argv.indexOf(name);
@@ -65,8 +69,17 @@ const config = (memoryRoot) => resolveConfig({
   memoryRoot, projectId: PROJECT_ID, userMemory: 'project', autoExtract: true, autoMemoryEnabled: true, autoDreamEnabled: false,
 });
 
+// A dataset whose items all carry a `group` (e.g. eval/traps/traps.json) is run in full, grouped by that field.
+const grouped = (dataset) => dataset.length > 0 && dataset.every((q) => typeof q.group === 'string' && q.group);
+const datasetSha = () => createHash('sha256').update(fs.readFileSync(DATA)).digest('hex');
+const groupOrder = (dataset) => [...new Set(dataset.map((q) => q.group))];
+
 function questionsToRun(dataset) {
-  const sample = sampleQuestions(dataset);
+  const sample = grouped(dataset)
+    ? { rule: `all ${dataset.length} items of ${path.basename(DATA)}, grouped by "group" (no sampling)`, picked: dataset.map((q) => ({ group: q.group, id: q.question_id })) }
+    : sampleQuestions(dataset);
+  sample.dataset = path.basename(DATA);
+  sample.sha256 = datasetSha();
   write(path.join(RUN, 'sample.json'), sample);
   const only = option('--only', '');
   const wanted = only ? new Set(only.split(',')) : null;
@@ -93,6 +106,15 @@ async function formMemory(q, dir, sessions, record) {
   const started = Date.now();
   const windows = [];
   for (const session of sessions) {
+    if (EXTRACT_EVERY > 0) {
+      for (const limit of extractLimits(session.events, EXTRACT_EVERY)) {
+        host.visibleSeq.set(session.id, limit);
+        const result = await runAutoExtract({ runtime, pctx, sessionId: session.id, agent: { id: session.id }, trigger: 'eval' });
+        windows.push({ session: session.id, ok: result.ok, reason: result.reason ?? '', saved: result.saved ?? result.count ?? undefined });
+      }
+      host.visibleSeq.delete(session.id);
+      continue;
+    }
     for (let window = 0; window < 60; window += 1) {
       const result = await runAutoExtract({ runtime, pctx, sessionId: session.id, agent: { id: session.id }, trigger: 'eval' });
       windows.push({ session: session.id, ok: result.ok, reason: result.reason ?? '', saved: result.saved ?? result.count ?? undefined });
@@ -101,7 +123,7 @@ async function formMemory(q, dir, sessions, record) {
     }
   }
   await runtime.drain?.();
-  record.B = { ms: Date.now() - started, windows: windows.length, failures: windows.filter((w) => !w.ok && !['no-new-events', 'empty-transcript'].includes(w.reason)).map((w) => w.reason), notes: listNotes(memoryRoot) };
+  record.B = { ms: Date.now() - started, extractEveryTurns: EXTRACT_EVERY, windows: windows.length, failures: windows.filter((w) => !w.ok && !['no-new-events', 'empty-transcript'].includes(w.reason)).map((w) => w.reason), notes: listNotes(memoryRoot) };
   copy(memoryRoot, path.join(dir, 'checkpoint-before-dream'));
 }
 
@@ -285,11 +307,12 @@ function report(dataset) {
   }).filter((row) => row.grades.A && row.grades.B && row.grades.C);
   const pct = (n, d) => (d ? `${n}/${d} (${Math.round((100 * n) / d)}%)` : '-');
   const right = (row, c) => row.grades[c]?.label === true;
-  const lines = ['# LongMemEval-S: no plugin / memory / memory + Dream', '',
+  const lines = [grouped(dataset) ? `# ${path.basename(DATA)}: no plugin / memory / memory + Dream` : '# LongMemEval-S: no plugin / memory / memory + Dream', '',
     `Sample: ${read(path.join(RUN, 'sample.json'), {}).rule}. Graded ${rows.length} of ${items.length}.`,
+    `Dataset: ${path.basename(DATA)}, sha256 ${datasetSha()}.`,
     'Judge: the official LongMemEval answer-check prompts with DeepSeek (deepseek-flash) as the judge, not the official GPT-4o judge.', '',
     '| group | n | A no plugin | B memory | C memory + Dream |', '|---|---:|---:|---:|---:|'];
-  for (const group of ['all', 'knowledge-update', 'multi-session', 'abstention']) {
+  for (const group of ['all', ...(grouped(dataset) ? groupOrder(dataset) : ['knowledge-update', 'multi-session', 'abstention'])]) {
     const set = rows.filter((row) => group === 'all' || row.group === group);
     lines.push(`| ${group} | ${set.length} | ${pct(set.filter((r) => right(r, 'A')).length, set.length)} | ${pct(set.filter((r) => right(r, 'B')).length, set.length)} | ${pct(set.filter((r) => right(r, 'C')).length, set.length)} |`);
   }

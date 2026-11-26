@@ -1,198 +1,23 @@
 /**
- * Text-matching helpers for quote-backed memory checks.
+ * Quote-backed checks for Dream.
  *
- * The user-evidence check (`src/user-evidence.js`) locates the quote a claim
- * cites in what the model actually read, and the diff view compares proposed
- * bodies against stored ones. Matching ignores case, whitespace, markdown and
+ * The diff view compares proposed bodies against stored ones, and quotes are
+ * matched (`src/citation.js`) ignoring case, whitespace, markdown and
  * punctuation, so a real quote survives reformatting without turning the check
  * into a loose substring test.
+ *
+ * Dream itself checks only that a cited quote exists and who said it (see
+ * `src/citation.js`); whether a note follows from its quote is the
+ * model's call and the reviewer's.
  */
 
-import { currentBody, currentFactLines, MEMORY_CAVEAT_RE, memoryStatusOf } from './memory-body.js';
-import { contradictsClaim, supportConflict, supportsStatement, supportTokens } from './support.js';
 import { memoryHash } from './write-review.js';
-
-/** Below this many significant characters a quote proves nothing. */
-const TRANSCRIPT_TAG = /^\[(user|user-pasted|assistant|tool-call|tool-result|tool-error)\] ?/;
-const DATE_MARKER = /^--- (\d{4}-\d{2}-\d{2}) ---$/;
-const RETIREMENT = /\b(?:remove|delete|retir(?:e|ed)|obsolete|deprecated|replac(?:e|ed)|superseded)\b|删除|移除|废弃|停用|淘汰|已替换/iu;
-const UNCERTAIN_RETIREMENT = /[?？]|\b(?:not|never|don't|if|unless|should|could|may|might)\b|不要|不可|尚未|未被|如果|是否/iu;
-const MODALITY = /\b(?:must|should|may|might|could|would|can|will|always|never|required|optional|consider(?:ing|ed)?|plan(?:s|ned|ning)? to|thinking (?:of|about)|intend(?:s|ed)? to|hop(?:e|es|ing) to)\b|打算|考虑|计划|可能|也许/giu;
-const REPLACEMENT = /^(?:please\s+)?replace (.+?) with (.+)$/iu;
-
-const normalizePassage = (value) => String(value ?? '').replace(/\s+/gu, ' ').trim().toLowerCase();
-const splitPassages = (text) => text.split(/\r?\n|(?<=[.!?;])\s+|(?<=[。！？；])\s*/u)
-  .map((part) => part.trim()).filter(Boolean);
-
-/** Check the enclosing passage so a clipped quote cannot omit negation or conditions. */
-export function sourcePassages(text, quote) {
-  const wanted = normalizeForMatch(quote);
-  if (!wanted) return [];
-  const parts = splitPassages(text);
-  const normalized = parts.map(normalizeForMatch);
-  const matches = [];
-  for (let start = 0; start < parts.length; start++) {
-    let span = '';
-    for (let end = start; end < parts.length; end++) {
-      span += normalized[end];
-      const offset = span.indexOf(wanted);
-      if (offset >= 0 && offset < normalized[start].length) {
-        let first = start;
-        let last = end + 1;
-        while (first > 0 && MEMORY_CAVEAT_RE.test(parts[first])) first--;
-        while (last < parts.length && MEMORY_CAVEAT_RE.test(parts[last])) last++;
-        matches.push(parts.slice(first, last).join('\n'));
-        break;
-      }
-      if (span.length - normalized[start].length >= wanted.length) break;
-    }
-  }
-  return [...new Set(matches)];
-}
-
-/** Narrow first-to-third person rendering for a direct user statement. Keep
- * the complete predicate and its qualifiers, including all names and numbers. */
-const USER_VERBS = Object.freeze({ prefer: 'prefers', use: 'uses', live: 'lives', work: 'works', want: 'wants',
-  have: 'has', am: 'is', moved: 'moved', decided: 'decided', plan: 'plans' });
-
-function userRestatement(claim, passage) {
-  const plain = (s) => s.trim().replace(/\s+/gu, ' ').replace(/[.!。！]$/u, '');
-  const source = plain(passage).replace(/^(?:by the way,\s+|顺便(?:说|提)一下[，,]\s*)/iu, '');
-  const note = plain(claim);
-  if (/^我(?!们)/u.test(source) && note.startsWith('用户')) {
-    return !/[我你咱]/u.test(source.slice(1)) && source.slice(1) === note.slice(2);
-  }
-  const match = /^[Ii] (\w+) (.+)$/u.exec(source);
-  const predicate = /^(?:the )?user (.+)$/iu.exec(note)?.[1];
-  return Boolean(match && Object.hasOwn(USER_VERBS, match[1]) && !/\b(?:i|we|me|us|my|our|you|your)\b/iu.test(match[2])
-    && predicate === USER_VERBS[match[1]] + ' ' + match[2]);
-}
-
-function supportsClaim(claim, passage, fromUser) {
-  const separator = claim.lastIndexOf(' » ');
-  if (separator >= 0) {
-    const heading = claim.slice(0, separator);
-    if (!supportsStatement(heading, passage, { minRatio: 1, minMatched: 1 })) return false;
-    claim = claim.slice(separator + 3);
-  }
-  if (normalizePassage(claim) === normalizePassage(passage)) return true;
-  if (fromUser && userRestatement(claim, passage)) return true;
-  if (/[?？]$/u.test(passage.trim()) && !/[?？]$/u.test(claim.trim())) return false;
-  const replacement = REPLACEMENT.exec(passage);
-  const source = replacement && !UNCERTAIN_RETIREMENT.test(passage) ? replacement[2] : passage;
-  if (source === passage && RETIREMENT.test(passage) && !RETIREMENT.test(claim)) return false;
-  if (!supportsStatement(claim, source, { minRatio: 1 })) return false;
-  if (String(claim.match(MODALITY) ?? '').toLowerCase() !== String(source.match(MODALITY) ?? '').toLowerCase()) return false;
-  const words = (value) => (value.match(/[a-z0-9][a-z0-9_+#.-]*|[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/giu) ?? [])
-    .flatMap((word) => [...supportTokens(word)]);
-  const tokens = words(source);
-  let offset = -1;
-  return words(claim).every((token) => {
-    offset = tokens.indexOf(token, offset + 1);
-    return offset !== -1;
-  });
-}
-
-/** A quote can span sentences. Each new claim must still have one local source. */
-function supportsBoundClaim(claim, passage, fromUser = false) {
-  if (!supportsClaim(claim, passage, fromUser)) return false;
-  const parts = splitPassages(passage);
-  return parts.some((_, start) => {
-    let end = start + 1;
-    while (end < parts.length && MEMORY_CAVEAT_RE.test(parts[end])) end++;
-    return supportsClaim(claim, parts.slice(start, end).join('\n'), fromUser);
-  });
-}
-
-function supportsCitedClaim(claim, passage, evidence) {
-  const text = claim.replace(/^Description: /u, '');
-  const recorded = /^(?:Recorded|记录于) (\d{4}-\d{2}-\d{2}) UTC[:：]\s*/u.exec(text);
-  if (!recorded || evidence.source === 'memory') return supportsBoundClaim(text, passage, evidence.eventType === 'user/message');
-  if (!Number.isSafeInteger(evidence.eventTime) || Math.abs(evidence.eventTime) > 8.64e15
-    || new Date(evidence.eventTime).toISOString().slice(0, 10) !== recorded[1]) return false;
-  return supportsBoundClaim(text.slice(recorded[0].length), passage, evidence.eventType === 'user/message');
-}
-
-/** Feedback only: a narrower citation might bind this edit. The actual write
- * still resolves every quote against its complete passage in the frozen source. */
-export function canRefineCitation(claim, quotes) {
-  if (quotes.some((quote) => supportsBoundClaim(claim, quote))) return false;
-  return quotes.some((quote) => {
-    const parts = splitPassages(quote);
-    return parts.length > 1 && parts.some((part) => supportsBoundClaim(claim, part));
-  });
-}
-
-/** Compare facts as written, retaining the heading and adjacent qualifiers. */
-function factsOf(entry) {
-  const facts = [];
-  let paragraph = [];
-  let previous;
-  let hasConditions = false;
-  for (const fact of currentFactLines(entry?.body)) {
-    const text = fact.text.slice(fact.heading ? fact.heading.length + 3 : 0).replace(/\^\[[^\]]*\]/gu, '').trim();
-    if (!text) continue;
-    const sameSection = previous?.sectionStart === fact.sectionStart;
-    if (sameSection && paragraph.length > 0 && !fact.fenced && MEMORY_CAVEAT_RE.test(text)) {
-      for (const base of paragraph) base.conditions.push(text);
-      hasConditions = true;
-      continue;
-    }
-    if (!sameSection || previous?.paragraphStart !== fact.paragraphStart || hasConditions) paragraph = [];
-    const base = { heading: fact.heading, text, conditions: [] };
-    paragraph.push(base);
-    facts.push(base);
-    previous = fact;
-    hasConditions = false;
-  }
-  return facts.map(({ heading, text, conditions }) =>
-    [heading ? heading + ' » ' + text : text, ...conditions].join('\n'));
-}
-
-function supportsRemoval(claim, passage, file) {
-  if (!RETIREMENT.test(passage)) {
-    return ['negation', 'quantity'].includes(supportConflict(claim, passage)) && contradictsClaim(claim, passage);
-  }
-  if (UNCERTAIN_RETIREMENT.test(passage)) return false;
-  const words = supportTokens(REPLACEMENT.exec(passage)?.[1] ?? passage);
-  if (words.has(file.toLowerCase())) return true;
-  const tokens = [...supportTokens(claim)];
-  const matches = tokens.filter((token) => words.has(token));
-  return (matches.length >= 2 && matches.length === tokens.length)
-    || matches.some((token) => /\d|[-_.]/u.test(token));
-}
 
 /** Compare text ignoring case, whitespace, markdown and punctuation. */
 export function normalizeForMatch(value) {
   return String(value ?? '')
     .toLowerCase()
     .replace(/[\\\s`*_#>|\-—:：,，.。;；!！?？()（）[\]{}"'“”‘’「」…/]+/g, '');
-}
-
-/**
- * Split a rendered transcript back into blocks.
- * @param {string} text transcript from `chunkTranscript`.
- * @returns {Array<{tag:string, date:string, text:string}>} `text` is normalized.
- */
-export function parseTranscriptBlocks(text) {
-  const blocks = [];
-  let date = '';
-  let current = null;
-  for (const line of String(text ?? '').split('\n')) {
-    const marker = line.match(DATE_MARKER);
-    if (marker) {
-      date = marker[1];
-      continue;
-    }
-    const tag = line.match(TRANSCRIPT_TAG);
-    if (tag) {
-      current = { tag: tag[1], date, raw: line.slice(tag[0].length) };
-      blocks.push(current);
-    } else if (current) {
-      current.raw += `\n${line}`;
-    }
-  }
-  return blocks.map((block) => ({ tag: block.tag, date: block.date, text: normalizeForMatch(block.raw) }));
 }
 
 /** Content-line inventory, preserving indentation, duplicates and line numbers. */
@@ -212,25 +37,13 @@ export function bodyLineChanges(before, after) {
   return { addedLines: unmatched(newLines, oldLines), removedLines: unmatched(oldLines, newLines) };
 }
 
-/** Bind the apply decision to the exact shadow bytes the reviewer can inspect. */
-export async function reviewProofs({ diff, store, shadowStore, links, evidence }) {
-  const before = async (file) => store.readEntry(file).catch((error) => {
-    if (error?.code !== 'NOT_FOUND') throw error;
-    return null;
-  });
-  const after = async (file) => shadowStore.readEntry(file).catch((error) => {
-    if (error?.code !== 'NOT_FOUND') throw error;
-    return null;
-  });
-  // Facts are compared with the headings above them: renaming "Likes" to
-  // "Dislikes" changes every line below it even when those lines are equal.
-  const claims = (lines) => lines.flatMap((line) => {
-    const [fact, ...conditions] = line.split('\n');
-    const at = fact.lastIndexOf(' » ');
-    const context = at === -1 ? '' : fact.slice(0, at + 3);
-    return splitPassages(fact.slice(context.length)).map((part) => [context + part, ...conditions].join('\n'));
-  });
-  const contains = (all, subset) => subset.every((line) => all.includes(line));
+/**
+ * What the reviewer applies is the exact shadow bytes of each changed page. A
+ * page counts as sourced when at least one checked citation was recorded for it;
+ * a changed page without one stays 'missing' and needs a direct confirmation.
+ * A removed page whose facts moved elsewhere depends on the page they moved to.
+ */
+export async function citationProofs({ diff, shadowStore, links, evidence }) {
   const endOfMove = (file) => {
     const visited = new Set();
     while (Object.hasOwn(links, file)) {
@@ -240,93 +53,20 @@ export async function reviewProofs({ diff, store, shadowStore, links, evidence }
     }
     return file;
   };
-  // A page quote must still be in the current text of that page in the copy
-  // being applied, so a change cannot rest on a page it also removes or rewrites.
-  const passagesOf = async (item) => {
-    if (item.source !== 'memory') return item.passages ?? [];
-    const [original, page] = await Promise.all([before(item.memoryFile), after(item.memoryFile)]);
-    if (!original || !page || page.file === item.file) return [];
-    const originalPassages = sourcePassages(currentBody(original.body), item.quote);
-    const shadowPassages = sourcePassages(currentBody(page.body), item.quote);
-    const originals = new Set(originalPassages.map(normalizePassage));
-    return shadowPassages.length > 0 && shadowPassages.every((part) => originals.has(normalizePassage(part)))
-      ? [...originalPassages, ...shadowPassages] : [];
-  };
   const proofs = [];
   for (const { file, action } of diff.files) {
-    const prior = await before(file);
-    const next = action === 'removed' ? null : await after(file);
-    const revision = next ? memoryHash(next.raw) : 'removed';
-    const checked = [];
-    for (const [index, item] of evidence.entries()) {
-      if (item.file !== file || item.revision !== revision || item.verified !== true) continue;
-      const passages = await passagesOf(item);
-      if (passages.length > 0) checked.push({ index, passages, claims: [] });
-    }
-    let preserved = false;
-    let descriptionOnly = false;
-    let dependsOn;
-    let added = [];
-    let removed = claims(factsOf(prior));
-    if (next) {
-      const moved = await Promise.all(Object.keys(links).filter((source) => endOfMove(source) === file).map(before));
-      const priorFacts = factsOf(prior);
-      const nextFacts = factsOf(next);
-      const movedFacts = moved.flatMap(factsOf);
-      const oldClaims = new Set(claims([...priorFacts, ...movedFacts]));
-      const newClaims = new Set(claims(nextFacts));
-      added = [...newClaims].filter((claim) => !oldClaims.has(claim));
-      removed = removed.filter((claim) => !newClaims.has(claim));
-      const sameFacts = Boolean(prior || moved.some(Boolean))
-        && contains(nextFacts, priorFacts)
-        && contains([...priorFacts, ...movedFacts], nextFacts)
-        && moved.filter(Boolean).every((entry) => memoryStatusOf(entry.body) === memoryStatusOf(next.body)
-          && entry.frontmatter.type === next.frontmatter.type)
-        && (!prior || (memoryStatusOf(prior.body) === memoryStatusOf(next.body)
-          && prior.frontmatter.type === next.frontmatter.type));
-      const sameDescription = next.frontmatter.description === prior?.frontmatter.description || !next.frontmatter.description;
-      // A description reaches the recall selector. Require each new sentence
-      // to be supported by a current fact or by evidence checked below.
-      const descriptionClaims = sameDescription ? [] : splitPassages(next.frontmatter.description);
-      const unsupportedDescription = descriptionClaims.filter((claim) => !nextFacts.some((fact) => {
-        const at = fact.indexOf(' » ');
-        if (at >= 0 && !supportsStatement(fact.slice(0, at), claim, { minMatched: 1, minRatio: 1 })) return false;
-        const bareFact = at >= 0 ? fact.slice(at + 3) : fact;
-        return supportsBoundClaim(claim, bareFact);
-      }));
-      added.push(...unsupportedDescription.map((claim) => 'Description: ' + claim));
-      preserved = sameFacts && sameDescription;
-      descriptionOnly = sameFacts && !sameDescription && unsupportedDescription.length === 0;
-    } else if (prior && Object.hasOwn(links, file)) {
-      const dest = endOfMove(file);
-      const entry = dest ? await after(dest) : null;
-      preserved = Boolean(entry) && contains(factsOf(entry), factsOf(prior))
-        && memoryStatusOf(prior.body) === memoryStatusOf(entry.body)
-        && prior.frontmatter.type === entry.frontmatter.type;
-      if (preserved) dependsOn = dest;
-    }
-    const changes = [...new Set([...added, ...removed])];
-    for (const item of checked) {
-      item.claims = [
-        ...added.filter((claim) => item.passages.every((passage) => supportsCitedClaim(claim, passage, evidence[item.index]))),
-        ...removed.filter((claim) => item.passages.every((passage) => {
-          const target = next ? '' : file;
-          return supportsRemoval(claim, passage, target)
-            && splitPassages(passage).some((part) => supportsRemoval(claim, part, target));
-        })),
-      ];
-      // A targeted edit may carry support for previously bound, unchanged
-      // claims. New or reworded claims need citations for this revision.
-      const bound = evidence[item.index].boundClaims;
-      if (bound) item.claims = item.claims.filter((claim) => bound.includes(claim));
-    }
-    const covered = new Set(checked.flatMap((item) => item.claims));
-    const unsupportedClaims = preserved || descriptionOnly ? [] : changes.filter((claim) => !covered.has(claim));
-    const hasSupport = unsupportedClaims.length === 0 && changes.length > 0;
-    proofs.push({ file, action, revision, unsupportedClaims,
-      kind: preserved ? 'preserved' : descriptionOnly ? 'description' : hasSupport ? 'citation' : 'missing',
-      bindings: checked.map(({ index, claims }) => ({ index, claims })),
-      ...(dependsOn ? { dependsOn } : {}) });
+    const next = action === 'removed' ? null : await shadowStore.readEntry(file).catch((error) => {
+      if (error?.code !== 'NOT_FOUND') throw error;
+      return null;
+    });
+    const dest = action === 'removed' && Object.hasOwn(links, file) ? endOfMove(file) : null;
+    proofs.push({
+      file, action,
+      revision: next ? memoryHash(next.raw) : 'removed',
+      unsupportedClaims: [],
+      kind: evidence.some((item) => item.file === file && item.verified === true) ? 'citation' : 'missing',
+      ...(dest && dest !== file ? { dependsOn: dest } : {}),
+    });
   }
   return proofs;
 }

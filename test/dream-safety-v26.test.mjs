@@ -65,7 +65,8 @@ const file = (env, name) => path.join(env.pctx.paths.memoryDir, name);
 test('a Dream write carrying a secret is refused and never reaches the copy', async (t) => {
   const env = await dreamEnv(t);
   script(env, [
-    [{ name: 'memory_write', arguments: { file: 'reference_aws.md', type: 'reference', description: 'AWS access', body: `Key: ${AWS_KEY}` } }],
+    [{ name: 'memory_write', arguments: { file: 'reference_aws.md', type: 'reference', description: 'AWS access', body: `Key: ${AWS_KEY}`,
+      citations: [{ session_id: 's1', seq: 7, quote: QUOTE }] } }],
     [],
   ]);
   const result = await dream(env, 'run-secret');
@@ -128,7 +129,7 @@ test('undo refuses to overwrite a removed page that was recreated after the swit
   assert.match((await env.pctx.store.readEntry('project_old.md')).body, /new text/u);
 });
 
-test('only citations count as evidence, and each one is checked against the session', async (t) => {
+test('only citations that hold count as evidence; the rest are left out of the record', async (t) => {
   const env = await dreamEnv(t);
   script(env, [
     [{
@@ -146,10 +147,10 @@ test('only citations count as evidence, and each one is checked against the sess
   ]);
   assert.equal((await dream(env, 'run-evidence')).ready, true);
   const evidence = env.pctx.state.snapshot().shadowPending.evidence;
-  assert.deepEqual(evidence.map((item) => [item.source, item.verified]), [['citation', true], ['citation', false]]);
+  assert.deepEqual(evidence.map((item) => [item.source, item.verified, item.role]), [['citation', true, 'user']]);
 
   const diff = await env.mods.status.createStatusService(env.runtime).dreamDiff(env.pctx, 'run-evidence', 'project_deploy.md');
-  assert.deepEqual(diff.evidence.map((item) => item.verified), [true, false]);
+  assert.deepEqual(diff.evidence.map((item) => [item.verified, item.role]), [[true, 'user']]);
 });
 
 for (const dreamCostMode of ['warn', 'block']) {
@@ -165,7 +166,7 @@ for (const dreamCostMode of ['warn', 'block']) {
     assert.equal(calls(), 3);
     assert.equal(result.ready, true);
     assert.equal(result.usage.totalTokens, 7_500);
-    assert.equal(env.pctx.state.snapshot().lastDreamCostExceeded, false);
+    assert.equal('lastDreamCostExceeded' in env.pctx.state.snapshot(), false);
   });
 }
 

@@ -1,8 +1,9 @@
 /**
- * Dream tasks as host subagents.
+ * Dream as a host subagent.
  *
- * One standard-preset child runs the batch. Its scoped tools serve source
- * pages and let the plugin check and checkpoint each task independently.
+ * One standard-preset child runs the batch. Its scoped tools let it read the
+ * offered sessions and notes and submit cited changes; the plugin checks and
+ * checkpoints each submission.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -20,10 +21,10 @@ const later = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(v
 const citation = {
   type: 'object',
   properties: {
-    session_id: { type: 'string' },
-    seq: { type: 'integer' },
-    memory_file: { type: 'string' },
-    quote: { type: 'string', description: 'Copy one exact supporting sentence including its qualifications. Give separate citations for independent sentences in one event.' },
+    session_id: { type: 'string', description: 'The session of a cited event. Use with seq.' },
+    seq: { type: 'integer', description: 'The seq shown in dream_read_session or dream_read_event for the cited event.' },
+    memory_file: { type: 'string', description: 'A note filename, to cite a note instead of a session event.' },
+    quote: { type: 'string', description: 'Text copied verbatim from that event or note. The host checks that it is there and records who said it.' },
   },
   required: ['quote'],
   additionalProperties: false,
@@ -32,33 +33,34 @@ const citation = {
 const submitSchema = {
   type: 'object',
   properties: {
-    task: { type: 'integer', description: 'The number of the current task.' },
-    done: { type: 'boolean' },
-    skip_pages: { type: 'array', items: { type: 'integer', minimum: 0 }, description: 'Raw page numbers explicitly screened as having no reusable change after reading their overview. Omit when reading every raw page.' },
-    summary: { type: 'string' },
+    done: { type: 'boolean', description: 'true ends the run. Call it once, after the last changes.' },
+    skipped_sessions: { type: 'array', items: { type: 'string' }, description: 'Offered sessions you screened and found nothing reusable in. They count as reviewed without being read to the end.' },
     changes: {
       type: 'array',
+      description: 'Every change needs at least one citation that checks out; citations that do not are dropped and named in the reply. If no citation of some change checks out, no change in the call is applied and the reply says why. A memory_file citation refers to a note as it was before this run.',
       items: {
         type: 'object',
         properties: {
           file: { type: 'string' },
-          op: { type: 'string', enum: ['write', 'add', 'edit', 'delete'], description: 'write creates a file or replaces a whole page. add inserts a fact into an EXISTING note. edit replaces one passage in an EXISTING note and saves the old passage in history.' },
+          op: { type: 'string', enum: ['write', 'add', 'edit', 'delete'], description: 'write creates a file or replaces a whole page. add inserts a fact into an EXISTING note. edit replaces one passage in an EXISTING note and saves the old passage in history. delete removes a note.' },
           name: { type: 'string' },
-          type: { type: 'string', enum: ['project', 'feedback', 'reference', 'user'] },
+          type: { type: 'string', enum: ['project', 'feedback', 'reference', 'user', 'wiki'], description: 'wiki only for files named wiki_<slug>.md.' },
           description: { type: 'string' },
           body: { type: 'string', description: 'Required for add (new fact only), edit (replacement passage), and write (complete page).' },
           old_text: { type: 'string', description: 'For edit, the exact unique passage to replace.' },
-          version: { type: 'string' },
+          version: { type: 'string', description: 'The version dream_read_note returned, required for add, edit and replacing an existing note.' },
           citations: { type: 'array', items: citation },
-          merges: { type: 'array', items: { type: 'string' } },
-          moved_to: { type: 'string' },
+          sources: { type: 'array', items: { type: 'string' }, description: 'Repo-relative paths or path#symbol (max 10) the note depends on: anchors that say where to look, not a copy of the file. Replaces the sources of the note; leave it out to keep them.' },
+          merges: { type: 'array', items: { type: 'string' }, description: 'Notes whose facts this change takes over.' },
+          moved_to: { type: 'string', description: 'For delete, the note or wiki page the facts moved into.' },
+          retire: { type: 'boolean', description: 'Set true only to hide this whole page from the index and recall with a STATUS: line other than current. To retire a page, prefer delete.' },
         },
         required: ['file', 'op', 'citations'],
         additionalProperties: false,
       },
     },
   },
-  required: ['task', 'done', 'summary', 'changes'],
+  required: ['changes', 'done'],
   additionalProperties: false,
 };
 
@@ -76,31 +78,87 @@ const textOutput = {
 
 // Some host/model combinations deliver an integer field as a decimal string.
 // Normalize the read and its delivery receipt identically.
-function sourceArgs(args) {
+function sessionArgs(args) {
   const integer = (value) => typeof value === 'string' && /^(?:0|[1-9]\d*)$/u.test(value) ? Number(value) : value;
-  return { ...args, task: integer(args.task), page: integer(args.page) };
+  return { ...args, from_seq: integer(args.from_seq), limit: integer(args.limit) };
 }
 
-export function dreamWorkerTools({ readSource, sourceDelivered, readNote, listNotes, submit, submitDelivered }) {
+/** Tools for looking across this project's other sessions; mounted only when the host can search. */
+function searchTools({ searchSessions, searchEvents, readEvent, eventDelivered }) {
   return [
     {
-      name: 'dream_read_source',
-      description: 'Read a raw source page or a group of overview entries. In overview mode page is the first raw page to preview. Use raw pages for evidence or uncertainty.',
+      name: 'dream_search_sessions',
+      description: 'Search all sessions of this project (not only the offered ones) for a topic, command, error or phrase. Returns the sessions that match best, each with its best matching event. Use it to find out whether something recurs across sessions before calling it a one-off. Read what you find with dream_read_event.',
       parameters: {
         type: 'object',
-        properties: { task: { type: 'integer' }, page: { type: 'integer', minimum: 0 }, view: { type: 'string', enum: ['overview', 'raw'] } },
-        required: ['task', 'page'],
+        properties: {
+          query: { type: 'string', maxLength: 240 },
+          since: { type: 'string', description: 'Only sessions created on or after this date (YYYY-MM-DD or ISO timestamp).' },
+          until: { type: 'string', description: 'Only sessions created on or before this date (YYYY-MM-DD covers that whole day).' },
+        },
+        required: ['query'],
         additionalProperties: false,
       },
-      execute: async (args) => readSource(sourceArgs(args)),
+      execute: searchSessions,
+    },
+    {
+      name: 'dream_search_events',
+      description: 'Search the events of one session of this project for a phrase. Returns matching events with their seq. Read them with dream_read_event.',
+      parameters: {
+        type: 'object',
+        properties: { session_id: { type: 'string' }, query: { type: 'string', maxLength: 240 } },
+        required: ['session_id', 'query'],
+        additionalProperties: false,
+      },
+      execute: searchEvents,
+    },
+    {
+      name: 'dream_read_event',
+      description: 'Read one event of any session of this project with the events around it, shown like dream_read_session. A quote from an event shown here can be cited. Reading it does not review that session: only the offered sessions count as reviewed.',
+      parameters: {
+        type: 'object',
+        properties: {
+          session_id: { type: 'string' },
+          seq: { type: 'integer', minimum: 0 },
+          before: { type: 'integer', minimum: 0, maximum: 20, description: 'Events before it to show. Default 2.' },
+          after: { type: 'integer', minimum: 0, maximum: 20, description: 'Events after it to show. Default 4.' },
+        },
+        required: ['session_id', 'seq'],
+        additionalProperties: false,
+      },
+      execute: readEvent,
       finalizeContent({ arguments: args }, result) {
-        if (!result.isError && result.content.length === 1) sourceDelivered(sourceArgs(args), result.content[0].text);
+        const [block] = result.content;
+        eventDelivered(args, !result.isError && result.content.length === 1 && block.type === 'text' ? block.text : null);
+      },
+    },
+  ];
+}
+
+export function dreamWorkerTools({ readSession, sessionDelivered, readNote, noteDelivered, listNotes, submit, search }) {
+  return [
+    {
+      name: 'dream_read_session',
+      description: 'Read one offered session: its messages, tool calls and tool results with their seq numbers, in order. Without from_seq it starts at the first event not yet reviewed (or the beginning, for a session offered only for a lookup). If next_from_seq is not null, call again with it to read on.',
+      parameters: {
+        type: 'object',
+        properties: { session_id: { type: 'string' }, from_seq: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 100, description: 'Most messages in one reply. Default 40.' } },
+        required: ['session_id'],
+        additionalProperties: false,
+      },
+      execute: async (args) => readSession(sessionArgs(args)),
+      finalizeContent({ arguments: args }, result) {
+        if (!result.isError && result.content.length === 1) sessionDelivered(sessionArgs(args), result.content[0].text);
       },
     },
     {
       name: 'dream_list_notes',
-      description: 'List the notes in the project shadow copy.',
-      parameters: { type: 'object', properties: {}, additionalProperties: false },
+      description: 'Find project notes by topic. Read a known filename directly. If empty_catalog is true, stop looking. Otherwise use include_body to widen, omit query to browse, or follow next_offset with the same query.',
+      parameters: {
+        type: 'object',
+        properties: { query: { type: 'string', maxLength: 240 }, offset: { type: 'integer', minimum: 0 }, include_body: { type: 'boolean' } },
+        additionalProperties: false,
+      },
       execute: listNotes,
     },
     {
@@ -113,18 +171,18 @@ export function dreamWorkerTools({ readSource, sourceDelivered, readNote, listNo
         additionalProperties: false,
       },
       execute: readNote,
-    },
-    {
-      name: 'dream_submit_task',
-      description: 'Submit the current task and its proposed note edits. On success the result includes the next task or indicates that the batch is finished.',
-      parameters: submitSchema,
-      execute: submit,
       finalizeContent({ arguments: args }, result) {
-        if (!result.isError && result.content.length === 1 && result.content[0].type === 'text') {
-          submitDelivered(args, result.content[0].text);
-        }
+        const [block] = result.content;
+        noteDelivered(args, !result.isError && result.content.length === 1 && block.type === 'text' ? block.text : null);
       },
     },
+    {
+      name: 'dream_submit',
+      description: 'Propose note changes, each backed by citations, and declare screened sessions. May be called several times. Call with done: true when finished.',
+      parameters: submitSchema,
+      execute: submit,
+    },
+    ...(search ? searchTools(search) : []),
   ].map((tool) => ({ ...tool, output: textOutput }));
 }
 

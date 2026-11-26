@@ -39,6 +39,21 @@ export function sampleQuestions(dataset, perGroup = 10) {
   return { rule: `per group, the first ${perGroup} question_ids by sha256("${SAMPLE_SALT}:" + question_id)`, picked };
 }
 
+/**
+ * Replays the plugin's live cadence (autoExtractEveryTurns = `every`): the visible-seq limit for each
+ * extraction run of one session. Run k sees the events up to the end of the k-th group of `every` user
+ * turns (the assistant reply to the last turn included, i.e. up to just before the next user message);
+ * the final limit is Infinity, the tail. Returns [] when `every` is not a positive integer.
+ */
+export function extractLimits(events, every) {
+  if (!(every > 0)) return [];
+  const users = events.filter((event) => event.type === 'user/message').map((event) => event.seq);
+  const limits = [];
+  for (let k = every; k < users.length; k += every) limits.push(users[k] - 1);
+  limits.push(Infinity);
+  return limits;
+}
+
 /** "2023/05/20 (Sat) 02:21" -> epoch ms (UTC; only the order and spacing matter). */
 export function parseDate(text) {
   const match = /^(\d{4})\/(\d{2})\/(\d{2})\s+\(\w+\)\s+(\d{2}):(\d{2})/u.exec(String(text));
@@ -164,8 +179,12 @@ export function makeHost({ workspaceDir, sessions, onChildUsage }) {
   const childUsage = new Map();
   const parent = { id: 'lme-parent', session: { header: { id: 'lme-parent', cwd: workspaceDir } } };
   const byId = new Map(sessions.map((session) => [session.id, session]));
+  // session id -> highest event seq the host shows; lets a replay stop mid-session (see extractLimits).
+  const visibleSeq = new Map();
+  const visible = (id, events) => (visibleSeq.has(id) ? events.filter((event) => event.seq <= visibleSeq.get(id)) : events);
   const host = {
     parent,
+    visibleSeq,
     childStats: [],
     on(event, handler) {
       const set = listeners.get(event) ?? new Set();
@@ -196,9 +215,9 @@ export function makeHost({ workspaceDir, sessions, onChildUsage }) {
       readSession: async (id) => {
         if (childUsage.has(id)) return { events: [{ seq: 0, type: 'assistant/message', data: { usage: childUsage.get(id) } }] };
         const session = byId.get(id);
-        return session ? { session: { ...session.header }, events: structuredClone(session.events) } : undefined;
+        return session ? { session: { ...session.header }, events: structuredClone(visible(id, session.events)) } : undefined;
       },
-      listEvents: async (id) => (byId.get(id)?.events ?? []).map(({ seq, type }) => ({ seq, type })),
+      listEvents: async (id) => visible(id, byId.get(id)?.events ?? []).map(({ seq, type }) => ({ seq, type })),
     },
     subagents: {
       async startActivation(spec) {

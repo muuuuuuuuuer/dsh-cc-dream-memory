@@ -31,6 +31,40 @@ async function seed(env) {
   env.pctx.store.contentReads = 0;
 }
 
+test('note scans bound concurrent I/O and preserve result order', async (t) => {
+  const env = await runtimeEnv(t, {});
+  await seed(env);
+  const { store } = env.pctx;
+  const observeConcurrency = (method) => {
+    const original = store[method].bind(store);
+    let active = 0;
+    let peak = 0;
+    store[method] = async (...args) => {
+      active += 1;
+      peak = Math.max(peak, active);
+      try {
+        return await original(...args);
+      } finally {
+        active -= 1;
+      }
+    };
+    return () => peak;
+  };
+
+  const metadataPeak = observeConcurrency('_loadMeta');
+  const entries = await store.listEntries('project', { currentOnly: true });
+  const files = entries.map(({ file }) => file);
+  assert.equal(files.length, NOTES);
+  assert.deepEqual(files, [...files].sort());
+  assert.ok(metadataPeak() > 1 && metadataPeak() <= 4, `metadata peak: ${metadataPeak()}`);
+
+  const contentPeak = observeConcurrency('_readContent');
+  const hits = await store.search('deploy step', { limit: 2, offset: 1, currentOnly: true });
+  assert.deepEqual(hits.map(({ file }) => file), files.slice(1, 3));
+  assert.ok(hits.every(({ snippets }) => snippets.some((line) => line.includes('Deploy step'))));
+  assert.ok(contentPeak() > 1 && contentPeak() <= 4, `search body peak: ${contentPeak()}`);
+});
+
 test('v23 read budget: listing eight notes reads each file at most once', async (t) => {
   const env = await runtimeEnv(t, {});
   await seed(env);

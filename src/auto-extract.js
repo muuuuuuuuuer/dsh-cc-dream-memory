@@ -40,11 +40,11 @@ const EXTRACT_SYSTEM_PROMPT = [
   'You have memory_read, memory_search, memory_save and memory_update. Use them like the main assistant does:',
   '- Read or search an existing note before writing; update or merge it instead of creating a near-duplicate.',
   '- Corrections first: when the user corrected something an existing note says, edit the matching passage of that note via memory_update instead of writing a new note. Change only the wrong passage and keep the conditions that still hold.',
-  '- Save only knowledge a future session cannot recover from the repository, its history, or its instruction files.',
   MEMORY_SELECTION,
   'If the transcript has no candidate, finish without reading the index entries or calling tools.',
   '- Types: user (role, expertise or durable background), feedback (how the user wants you to work, a correction or confirmed approach), project (goals, decisions, deadlines or run facts absent from the repo), reference (where external information lives). Keep a simple preference to one sentence. Add **Why:** or **How to apply:** only for a stated reason or a non-obvious application the user confirmed.',
-  '- Never save secrets, credentials, one-off task chatter, code patterns, file paths, repository structure, git history, or generic debugging recipes.',
+  '- When a note rests on words the user wrote, cite them: citations:[{quote:"<exact words>"}]. The host checks the quote exists and who said it.',
+  '- Never save secrets, credentials, one-off task chatter, or generic debugging recipes.',
   '- Write dates as absolute dates. Do not invent facts: use only the transcript and the notes you read.',
   '- At most ' + '{{MAX_ITEMS}}' + ' memory_save calls. If nothing is durable, save nothing and reply DONE.',
   '',
@@ -74,8 +74,9 @@ function execFor(agent, sessionId, internal = false) {
 }
 
 /**
- * Execute one tool call. Save/update are forced to inference+low confidence:
- * the extractor must not claim the user said something verbatim.
+ * Execute one tool call. The extractor is the same model with the same tools
+ * and the same citation check as the main session; the one limit it keeps is
+ * that it never deletes.
  */
 async function executeTool(runtime, sessionId, agent, call, memoryReadHashes) {
   if (!TOOL_NAMES.includes(call.name)) {
@@ -89,10 +90,6 @@ async function executeTool(runtime, sessionId, agent, call, memoryReadHashes) {
   let exec;
   if (call.name === 'memory_save') {
     exec = execFor(agent, sessionId, true);
-    args.basis = 'inference';
-    args.confidence = 'low';
-    args.force = false;
-    delete args.evidence;
     args.name = oneLine(args.name, NAME_MAX);
     args.description = oneLine(args.description || args.content, DESCRIPTION_MAX);
     args.content = String(args.content ?? '');
@@ -107,10 +104,6 @@ async function executeTool(runtime, sessionId, agent, call, memoryReadHashes) {
     }
   } else if (call.name === 'memory_update') {
     exec = execFor(agent, sessionId, true);
-    args.basis = 'inference';
-    args.confidence = 'low';
-    args.force = false;
-    delete args.evidence;
     // Auto-extraction may update a note; it must never delete one.
     delete args.delete;
   } else {
@@ -239,7 +232,7 @@ ${userIndexText.slice(0, 2_000)}
             pendingWrites.delete(result.file);
             saved += 1;
             results.push({ name: call.arguments?.name ?? call.arguments?.file ?? '', ...result });
-          } else if (result?.error !== 'DUPLICATE' && result?.error !== 'SECRET_DETECTED') {
+          } else if (result?.error !== 'SECRET_DETECTED') {
             pendingWrites.add(target);
           }
         }
@@ -272,39 +265,4 @@ ${userIndexText.slice(0, 2_000)}
   } finally {
     clearTimeout(timer);
   }
-}
-
-/**
- * Apply pre-built proposals through the registered `memory_save` definition.
- * Used by the Inbox accept command; auto-extraction writes directly.
- */
-export async function applyProposals({ runtime, items, sessionId, agent }) {
-  const save = runtime?.memoryTools && typeof runtime.memoryTools.get === 'function'
-    ? runtime.memoryTools.get('memory_save')
-    : undefined;
-  if (!save || typeof save.execute !== 'function') {
-    return items.map((item) => ({ name: item.name, ok: false, error: 'no-tools', message: 'memory_save is not registered' }));
-  }
-  const execAgent = agent && typeof agent.id === 'string' ? agent : { id: sessionId };
-  const results = [];
-  for (const item of items) {
-    try {
-      const result = await save.execute(
-        {
-          name: item.name,
-          type: item.type,
-          description: item.description,
-          content: item.content,
-          basis: 'inference',
-          confidence: 'low',
-          force: false,
-        },
-        { agent: execAgent, sessionId },
-      );
-      results.push({ name: item.name, ...result });
-    } catch (error) {
-      results.push({ name: item.name, ok: false, error: 'EXECUTE_FAILED', message: error?.message ?? String(error) });
-    }
-  }
-  return results;
 }

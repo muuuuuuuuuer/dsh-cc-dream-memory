@@ -48,27 +48,6 @@ function safeAgentDirName(name) {
   return safe || '';
 }
 
-/**
- * Add the v7 UI summary fields to a dream run result:
- * `path` (plan/proposal/backup location), `ops` (operation count) and
- * `durationMs` (wall-clock duration of the run).
- */
-function withDreamSummary(result) {
-  if (!result || typeof result !== 'object') return result;
-  const path = typeof result.planPath === 'string' && result.planPath !== ''
-    ? result.planPath
-    : (typeof result.proposalPath === 'string' && result.proposalPath !== ''
-      ? result.proposalPath
-      : (typeof result.backupDir === 'string' ? result.backupDir : ''));
-  const ops = Array.isArray(result.operations)
-    ? result.operations.length
-    : (Number.isFinite(Number(result.operations)) ? Number(result.operations) : 0);
-  const durationMs = Number.isFinite(Number(result.durationMs))
-    ? Math.max(0, Math.trunc(Number(result.durationMs)))
-    : Math.max(0, (Number(result.finishedAt) || 0) - (Number(result.startedAt) || 0));
-  return { ...result, path, ops, durationMs };
-}
-
 /** Boolean runtime overrides users may toggle without editing the profile. */
 const OVERRIDE_KEYS = [
   'enabled',
@@ -373,11 +352,28 @@ export class MemoryRuntime {
   }
 
   /**
+   * The private agent stores Dream may read, by preset directory name. Empty
+   * unless `subagentMemory` is `own`. Only directories that exist are returned
+   * and nothing is created: Dream reads these stores and never writes them.
+   * @returns {Promise<Map<string, MemoryStore>>}
+   */
+  async agentMemoryStores(pctx) {
+    const config = this.config;
+    if (config.subagentMemory !== 'own' || !pctx?.paths) return new Map();
+    const agentsDir = path.join(pctx.paths.projectDir, 'agents');
+    const allow = (Array.isArray(config.agentMemoryPresets) ? config.agentMemoryPresets : []).map(safeAgentDirName);
+    const dirs = await fs.readdir(agentsDir, { withFileTypes: true }).catch(() => []);
+    return new Map(dirs.filter((dir) => dir.isDirectory() && (allow.length === 0 || allow.includes(dir.name))).map(({ name }) => [name,
+      new MemoryStore({ paths: { ...pctx.paths, ...projectLayout(path.join(agentsDir, name)) }, getConfig: () => config })]));
+  }
+
+  /**
    * Open (and cache) the private store for one named agent.
    *
    * The store is deliberately project-local and separate from the main store:
-   * its index, history and trash never leak into the shared memory, and Dream
-   * never scans it. Rules and global state stay on the base context.
+   * its index, history and trash never leak into the shared memory. Dream reads
+   * it (see agentMemoryStores) but never writes it. Rules and global state stay
+   * on the base context.
    */
   async _agentContextFor(base, agent, name) {
     const dirName = safeAgentDirName(name);
@@ -396,7 +392,7 @@ export class MemoryRuntime {
         paths,
         store,
         // Shared state is only used for the main project's Dream cadence; a
-        // private agent store never runs Dream.
+        // private agent store never runs Dream of its own.
         state: base.state,
         agent,
         agentMemory: true,
@@ -669,10 +665,8 @@ export class MemoryRuntime {
     const projectContext = pctx ?? (agent ? await this.forAgent(agent) : undefined);
     if (!projectContext) return { ok: false, error: 'no-project' };
     try {
-      const consumed = projectContext.state.snapshot().shadowPending?.corrected;
       const result = await this.#dreamEngine.switchShadow({ pctx: projectContext, agent: agent ?? projectContext.agent, reject, defer, confirm, runId });
       if (result?.ok === true) {
-        await projectContext.state.clearCorrected(consumed).catch((error) => warn('clearCorrected', error));
         try {
           this.invalidateAllInjections('dream-switch');
         } catch {

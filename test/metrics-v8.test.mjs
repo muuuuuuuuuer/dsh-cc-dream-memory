@@ -346,11 +346,19 @@ test('v8 metrics: /status payload and GET /metrics expose the metrics block', as
   assert.equal((await callHttp(env.handle, { path: '/metrics' })).statusCode, 401);
 });
 
-test('v8 metrics: /memory metrics and /memory json expose the summary', async (t) => {
+test('v8 metrics: status service exposes the summary and retired CLI verbs reject', async (t) => {
   const env = await runtimeEnv(t);
   await env.pctx.store.saveEntry({ name: 'cmd metrics', type: 'user', description: 'd', content: 'body' });
   await env.mods.metrics.recordInjection(env.paths);
   await env.mods.metrics.recordRead(env.paths, 'user_cmd_metrics.md');
+
+  const service = env.mods.status.createStatusService(env.runtime);
+  const metrics = await service.metrics(env.pctx);
+  assert.equal(metrics.injections.count, 1);
+  assert.equal(metrics.reads.total, 1);
+  assert.ok(metrics.dreams);
+  assert.ok(metrics.costs);
+
   const definitions = new Map();
   const commandCtx = {
     commands: {
@@ -369,20 +377,12 @@ test('v8 metrics: /memory metrics and /memory json expose the summary', async (t
   });
   const memory = definitions.get('memory');
   assert.ok(memory);
-  const invocation = { rawInput: 'metrics', agent: { id: 'agent-1' }, sessionId: 'session-1' };
-  const text = await memory.handler(invocation);
-  assert.equal(text.kind, 'success', text.text);
-  assert.match(text.text, /inject/i);
-  assert.match(text.text, /read/i);
-  assert.match(text.text, /acceptance|acceptanceRate|applied/i);
-  assert.match(text.text, /cost/i);
-
-  const json = await memory.handler({ ...invocation, rawInput: 'json' });
-  assert.equal(json.kind, 'success');
-  const payload = JSON.parse(json.text);
-  assert.equal(payload.ok, true);
-  assert.ok(payload.metrics, '/memory json must include metrics');
-  assert.equal(payload.metrics.injections.count, 1);
+  const invocation = { agent: { id: 'agent-1' }, sessionId: 'session-1' };
+  for (const verb of ['metrics', 'json']) {
+    const out = await memory.handler({ ...invocation, rawInput: verb });
+    assert.equal(out.kind, 'error');
+    assert.match(out.text, /unknown \/memory subcommand/);
+  }
 });
 
 // ---------------------------------------------------------------------------

@@ -620,17 +620,19 @@ test('v6: store.search matches Chinese queries without spaces (single char + big
 
 test('client.js has bridge/token banners with retry + markdown rendering, locale keys synced', async () => {
   const client = await readFile(path.join(PLUGIN_ROOT, 'client.js'), 'utf8');
+  const viewSource = await readFile(path.join(PLUGIN_ROOT, 'web', 'view.js'), 'utf8');
   const keys = ['banner.noBackend', 'banner.tokenExpired', 'btn.retry', 'settings.switchesHint'];
   for (const needle of [...keys, 'renderMarkdown']) {
     assert.equal(client.includes(needle), true, `client.js must reference ${needle}`);
   }
 
-  const bannersIndex = client.indexOf('// ---- banners');
-  assert.notEqual(bannersIndex, -1, 'client.js must keep the connection error banner branch');
-  const bannersBlock = client.slice(bannersIndex, bannersIndex + 1500);
+  const bannersIndex = viewSource.indexOf('// ---- banners');
+  assert.notEqual(bannersIndex, -1, 'web/view.js must keep the connection error banner branch');
+  const bannersBlock = viewSource.slice(bannersIndex, bannersIndex + 1500);
   assert.equal(bannersBlock.includes('banner.noBackend'), true, 'a banner must explain a missing bridge');
   assert.equal(bannersBlock.includes('banner.tokenExpired'), true, 'a banner must explain a rotated token');
   assert.equal(bannersBlock.includes("t('btn.retry')"), true, 'the token error offers an in-panel retry');
+  assert.match(client, /t\(["']btn\.retry["']\)/);
   assert.equal(client.includes('window.location.reload'), false, 'retry does not reload DSH');
 
   for (const localeName of ['en', 'zh']) {

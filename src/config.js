@@ -1,20 +1,22 @@
-/**
- * Configuration resolution for dsh-cc-dream-memory.
- *
- * The row's raw config is untrusted input: every field is validated, clamped and
- * defaulted here so the rest of the plugin can assume a complete frozen shape.
- * No external schema library is used: a local bundle must only import Node
- * builtins.
- */
-
-export const DEFAULTS = Object.freeze({
+/** Documented settings for a plugin profile. */
+export const PUBLIC_CONFIG = Object.freeze({
   enabled: true,
   autoMemoryEnabled: true,
   memoryRoot: '',
+  recallMode: 'model',
+  autoExtract: true,
+  subagentMemory: 'off',
+  userMemory: 'global',
+  autoDreamEnabled: false,
+  projectId: '',
+});
+
+// Keep active advanced settings readable from existing profiles.
+export const DEFAULTS = Object.freeze({
+  ...PUBLIC_CONFIG,
   // Claude Code runs a per-turn selector that attaches up to five topic files.
   // `model` uses one cheap JSON call; `off` disables recall. There is no
   // second lexical ranker.
-  recallMode: 'model',
   recallProvider: '',
   recallModel: '',
   recallTimeoutMs: 4_000,
@@ -24,7 +26,6 @@ export const DEFAULTS = Object.freeze({
   // End-of-turn extraction writes live notes directly through the memory_save
   // gates (no review step, unlike Dream), so it runs every few turns, not
   // after every one.
-  autoExtract: true,
   autoExtractEveryTurns: 3,
   autoExtractMaxItems: 5,
   autoExtractMaxChars: 12_000,
@@ -35,17 +36,12 @@ export const DEFAULTS = Object.freeze({
   autoExtractModel: '',
   // One policy for subagent memory: off (no injection, no writes), shared
   // (project store, read/write), own (agents/<preset>/memory, isolated).
-  subagentMemory: 'off',
-  agentMemoryPresets: [],
+  agentMemoryPresets: Object.freeze([]),
   // 'global' keeps type user notes in one directory shared by every project on this machine.
-  userMemory: 'global',
   // Notes unread and unrecalled this long are listed as archive candidates (never deleted).
   archiveHintDays: 60,
   indexMaxLines: 200,
   indexMaxBytes: 25 * 1024,
-  autoDreamEnabled: false,
-  /** Legacy configuration key accepted for older settings files. */
-  dreamTimeoutMs: 10 * 60 * 1000,
   minHours: 24,
   minSessions: 5,
   scanThrottleMs: 10 * 60 * 1000,
@@ -55,23 +51,20 @@ export const DEFAULTS = Object.freeze({
   dreamAllowDelete: true,
   dreamMaxFileChars: 100_000,
   /** Most tasks one Dream worker processes per run; the rest wait for the next run. */
-  dreamMaxTasks: 4,
+  dreamMaxTasks: 10,
+  /** Wiki pages (Dream only): most characters in one page, and in all pages together. */
+  wikiPageMaxChars: 8_000,
+  wikiTotalMaxChars: 40_000,
   /** true: a subagent Dream waits until no user subagent is running, then runs to the end. */
   dreamYieldToSubagents: false,
   tools: true,
-  commands: true,
-  ui: true,
   // Claude Code does not load project memory into subagents by default.
   contextOrder: 850,
   maxContentBytes: 128 * 1024,
   rulesMaxChars: 8000,
   secretScan: 'warn',
-  /** Legacy Dream cost settings accepted for older settings files. */
-  dreamMaxTotalTokens: 0,
   policyDuplicateThreshold: 0.82,
   policySuggestThreshold: 0.55,
-  dreamCostMode: 'warn',
-  projectId: '',
   keepHistory: true,
   /** Evaluation harness only: registers an admin dream tool. Never enabled by default. */
   evalMode: false,
@@ -149,7 +142,6 @@ export function resolveConfig(raw, { env } = {}) {
     indexMaxLines: integer(input.indexMaxLines, DEFAULTS.indexMaxLines, { min: 1, max: 100_000 }),
     indexMaxBytes: integer(input.indexMaxBytes, DEFAULTS.indexMaxBytes, { min: 256, max: 10 * 1024 * 1024 }),
     autoDreamEnabled: bool(input.autoDreamEnabled, DEFAULTS.autoDreamEnabled),
-    dreamTimeoutMs: integer(input.dreamTimeoutMs, DEFAULTS.dreamTimeoutMs, { min: 1_000, max: 24 * 60 * 60 * 1000 }),
     minHours: integer(input.minHours, DEFAULTS.minHours, { min: 0, max: 24 * 365 }),
     minSessions: integer(input.minSessions, DEFAULTS.minSessions, { min: 1, max: 100_000 }),
     scanThrottleMs: integer(input.scanThrottleMs, DEFAULTS.scanThrottleMs, { min: 1000, max: 24 * 60 * 60 * 1000 }),
@@ -160,6 +152,8 @@ export function resolveConfig(raw, { env } = {}) {
     dreamMaxFileChars: integer(input.dreamMaxFileChars, DEFAULTS.dreamMaxFileChars, { min: 1000, max: 500_000 }),
     dreamMaxTasks: integer(input.dreamMaxTasks, DEFAULTS.dreamMaxTasks, { min: 1, max: 20 }),
     dreamYieldToSubagents: bool(input.dreamYieldToSubagents, DEFAULTS.dreamYieldToSubagents),
+    wikiPageMaxChars: integer(input.wikiPageMaxChars, DEFAULTS.wikiPageMaxChars, { min: 500, max: 100_000 }),
+    wikiTotalMaxChars: integer(input.wikiTotalMaxChars, DEFAULTS.wikiTotalMaxChars, { min: 500, max: 1_000_000 }),
     recallMode,
     recallProvider: recallPair ? recallProvider : '',
     recallModel: recallPair ? recallModel : '',
@@ -180,22 +174,15 @@ export function resolveConfig(raw, { env } = {}) {
     userMemory: choice(input.userMemory, DEFAULTS.userMemory, ['global', 'project']),
     archiveHintDays: integer(input.archiveHintDays, DEFAULTS.archiveHintDays, { min: 1, max: 3650 }),
     tools: bool(input.tools, DEFAULTS.tools),
-    commands: bool(input.commands, DEFAULTS.commands),
-    ui: bool(input.ui, DEFAULTS.ui),
     contextOrder: integer(input.contextOrder, DEFAULTS.contextOrder, { min: 0, max: 10_000 }),
     maxContentBytes: integer(input.maxContentBytes, DEFAULTS.maxContentBytes, { min: 1024, max: 10 * 1024 * 1024 }),
     rulesMaxChars: integer(input.rulesMaxChars, DEFAULTS.rulesMaxChars, { min: 200, max: 64_000 }),
     secretScan: choice(input.secretScan, DEFAULTS.secretScan, ['warn', 'deny', 'off']),
-    dreamMaxTotalTokens: integer(input.dreamMaxTotalTokens, DEFAULTS.dreamMaxTotalTokens, {
-      min: 0,
-      max: 10_000_000,
-    }),
     policyDuplicateThreshold: fraction(input.policyDuplicateThreshold, DEFAULTS.policyDuplicateThreshold),
     policySuggestThreshold: fraction(input.policySuggestThreshold, DEFAULTS.policySuggestThreshold),
-    dreamCostMode: choice(input.dreamCostMode, DEFAULTS.dreamCostMode, ['warn', 'block']),
     projectId: text(input.projectId, DEFAULTS.projectId).trim().slice(0, 200),
     keepHistory: bool(input.keepHistory, DEFAULTS.keepHistory),
-  evalMode: bool(input.evalMode, DEFAULTS.evalMode),
+    evalMode: bool(input.evalMode, DEFAULTS.evalMode),
     historyMaxPerFile: integer(input.historyMaxPerFile, DEFAULTS.historyMaxPerFile, { min: 0, max: 200 }),
   };
   return Object.freeze(config);

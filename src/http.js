@@ -9,7 +9,7 @@
  * writes session events.
  *
  * All project-facing reads and mutations go through `src/status.js` so the HTTP
- * payload and the `/memory json` payload share one implementation.
+ * and slash commands share the same project operations.
  */
 import crypto from 'node:crypto';
 import fsSync from 'node:fs';
@@ -310,15 +310,20 @@ export function createHttpHandler({ runtime, token }) {
     }
     try {
       if (route === '/status' && method === 'GET') {
-        const projectContext = await resolveProject(url.searchParams.get('sessionId') ?? undefined);
+        const sessionId = url.searchParams.get('sessionId') ?? undefined;
+        const projectContext = await resolveProject(sessionId);
         if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
-        if (url.searchParams.get('view') === 'chip') {
+        const view = url.searchParams.get('view');
+        if (view === 'chip') {
           return sendJson(res, 200, await service.chipStatus(projectContext));
+        }
+        if (view === 'dream-coverage') {
+          return sendJson(res, 200, { ok: true, dreamTasks: await runtime.dreamCoverage(projectContext) });
         }
         return sendJson(
           res,
           200,
-          await service.status(projectContext, { sessionId: url.searchParams.get('sessionId') ?? undefined }),
+          await service.status(projectContext, { sessionId, includeDreamCoverage: view !== 'panel' }),
         );
       }
       if (route === '/rules' && method === 'GET') {
@@ -437,33 +442,6 @@ export function createHttpHandler({ runtime, token }) {
           return sendJson(res, 200, { ok: true, overrides, config });
         } catch (error) {
           return sendCoded(res, error, 'no-toggle-field');
-        }
-      }
-      if (route === '/inbox' && method === 'GET') {
-        const projectContext = await resolveProject(url.searchParams.get('sessionId') ?? undefined);
-        if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
-        try {
-          return sendJson(res, 200, await service.inbox(projectContext, { action: 'list' }));
-        } catch (error) {
-          return sendCoded(res, error, 'inbox-failed');
-        }
-      }
-      if (route === '/inbox' && method === 'POST') {
-        const body = await readBody(req);
-        const projectContext = await resolveProject(body.sessionId);
-        if (!projectContext) return sendJson(res, 400, { ok: false, error: 'no-project' });
-        try {
-          return sendJson(
-            res,
-            200,
-            await service.inbox(projectContext, {
-              action: typeof body.action === 'string' ? body.action : 'list',
-              id: typeof body.id === 'string' ? body.id : '',
-              agent: projectContext.agent,
-            }),
-          );
-        } catch (error) {
-          return sendCoded(res, error, 'inbox-failed');
         }
       }
       if (route === '/rules' && method === 'POST') {

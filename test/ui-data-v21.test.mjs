@@ -52,6 +52,40 @@ test('status: carries the UI data contract version', async (t) => {
   assert.equal(status.uiApi, UI_API);
 });
 
+test('panel status skips Dream coverage and reuses the entry listing for the audit', async (t) => {
+  const env = await httpEnv(t);
+  await seed(env, 'project_note.md', { name: 'Note', type: 'project' }, 'STATUS: current\nfact');
+  let enumerations = 0;
+  const listEntries = env.pctx.store.listEntries.bind(env.pctx.store);
+  env.pctx.store.listEntries = (...args) => {
+    enumerations += 1;
+    return listEntries(...args);
+  };
+  let coverageCalls = 0;
+  const dreamTasks = { total: 1, sessions: [{ id: 'test-session', title: 'Test session', status: 'todo' }] };
+  env.runtime.dreamCoverage = async () => {
+    coverageCalls += 1;
+    return dreamTasks;
+  };
+
+  const panel = (await callHttp(env, { path: '/status?sessionId=s1&view=panel' })).json();
+  assert.equal(panel.ok, true);
+  assert.equal(coverageCalls, 0);
+  assert.equal(enumerations, 1);
+  assert.equal(panel.entries[0].status, 'current');
+  assert.ok(panel.health.warnings.some((warning) => warning.includes('missing from MEMORY.md')));
+  assert.equal(Object.hasOwn(panel, 'dreamTasks'), false);
+
+  const coverage = (await callHttp(env, { path: '/status?sessionId=s1&view=dream-coverage' })).json();
+  assert.equal(coverage.ok, true);
+  assert.deepEqual(coverage.dreamTasks, dreamTasks);
+  assert.equal(coverageCalls, 1);
+  assert.equal(enumerations, 1);
+
+  const full = (await callHttp(env, { path: '/status?sessionId=s1' })).json();
+  assert.deepEqual(full.dreamTasks, dreamTasks, 'the full status still includes coverage');
+});
+
 test('status: dream runs carry each run status and counts', async (t) => {
   const env = await httpEnv(t);
   const runId = '2026-11-12T09-00-00-abcdef';
