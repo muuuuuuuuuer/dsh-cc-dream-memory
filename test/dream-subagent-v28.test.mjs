@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { access, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { test } from 'node:test';
-import { mountDreamFixture, playDreamTasks, toolsEnv } from './v10-helpers.mjs';
+import { mountDreamFixture, playDreamTasks, toolsEnv, waitFor } from './v10-helpers.mjs';
 import { readRunCheckpoint, readRunManifest, runDirOf } from '../src/dream-run.js';
 import { buildFocus } from '../src/dream-focus.js';
 
@@ -586,7 +586,8 @@ test('without the yield option Dream starts at once and retries when the host is
     return start(spec);
   };
   const run = await env.runtime.startDream(env.pctx, { agent: env.parent, force: true });
-  await new Promise((resolve) => setTimeout(resolve, 50));
+  // Wait for the first refusal instead of a fixed delay: slow CI runners need longer than 50 ms.
+  await waitFor(() => refused >= 1);
   assert.equal(refused, 1);
   env.host.emit('subagent/end', { runId: 'u1', id: 'user-child' });
   const result = await run.done;
